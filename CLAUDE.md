@@ -815,6 +815,64 @@ Păstrăm marginea de o lățime de pătrat oricum: `calibrate_camera.py` cade p
 detectorul clasic dacă SB lipsește, alte unelte îl pot folosi direct, iar
 marginea nu costă nimic pe hârtie.
 
+### 5.19 `cv2.aruco.calibrateCameraCharuco` nu mai există în OpenCV 5
+
+Nici `interpolateCornersCharuco`. Tutorialele și exemplele care le folosesc
+sunt pentru OpenCV 4.x. Calea actuală, și cea din `tools/calibrate_camera.py`:
+
+```python
+detector = cv2.aruco.CharucoDetector(board)          # optional: params
+corners, ids, m_corners, m_ids = detector.detectBoard(gray)
+objp, imgp = board.matchImagePoints(corners, ids)    # per imagine
+rms, K, dist, rvecs, tvecs = cv2.calibrateCamera(obj_list, img_list, size,
+                                                  None, None)
+```
+
+`matchImagePoints` întoarce **doar colțurile văzute în acea imagine**, deci
+fiecare poză are propriul set de puncte-obiect. Asta a cerut generalizarea
+lui `calibrate()`: forma veche presupunea același tipar în toate pozele.
+Funcția clasică rămâne disponibilă ca `calibrate(corner_sets, size, pattern,
+square_mm)` pentru tabla de șah.
+
+**Avantajul măsurat al ChArUco** — vederi parțiale, cu ținta depășind cadrul
+(12 poze sintetice de aproape, scale 0.42):
+
+| | poze utile | observație |
+|---|---|---|
+| ChArUco | **12/12** | 10 parțiale, minim 21 din 40 de colțuri |
+| tablă de șah | 4/12 | pierde poza întreagă dacă un colț iese din cadru |
+
+La 102° vrem ținta mare în cadru; ChArUco e singurul care permite asta.
+
+### 5.20 Randarea sintetică fără antialiasing măsoară randorul, nu unealta
+
+A treia oară când aceeași capcană apare sub altă formă (vezi §5.11).
+
+O pagină A3 la 300 DPI are 4961 px lățime. Văzută de la 700 mm cu f = 933 px,
+tabla de 333 mm ocupă ~444 px în cadru — **minificare de 8.9×**. `cv2.remap`
+eșantionează punctual, fără prefiltrare, deci produce aliasing masiv.
+
+Efectul nu e cosmetic. Reproiecția unei ținte ChArUco, aceeași poză:
+
+| sursă | reproiecție |
+|---|---|
+| brută | 0.498 px |
+| prefiltrată, σ = minificare/3 | 0.137 px |
+| prefiltrată, σ = minificare/2 | **0.070 px** |
+
+Pe 25 de vederi, RMS-ul calibrării a scăzut de la 0.341 px la **0.105 px**,
+iar eroarea pe k1 de la +4.1% la +0.7%.
+
+Aproape am tras concluzia greșită că „ChArUco e intrinsec mai zgomotos decât
+detectorul de tablă" — detectorul de tablă sector-based e robust la aliasing,
+decodarea markerilor nu. `synthetic.render_planar_target` prefiltrează acum
+sursa cu un Gaussian potrivit minificării mediane, calculată analitic din
+`px_per_mm · adâncime / focală`.
+
+Limitarea rămasă: un singur Gaussian pe toată sursa. Pentru înclinări sub
+~40° variația de scară în cadru e mică; la înclinări extreme ar trebui blur
+variabil.
+
 ---
 
 ## 6. Cerințe care constrâng software-ul

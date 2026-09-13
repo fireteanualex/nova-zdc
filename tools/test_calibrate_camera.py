@@ -23,6 +23,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from nova.detector_pi import CameraCalibration  # noqa: E402
 import calibrate_camera as cc  # noqa: E402
+import make_calib_target as mt  # noqa: E402
+import synthetic as syn  # noqa: E402
 
 #: Rezolutie redusa (raport 16:9, aceeasi geometrie) ca testul sa dureze
 #: secunde, nu minute. Unealta nu depinde de rezolutie.
@@ -203,6 +205,168 @@ def test_NEGATIV_tabla_gresita_nu_e_gasita():
     return "tipar 7x5 pe tabla 9x6: negasit"
 
 
+# --- F2: calibrare pe 25 de vederi sintetice ale tintei generate de F1 -------
+#
+# Lantul complet: make_calib_target genereaza pagina -> synthetic o randeaza
+# printr-o camera CUNOSCUTA (IMX708 Wide, f = 932.87 px, k1 = -0.05) ->
+# calibrate_camera trebuie sa recupereze camera. Criterii: focala in 2%,
+# k1 in 10%, RMS sub 0.3 px.
+
+SYN_K, SYN_DIST, SYN_WH = syn.imx708()
+SYN_W, SYN_H = SYN_WH
+
+
+def synth_views(kind, cols, rows, n=25, seed=11, scale=1.0, seen_cells=3):
+    """(target, detectii, seturi_colturi, metadate). `scale` < 1 aduce tinta
+    mai aproape, pana cand iese din cadru (vederi partiale)."""
+    page, meta = mt.build(kind, 'A3', cols, rows)
+    ph, pw = page.shape
+    ppm = meta['dpi'] / mt.MM_PER_INCH
+    org = (pw / 2.0, ph / 2.0)
+    sq = meta['square_mm_nominal']
+    target = (cc.CharucoTarget((cols, rows), sq, sq * meta['marker_ratio'])
+              if kind == 'charuco' else
+              cc.CheckerTarget((cols - 1, rows - 1), sq))
+
+    rng = np.random.default_rng(seed)
+    cells = [(c, r) for r in range(seen_cells) for c in range(seen_cells)]
+    dets, sets = [], []
+    f = SYN_K[0, 0]
+    for k in range(n):
+        c, r = cells[k % len(cells)]
+        R = syn.rot(rng.uniform(-28, 28), rng.uniform(-28, 28),
+                    [0, 90, 180, 270][k % 4] + rng.uniform(-8, 8))
+        z = rng.uniform(500, 900) * scale
+        u = (c + 0.5) / seen_cells * SYN_W - SYN_W / 2 + rng.uniform(-60, 60)
+        v = (r + 0.5) / seen_cells * SYN_H - SYN_H / 2 + rng.uniform(-40, 40)
+        t = np.array([u * z / f, v * z / f, z])
+        img = syn.render_planar_target(page, ppm, org, SYN_K, SYN_DIST, R, t,
+                                       SYN_WH, bg=128)
+        got = target.detect(img)
+        if got is None:
+            continue
+        objp, imgp, cor = got
+        dets.append((objp, imgp))
+        sets.append(cor)
+    return target, dets, sets, meta
+
+
+def _check_recovered(cal, eticheta):
+    e_fx = cal.fx / SYN_K[0, 0] - 1
+    e_fy = cal.fy / SYN_K[1, 1] - 1
+    e_k1 = cal.dist[0] / SYN_DIST[0] - 1
+    assert abs(e_fx) < 0.02, f"{eticheta}: fx {e_fx:+.2%} (prag 2%)"
+    assert abs(e_fy) < 0.02, f"{eticheta}: fy {e_fy:+.2%} (prag 2%)"
+    assert abs(e_k1) < 0.10, f"{eticheta}: k1 {e_k1:+.1%} (prag 10%)"
+    assert cal.rms < 0.3, f"{eticheta}: RMS {cal.rms:.3f} px (prag 0.3)"
+    return e_fx, e_fy, e_k1
+
+
+def test_F2_charuco_25_vederi():
+    target, dets, sets, meta = synth_views('charuco', 9, 6, n=25)
+    assert len(dets) >= 20, f"doar {len(dets)}/25 vederi utile"
+    cal = cc.calibrate_points(dets, SYN_WH)
+    e_fx, e_fy, e_k1 = _check_recovered(cal, 'charuco')
+    seen = cc.coverage(SYN_WH, sets)
+    assert all(all(r) for r in seen), cc.coverage_text(seen)
+    return (f"{len(dets)}/25 vederi, fx {e_fx:+.2%}, fy {e_fy:+.2%}, "
+            f"k1 {e_k1:+.1%} ({cal.dist[0]:+.5f}), RMS {cal.rms:.3f} px, "
+            f"acoperire 9/9")
+
+
+def test_F2_checker_25_vederi():
+    target, dets, sets, meta = synth_views('checker', 9, 6, n=25)
+    assert len(dets) >= 20, f"doar {len(dets)}/25 vederi utile"
+    cal = cc.calibrate_points(dets, SYN_WH)
+    e_fx, e_fy, e_k1 = _check_recovered(cal, 'checker')
+    return (f"{len(dets)}/25 vederi, fx {e_fx:+.2%}, fy {e_fy:+.2%}, "
+            f"k1 {e_k1:+.1%}, RMS {cal.rms:.3f} px")
+
+
+def test_F2_NEGATIV_colt_deplasat_8px_respins():
+    """CAZUL NEGATIV cerut: un singur colt mutat cu 8 px intr-o singura poza
+    trebuie scos de filtrarea pe mediana, iar calibrarea sa ramana buna."""
+    target, dets, sets, meta = synth_views('charuco', 9, 6, n=25)
+    assert len(dets) >= 20
+    stricat = 7
+    objp, imgp = dets[stricat]
+    imgp = imgp.copy()
+    imgp[3] = imgp[3] + np.array([8.0, 0.0], np.float32)
+    dets_rele = list(dets)
+    dets_rele[stricat] = (objp, imgp)
+
+    fara_filtru = cc.calibrate_points(dets_rele, SYN_WH, reject_outliers=False)
+    cu_filtru = cc.calibrate_points(dets_rele, SYN_WH, reject_outliers=True)
+
+    assert stricat in cu_filtru.dropped, (
+        f"poza stricata nu a fost respinsa; respinse: {cu_filtru.dropped}")
+    assert cu_filtru.rms < fara_filtru.rms, (
+        f"filtrul nu a imbunatatit RMS-ul: {cu_filtru.rms:.3f} vs "
+        f"{fara_filtru.rms:.3f}")
+    _check_recovered(cu_filtru, 'dupa filtrare')
+    return (f"poza #{stricat} respinsa; RMS {fara_filtru.rms:.3f} -> "
+            f"{cu_filtru.rms:.3f} px; fx "
+            f"{cu_filtru.fx / SYN_K[0, 0] - 1:+.2%}")
+
+
+def test_F2_charuco_tolereaza_vederi_partiale():
+    """Motivul pentru care exista ChArUco in unealta: la 102 grade vrem poze
+    de aproape, unde tinta depaseste cadrul. Tabla clasica pierde poza
+    intreaga; ChArUco tot da puncte."""
+    _, dets_ch, _, _ = synth_views('charuco', 9, 6, n=12, scale=0.42, seed=5)
+    _, dets_ck, _, _ = synth_views('checker', 9, 6, n=12, scale=0.42, seed=5)
+    total = (9 - 1) * (6 - 1)
+    partiale = [d for d in dets_ch if len(d[0]) < total]
+    assert len(dets_ch) > len(dets_ck), (
+        f"ChArUco {len(dets_ch)}/12 vs checker {len(dets_ck)}/12 - "
+        f"testul nu mai demonstreaza avantajul vederilor partiale")
+    assert partiale, 'nicio vedere partiala; apropie mai mult tinta'
+    pmin = min(len(d[0]) for d in partiale)
+    return (f"aproape (scale 0.42): ChArUco {len(dets_ch)}/12 vederi "
+            f"({len(partiale)} partiale, minim {pmin}/{total} colturi), "
+            f"checker {len(dets_ck)}/12")
+
+
+def test_F2_metadate_trasabilitate():
+    """camera_pi.yaml trebuie sa poarte proveniența, nu doar numere."""
+    target, dets, sets, meta = synth_views('charuco', 9, 6, n=25)
+    cal = cc.calibrate_points(dets, SYN_WH)
+    cal.meta.update(target.meta())
+    cal.meta.update({'n_images_accepted': cal.n_images,
+                     'n_images_rejected': len(cal.dropped),
+                     'n_images_attempted': len(dets),
+                     'rms_px': round(float(cal.rms), 4),
+                     'resolution': f"{SYN_W}x{SYN_H}",
+                     'lens_position': 1.63})
+    tmp = os.path.join(tempfile.mkdtemp(), 'cam.yaml')
+    assert cc.save_if_acceptable(cal, tmp) is True
+    back = CameraCalibration.load(tmp)
+    for cheie in ('target_type', 'square_mm_measured', 'marker_mm_measured',
+                  'aruco_dict', 'n_images_accepted', 'n_images_rejected',
+                  'rms_px', 'resolution', 'lens_position', 'inner_corners'):
+        assert cheie in back.meta, f"lipseste metadatul '{cheie}'"
+    assert back.meta['target_type'] == 'charuco'
+    assert back.meta['aruco_dict'] == 'DICT_5X5_250'
+    assert abs(back.meta['lens_position'] - 1.63) < 1e-6
+    assert abs(back.meta['square_mm_measured']
+               - meta['square_mm_nominal']) < 1e-6
+    return (f"{len(back.meta)} metadate reincarcate: {back.meta['target_type']}"
+            f", patrat {back.meta['square_mm_measured']:g} mm, "
+            f"{int(back.meta['n_images_accepted'])} poze, "
+            f"RMS {back.meta['rms_px']:.3f} px")
+
+
+def test_F2_NEGATIV_marker_mai_mare_decat_patratul():
+    try:
+        cc.CharucoTarget((9, 6), 37.0, 40.0)
+        raise AssertionError('a acceptat un marker mai mare decat patratul')
+    except ValueError as e:
+        assert 'marker' in str(e)
+    t = cc.CharucoTarget((9, 6), 37.0)
+    assert abs(t.marker_mm - 27.75) < 1e-6, t.marker_mm
+    return "marker >= patrat: refuzat; implicit 75% = 27.75 mm"
+
+
 TESTS = [
     ('recupereaza intrinsecii din tabla sintetica', test_recupereaza_intrinsecii),
     ('acoperirea grilei 3x3', test_acoperire_grila),
@@ -210,6 +374,13 @@ TESTS = [
     ('NEGATIV: refuza sub 20 imagini', test_NEGATIV_refuza_prea_putine),
     ('salveaza si reincarca', test_salveaza_si_reincarca),
     ('NEGATIV: tipar gresit negasit', test_NEGATIV_tabla_gresita_nu_e_gasita),
+    ('F2 charuco: 25 de vederi sintetice', test_F2_charuco_25_vederi),
+    ('F2 checker: 25 de vederi sintetice', test_F2_checker_25_vederi),
+    ('F2 NEGATIV: colt deplasat 8 px respins',
+     test_F2_NEGATIV_colt_deplasat_8px_respins),
+    ('F2 charuco: vederi partiale', test_F2_charuco_tolereaza_vederi_partiale),
+    ('F2: metadate de trasabilitate', test_F2_metadate_trasabilitate),
+    ('F2 NEGATIV: marker >= patrat', test_F2_NEGATIV_marker_mai_mare_decat_patratul),
 ]
 
 

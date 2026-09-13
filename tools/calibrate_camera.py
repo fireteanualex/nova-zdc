@@ -4,17 +4,28 @@ NOVA - ZDC 2026
 Calibrarea camerei (E1.2): tabla de sah -> cv2.calibrateCamera ->
 config/camera_pi.yaml.
 
-    # pe Pi, captura asistata de la camera:
-    python3 tools/calibrate_camera.py --live --min-images 20
+    # ChArUco (recomandat), pe Pi:
+    python3 tools/calibrate_camera.py --live --target charuco \
+        --cols 9 --rows 6 --square-mm 37 --marker-mm 27.75
 
-    # de oriunde, dintr-un director de imagini deja capturate:
-    python3 tools/calibrate_camera.py --from-dir ~/calib_imgs
+    # tabla de sah clasica, dintr-un director de imagini:
+    python3 tools/calibrate_camera.py --from-dir ~/calib_imgs \
+        --target checker --cols 8 --rows 5 --square-mm 37
 
-Tabla implicita: 9x6 colturi INTERIOARE (adica 10x7 patrate), patrat de 25 mm.
-Verifica cu --rows/--cols/--square-mm ce ai printat. Latura reala a
-patratului conteaza doar pentru scara pozelor de calibrare, nu pentru
-solvePnP pe marker - dar o valoare gresita strica statisticile de
-acoperire, deci pune-o corect.
+**ATENTIE la ce inseamna --cols/--rows.** Pentru `checker` sunt COLTURI
+INTERIOARE; pentru `charuco` sunt PATRATE, ca in constructorul
+`cv2.aruco.CharucoBoard`. `tools/make_calib_target.py` scrie langa PNG un
+JSON cu ambele si afiseaza comanda gata formata - foloseste-o de acolo.
+
+**De ce ChArUco.** La 102 grade FOV vrem tinta mare in cadru, inclusiv poze
+de aproape unde depaseste marginile. Tabla clasica pierde poza intreaga daca
+un singur colt iese din cadru; ChArUco tolereaza vederi partiale si tot
+produce puncte utile, pentru ca fiecare colt e identificat de markerii din
+jur. Masurat: vezi §5.19 din CLAUDE.md.
+
+Latura patratului trebuie sa fie cea MASURATA cu rigla dupa tipar, nu cea
+nominala. Ea da scara pozelor de calibrare; o valoare gresita nu schimba
+intrinsecii, dar strica orice distanta raportata.
 
 De ce nu merge fara asta: la 102 grade FOV distorsiunea radiala e severa la
 margini, iar solvePnP cu coeficienti zero da erori de pozitie care cresc
@@ -55,6 +66,10 @@ LIVE_MIN_MOVE_PX = 40.0
 LIVE_MIN_INTERVAL_S = 0.7
 
 
+#: ChArUco: sub atatea colturi intr-o vedere, poza nu merita pastrata.
+#: `matchImagePoints` cere minimum 4; 6 lasa marja pentru o poza stabila.
+CHARUCO_MIN_CORNERS = 6
+
 #: Peste asta o poza e considerata aberanta (colt localizat gresit, cadru
 #: miscat) si e scoasa inainte de calibrarea finala. Pragul efectiv e
 #: max(OUTLIER_ABS_PX, OUTLIER_REL * mediana), ca sa nu taiem poze bune
@@ -92,6 +107,108 @@ def object_points(pattern, square_mm):
     return objp
 
 
+# --- tinte -------------------------------------------------------------------
+# Fiecare tinta stie sa se gaseasca intr-un cadru si sa intoarca perechile
+# (puncte-obiect, puncte-imagine) pentru acel cadru. ChArUco intoarce un
+# subset diferit la fiecare poza; tabla clasica intoarce mereu tot tiparul.
+
+class CheckerTarget:
+    """Tabla de sah clasica. `pattern` = (colturi_x, colturi_y)."""
+
+    name = 'checker'
+
+    def __init__(self, pattern, square_mm):
+        self.pattern = tuple(pattern)
+        self.square_mm = float(square_mm)
+        self.objp = object_points(self.pattern, self.square_mm)
+
+    def describe(self):
+        return (f"tabla de sah {self.pattern[0]}x{self.pattern[1]} colturi "
+                f"interioare, patrat {self.square_mm:g} mm")
+
+    def detect(self, gray):
+        """(objp, imgp, colturi) sau None."""
+        c = find_corners(gray, self.pattern)
+        if c is None:
+            return None
+        return self.objp, c.reshape(-1, 2).astype(np.float32), c
+
+    def expected_corners(self):
+        return self.pattern[0] * self.pattern[1]
+
+    def meta(self):
+        return {
+            'target_type': 'checker',
+            'inner_corners': f"{self.pattern[0]}x{self.pattern[1]}",
+            'square_mm_measured': self.square_mm,
+        }
+
+
+class CharucoTarget:
+    """ChArUco. `squares` = (coloane, linii) de PATRATE, ca in CharucoBoard.
+
+    Nu exista `cv2.aruco.calibrateCameraCharuco` in OpenCV 5 - a fost
+    eliminat. Calea moderna, si cea folosita aici, e
+    `CharucoDetector.detectBoard` -> `board.matchImagePoints` ->
+    `cv2.calibrateCamera`, care e echivalenta si merge cu vederi partiale.
+    Vezi §5.19 din CLAUDE.md.
+    """
+
+    name = 'charuco'
+
+    def __init__(self, squares, square_mm, marker_mm=None,
+                 dict_name='DICT_5X5_250', min_corners=CHARUCO_MIN_CORNERS):
+        self.squares = tuple(squares)
+        self.square_mm = float(square_mm)
+        self.marker_mm = float(marker_mm if marker_mm else square_mm * 0.75)
+        if self.marker_mm >= self.square_mm:
+            raise ValueError(
+                f"markerul ({self.marker_mm:g} mm) trebuie sa fie mai mic "
+                f"decat patratul ({self.square_mm:g} mm)")
+        self.dict_name = dict_name
+        self.min_corners = int(min_corners)
+        d = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dict_name))
+        self.board = cv2.aruco.CharucoBoard(self.squares, self.square_mm,
+                                            self.marker_mm, d)
+        self.detector = cv2.aruco.CharucoDetector(self.board)
+
+    def describe(self):
+        return (f"ChArUco {self.squares[0]}x{self.squares[1]} patrate "
+                f"({self.squares[0] - 1}x{self.squares[1] - 1} colturi), "
+                f"patrat {self.square_mm:g} mm, marker {self.marker_mm:g} mm, "
+                f"{self.dict_name}")
+
+    def detect(self, gray):
+        cor, ids, _m_cor, _m_ids = self.detector.detectBoard(gray)
+        if cor is None or ids is None or len(cor) < self.min_corners:
+            return None
+        objp, imgp = self.board.matchImagePoints(cor, ids)
+        if objp is None or len(objp) < self.min_corners:
+            return None
+        return (objp.reshape(-1, 3).astype(np.float32),
+                imgp.reshape(-1, 2).astype(np.float32),
+                cor.reshape(-1, 2))
+
+    def expected_corners(self):
+        return (self.squares[0] - 1) * (self.squares[1] - 1)
+
+    def meta(self):
+        return {
+            'target_type': 'charuco',
+            'squares': f"{self.squares[0]}x{self.squares[1]}",
+            'inner_corners': f"{self.squares[0] - 1}x{self.squares[1] - 1}",
+            'square_mm_measured': self.square_mm,
+            'marker_mm_measured': self.marker_mm,
+            'aruco_dict': self.dict_name,
+        }
+
+
+def make_target(kind, cols, rows, square_mm, marker_mm=None):
+    if kind == 'charuco':
+        return CharucoTarget((cols, rows), square_mm, marker_mm)
+    return CheckerTarget((cols, rows), square_mm)
+
+
 def coverage(image_size, corner_sets, grid=COVERAGE_GRID):
     """Matrice booleana grid[r][c]: celula a fost vizitata de vreun colt."""
     w, h = image_size
@@ -112,48 +229,64 @@ def coverage_text(seen):
     return '\n'.join(rows) + f"\n  acoperire: {n}/{total} celule"
 
 
-def _per_image_errors(objp, img_pts, K, dist, rvecs, tvecs):
+def _per_image_errors(obj_pts, img_pts, K, dist, rvecs, tvecs):
+    """Eroarea de reproiectie RMS a fiecarei poze. `obj_pts` e o lista - la
+    ChArUco fiecare vedere are alt subset de colturi."""
     errs = []
-    for pts, rv, tv in zip(img_pts, rvecs, tvecs):
-        proj, _ = cv2.projectPoints(objp, rv, tv, K, dist)
-        d = proj.reshape(-1, 2) - pts.reshape(-1, 2)
+    for op, ip, rv, tv in zip(obj_pts, img_pts, rvecs, tvecs):
+        proj, _ = cv2.projectPoints(op, rv, tv, K, dist)
+        d = proj.reshape(-1, 2) - ip.reshape(-1, 2)
         errs.append(float(np.sqrt(np.mean(np.sum(d * d, axis=1)))))
     return errs
 
 
-def calibrate(corner_sets, image_size, pattern, square_mm,
-              reject_outliers=True):
-    """CameraCalibration din seturile de colturi. Nu salveaza nimic.
+def calibrate_points(detections, image_size, reject_outliers=True,
+                     source_note=''):
+    """CameraCalibration din perechi (obj_pts, img_pts), cate una per poza.
 
     Cu reject_outliers, pozele a caror eroare de reproiectie e aberanta fata
     de restul (colt localizat gresit, cadru miscat) sunt scoase si se
     recalibreaza o data. O singura poza proasta din 24 poate duce RMS-ul
-    de la 0.2 la 1.8 px si ar face unealta sa refuze un set altfel bun -
+    de la 0.15 la 1.8 px si ar face unealta sa refuze un set altfel bun -
     sau, mai rau, sa il accepte cu coeficienti trasi de un punct fals."""
-    objp = object_points(pattern, square_mm)
-    img = [np.asarray(c, dtype=np.float32).reshape(-1, 1, 2)
-           for c in corner_sets]
-    rms, K, dist, rvecs, tvecs = cv2.calibrateCamera([objp] * len(img), img,
-                                                     image_size, None, None)
-    errs = _per_image_errors(objp, img, K, dist, rvecs, tvecs)
+    obj = [np.asarray(o, np.float32).reshape(-1, 1, 3) for o, _ in detections]
+    img = [np.asarray(i, np.float32).reshape(-1, 1, 2) for _, i in detections]
+    rms, K, dist, rvecs, tvecs = cv2.calibrateCamera(obj, img, image_size,
+                                                     None, None)
+    errs = _per_image_errors(obj, img, K, dist, rvecs, tvecs)
     dropped = []
     if reject_outliers and len(img) > 3:
         thr = max(OUTLIER_ABS_PX, OUTLIER_REL * float(np.median(errs)))
         keep = [i for i, e in enumerate(errs) if e <= thr]
         dropped = [i for i in range(len(img)) if i not in keep]
         if dropped and len(keep) >= 3:
+            obj = [obj[i] for i in keep]
             img = [img[i] for i in keep]
             rms, K, dist, rvecs, tvecs = cv2.calibrateCamera(
-                [objp] * len(img), img, image_size, None, None)
-            errs = _per_image_errors(objp, img, K, dist, rvecs, tvecs)
+                obj, img, image_size, None, None)
+            errs = _per_image_errors(obj, img, K, dist, rvecs, tvecs)
     cal = CameraCalibration(K, dist.reshape(-1), image_size[0],
                             image_size[1], rms=rms, n_images=len(img),
-                            source=f"calibrateCamera, tabla {pattern[0]}x"
-                                   f"{pattern[1]} @ {square_mm} mm, "
+                            source=f"calibrateCamera, {source_note}"
                                    f"{len(dropped)} poze respinse, "
                                    f"{time.strftime('%Y-%m-%d %H:%M')}")
     cal.per_image_errors = errs
     cal.dropped = dropped
+    return cal
+
+
+def calibrate(corner_sets, image_size, pattern, square_mm,
+              reject_outliers=True):
+    """Forma clasica, pentru tabla de sah: acelasi tipar in toate pozele."""
+    objp = object_points(pattern, square_mm)
+    dets = [(objp, np.asarray(c, np.float32).reshape(-1, 2))
+            for c in corner_sets]
+    cal = calibrate_points(dets, image_size, reject_outliers,
+                           source_note=f"tabla {pattern[0]}x{pattern[1]} @ "
+                                       f"{square_mm} mm, ")
+    cal.meta.update({'target_type': 'checker',
+                     'inner_corners': f"{pattern[0]}x{pattern[1]}",
+                     'square_mm_measured': float(square_mm)})
     return cal
 
 
@@ -173,8 +306,13 @@ def save_if_acceptable(cal, path, max_rms=MAX_REPROJ_ERR_PX, min_images=20):
     return True
 
 
-def report(cal, seen):
+def report(cal, seen, target=None, n_total=None):
     print(f"\n  {cal}")
+    if target is not None:
+        print(f"  tinta: {target.describe()}")
+    if n_total:
+        print(f"  poze: {n_total} incercate, {cal.n_images} folosite, "
+              f"{len(getattr(cal, 'dropped', []))} respinse ca aberante")
     print(f"  eroare de reproiectie RMS: {cal.rms:.3f} px "
           f"(prag {MAX_REPROJ_ERR_PX})")
     errs = getattr(cal, 'per_image_errors', None)
@@ -198,10 +336,12 @@ def report(cal, seen):
               "extrapolata, nu masurata. Marginile conteaza cel mai mult.")
 
 
-def collect_from_dir(path, pattern):
+def collect_from_dir(path, target):
+    """(detectii, seturi_de_colturi, dimensiune)."""
     src = ImageDirSource(path)
-    sets, size = [], None
+    dets, sets, size = [], [], None
     n = 0
+    total = target.expected_corners()
     while True:
         item = src.read()
         if item is None:
@@ -209,83 +349,129 @@ def collect_from_dir(path, pattern):
         gray, _ = item
         n += 1
         size = (gray.shape[1], gray.shape[0])
-        c = find_corners(gray, pattern)
-        if c is None:
-            print(f"    [{n}] tabla negasita")
+        got = target.detect(gray)
+        if got is None:
+            print(f"    [{n}] tinta negasita")
             continue
-        sets.append(c)
-        print(f"    [{n}] ok ({len(sets)} acceptate)")
-    return sets, size
+        objp, imgp, cor = got
+        dets.append((objp, imgp))
+        sets.append(cor)
+        partial = '' if len(objp) == total else f" (partiala: {len(objp)}/{total})"
+        print(f"    [{n}] ok, {len(objp)} puncte{partial} "
+              f"({len(dets)} acceptate)")
+    return dets, sets, size
 
 
-def collect_live(pattern, min_images, max_images):
+def collect_live(target, min_images, max_images):
     from nova.detector_pi import PiCameraSource
     src = PiCameraSource(verbose=True)
     print(f"\n  Misca tabla prin TOT cadrul, mai ales pe margini si colturi."
           f"\n  Accept un cadru cand tabla e gasita si s-a mutat >= "
           f"{LIVE_MIN_MOVE_PX:.0f} px. Ctrl-C cand ai destule.\n")
-    sets, last_c, last_t = [], None, 0.0
+    dets, sets, last_c, last_t = [], [], None, 0.0
     size = TRACK_SIZE
+    lens = None
+    total = target.expected_corners()
     try:
-        while len(sets) < max_images:
+        while len(dets) < max_images:
             gray, _ = src.read()
             size = (gray.shape[1], gray.shape[0])
-            c = find_corners(gray, pattern)
+            got = target.detect(gray)
             now = time.monotonic()
-            if c is None:
-                print("\r  tabla: negasita           ", end='', flush=True)
+            if got is None:
+                print("\r  tinta: negasita           ", end='', flush=True)
                 continue
+            objp, imgp, c = got
             moved = (last_c is None
                      or np.linalg.norm(c.mean(axis=0) - last_c.mean(axis=0))
                      >= LIVE_MIN_MOVE_PX)
             if moved and now - last_t >= LIVE_MIN_INTERVAL_S:
+                dets.append((objp, imgp))
                 sets.append(c)
                 last_c, last_t = c, now
                 seen = coverage(size, sets)
                 cov = sum(sum(r) for r in seen)
-                print(f"\r  acceptat #{len(sets)}  acoperire {cov}/9  "
-                      f"{'(minim atins)' if len(sets) >= min_images else ''}"
+                print(f"\r  acceptat #{len(dets)}  {len(objp)}/{total} puncte"
+                      f"  acoperire {cov}/9  "
+                      f"{'(minim atins)' if len(dets) >= min_images else ''}"
                       f"      ", flush=True)
             else:
-                print("\r  tabla: gasita, misc-o     ", end='', flush=True)
+                print("\r  tinta: gasita, misc-o     ", end='', flush=True)
     except KeyboardInterrupt:
         print()
     finally:
+        # LensPosition-ul e parte din calibrare: focusul schimba intrinsecii.
+        try:
+            lens = src.picam2.capture_metadata().get('LensPosition')
+        except Exception:                                   # noqa: BLE001
+            lens = None
         src.close()
-    return sets, size
+    return dets, sets, size, lens
 
 
 def main():
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('--from-dir', help='director cu imagini de tabla')
+    p.add_argument('--from-dir', help='director cu imagini ale tintei')
     p.add_argument('--live', action='store_true',
                    help='captura asistata de la picamera2')
-    p.add_argument('--cols', type=int, default=9, help='colturi interioare pe orizontala')
-    p.add_argument('--rows', type=int, default=6, help='colturi interioare pe verticala')
-    p.add_argument('--square-mm', type=float, default=25.0)
+    p.add_argument('--target', choices=('charuco', 'checker'),
+                   default='charuco')
+    p.add_argument('--cols', type=int, default=9,
+                   help='charuco: PATRATE | checker: COLTURI interioare')
+    p.add_argument('--rows', type=int, default=6,
+                   help='charuco: PATRATE | checker: COLTURI interioare')
+    p.add_argument('--square-mm', type=float, default=None,
+                   help='latura MASURATA a patratului, dupa tipar')
+    p.add_argument('--marker-mm', type=float, default=None,
+                   help='charuco: latura masurata a markerului (implicit 75%%)')
     p.add_argument('--min-images', type=int, default=20)
     p.add_argument('--max-images', type=int, default=60)
     p.add_argument('--out', default=DEFAULT_OUT)
     p.add_argument('--max-rms', type=float, default=MAX_REPROJ_ERR_PX)
     a = p.parse_args()
 
-    pattern = (a.cols, a.rows)
+    if a.square_mm is None:
+        p.error('--square-mm e obligatoriu: latura MASURATA cu rigla dupa '
+                'tipar, nu cea nominala')
+    try:
+        target = make_target(a.target, a.cols, a.rows, a.square_mm,
+                             a.marker_mm)
+    except ValueError as e:
+        print(f"\n  REFUZ: {e}\n")
+        return 1
+    print(f"  tinta: {target.describe()}")
+
+    lens = None
     if a.from_dir:
-        sets, size = collect_from_dir(a.from_dir, pattern)
+        dets, sets, size = collect_from_dir(a.from_dir, target)
     elif a.live:
-        sets, size = collect_live(pattern, a.min_images, a.max_images)
+        dets, sets, size, lens = collect_live(target, a.min_images,
+                                              a.max_images)
     else:
         p.error('alege --from-dir sau --live')
 
-    if len(sets) < a.min_images:
-        print(f"\n  {len(sets)} imagini utile, minimum {a.min_images}. "
+    n_total = len(dets)
+    if n_total < a.min_images:
+        print(f"\n  {n_total} imagini utile, minimum {a.min_images}. "
               f"Nu calibrez.")
         return 1
-    print(f"\n  calibrez din {len(sets)} imagini la {size[0]}x{size[1]} ...")
-    cal = calibrate(sets, size, pattern, a.square_mm)
-    report(cal, coverage(size, sets))
+    print(f"\n  calibrez din {n_total} imagini la {size[0]}x{size[1]} ...")
+    cal = calibrate_points(dets, size,
+                           source_note=f"{target.describe()}, ")
+    # Trasabilitate pentru Compliance Matrix, scrisa in camera_pi.yaml.
+    cal.meta.update(target.meta())
+    cal.meta.update({
+        'n_images_accepted': cal.n_images,
+        'n_images_rejected': len(cal.dropped),
+        'n_images_attempted': n_total,
+        'rms_px': round(float(cal.rms), 4),
+        'resolution': f"{size[0]}x{size[1]}",
+        'lens_position': lens,
+        'calibrated_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+    })
+    report(cal, coverage(size, sets), target, n_total)
     return 0 if save_if_acceptable(cal, a.out, a.max_rms, a.min_images) else 1
 
 

@@ -106,7 +106,7 @@ class CameraCalibration:
     """
 
     def __init__(self, K, dist, width, height, rms=None, n_images=0,
-                 source='necunoscut'):
+                 source='necunoscut', meta=None):
         self.K = np.asarray(K, dtype=np.float64).reshape(3, 3)
         self.dist = np.asarray(dist, dtype=np.float64).reshape(-1)
         self.width = int(width)
@@ -114,6 +114,11 @@ class CameraCalibration:
         self.rms = None if rms is None else float(rms)
         self.n_images = int(n_images)
         self.source = source
+        #: Trasabilitate pentru Compliance Matrix: tipul de tinta, latura
+        #: MASURATA a patratului, cate poze au fost acceptate si cate
+        #: respinse, LensPosition-ul folosit. Fara ele, fisierul de calibrare
+        #: e un set de numere fara proveniența.
+        self.meta = dict(meta or {})
 
     @property
     def fx(self):
@@ -169,6 +174,17 @@ class CameraCalibration:
         fs.write('source', self.source)
         fs.write('hfov_deg', self.hfov_deg())
         fs.write('vfov_deg', self.vfov_deg())
+        for key in sorted(self.meta):
+            val = self.meta[key]
+            if val is None:
+                continue
+            name = 'meta_' + str(key)
+            if isinstance(val, bool):
+                fs.write(name, str(val))
+            elif isinstance(val, (int, float)):
+                fs.write(name, float(val))
+            else:
+                fs.write(name, str(val))
         fs.release()
 
     @classmethod
@@ -188,11 +204,21 @@ class CameraCalibration:
         rms = fs.getNode('rms_reprojection_px').real()
         n = int(fs.getNode('n_images').real())
         src = fs.getNode('source').string()
+        meta = {}
+        root = fs.root()
+        for key in (root.keys() if hasattr(root, 'keys') else []):
+            if not key.startswith('meta_'):
+                continue
+            node = fs.getNode(key)
+            if node.isString():
+                meta[key[5:]] = node.string()
+            elif node.isReal() or node.isInt():
+                meta[key[5:]] = node.real()
         fs.release()
         if K is None or dist is None or w <= 0 or h <= 0:
             raise ValueError(f"{path}: campuri lipsa sau invalide")
         cal = cls(K, dist, w, h, rms=None if rms < 0 else rms, n_images=n,
-                  source=src or path)
+                  source=src or path, meta=meta)
         if require_real:
             if not cal.is_real():
                 raise ValueError(

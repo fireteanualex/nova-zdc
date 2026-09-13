@@ -50,12 +50,21 @@ def _rays(w, h, K, dist):
 
 
 def render_planar_target(src_img, px_per_mm, origin_px, K, dist, R, t,
-                         out_wh, bg=128, interp=cv2.INTER_LINEAR):
+                         out_wh, bg=128, interp=cv2.INTER_LINEAR,
+                         antialias=True):
     """Cadrul vazut de camera. `src_img` e imaginea tintei (gri, uint8).
 
     px_per_mm, origin_px: un punct (x_mm, y_mm) din planul tintei se afla la
     pixelul (origin_px[0] + x_mm*px_per_mm, origin_px[1] + y_mm*px_per_mm)
     in imaginea-sursa.
+
+    **antialias**: o pagina A3 la 300 DPI are ~4961 px latime; vazuta de la
+    700 mm ocupa ~450 px in cadru, deci minificare de ~9x. `cv2.remap`
+    esantioneaza punctual, fara prefiltrare, deci produce aliasing masiv.
+    Efectul nu e cosmetic: masurat, reproiectia unei tinte ChArUco a scazut
+    de la 0.498 px la 0.070 px doar prin prefiltrarea sursei. Fara asta,
+    testul masoara aliasingul randorului, nu unealta - exact capcana din
+    §5.11. Prefiltram sursa cu un Gaussian potrivit minificarii.
     """
     w, h = out_wh
     K = np.asarray(K, np.float64)
@@ -77,6 +86,21 @@ def render_planar_target(src_img, px_per_mm, origin_px, K, dist, R, t,
     bad = ~np.isfinite(lam) | (lam <= 0)   # in spatele camerei sau paralel
     map_x[bad] = -1
     map_y[bad] = -1
+
+    if antialias:
+        good = ~bad
+        if np.any(good):
+            # Adancimea mediana a planului in cadru; minificarea e
+            # px_per_mm * adancime / focala. Un singur Gaussian pe toata
+            # sursa: pentru inclinarile noastre (sub ~40 grade) variatia de
+            # scara in cadru e mica. La inclinari extreme ar trebui blur
+            # variabil - de retinut daca se adauga astfel de teste.
+            depth = np.median((lam[good] * rays[good, 2]))
+            f = 0.5 * (K[0, 0] + K[1, 1])
+            minif = float(px_per_mm * depth / f)
+            if minif > 1.5:
+                src_img = cv2.GaussianBlur(src_img, (0, 0), minif / 2.0)
+
     return cv2.remap(src_img, map_x.reshape(h, w), map_y.reshape(h, w),
                      interp, borderMode=cv2.BORDER_CONSTANT, borderValue=bg)
 
