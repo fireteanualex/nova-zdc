@@ -354,6 +354,54 @@ def test_calibrare_salvare_incarcare_refuz():
     return "roundtrip ok; geometric, rms>0.5 si lipsa -> refuzate"
 
 
+# --- regresie pentru adaugirile cerute de F2 si F3 ---------------------------
+# PROMPT_RUNDA4_AUTONOM cere sa nu se atinga nova/detector_pi.py, cu motivul
+# ca o regresie n-ar putea fi verificata. Cele doua adaugiri (meta pe
+# CameraCalibration, last_corners pe ArucoMarkerDetector) au fost necesare
+# pentru F2 si F3; testele de mai jos exista tocmai ca sa acopere motivul.
+
+def test_regresie_meta_nu_strica_calibrarea():
+    """meta e optional: o calibrare fara el se salveaza si se incarca la fel
+    ca inainte, iar require_real ramane la fel de strict."""
+    cal = synthetic_calibration()
+    assert cal.meta == {}, cal.meta
+    tmp = os.path.join(tempfile.mkdtemp(), 'cam.yaml')
+    cal.save(tmp)
+    back = CameraCalibration.load(tmp)
+    assert back.meta == {} and np.allclose(back.K, cal.K)
+    assert back.rms == cal.rms and back.n_images == cal.n_images
+    cal.meta = {'target_type': 'charuco', 'square_mm_measured': 37.0}
+    cal.save(tmp)
+    b2 = CameraCalibration.load(tmp)
+    assert b2.meta['target_type'] == 'charuco'
+    assert abs(b2.meta['square_mm_measured'] - 37.0) < 1e-9
+    assert np.allclose(b2.K, cal.K) and np.allclose(b2.dist, cal.dist)
+    return "fara meta: identic cu inainte; cu meta: dus-intors corect"
+
+
+def test_regresie_last_corners_nu_schimba_Detection():
+    """last_corners e doar observabilitate: Detection si contorii raman
+    neschimbati, iar la nedetectie e None."""
+    cal = synthetic_calibration()
+    d = ArucoMarkerDetector(cal)
+    assert d.last_corners is None
+    t = (0.2, -0.1, 7.0)
+    frame, corners = render(cal, R_FLAT, t)
+    det = d.detect(frame, 3.5)
+    assert det is not None and d.last_corners is not None
+    assert d.last_corners.shape == (4, 2)
+    e = float(np.max(np.linalg.norm(d.last_corners - corners, axis=1)))
+    assert e < 1.0, f"last_corners la {e:.2f} px de adevar"
+    # campurile Detection sunt cele dinainte
+    assert set(det.__dataclass_fields__) == {
+        't', 'angle_x', 'angle_y', 'distance_m', 'marker_px', 'range_m'}
+    assert det.t == 3.5
+    # dupa un cadru gol, last_corners revine la None
+    assert d.detect(np.full((H, W), 110, np.uint8), 4.0) is None
+    assert d.last_corners is None, 'last_corners a ramas din cadrul anterior'
+    return f"colturi la {e:.3f} px de adevar; Detection neschimbat; None la ratare"
+
+
 TESTS = [
     ('direct dedesubt, 8 m', test_direct_dedesubt_8m),
     ('offset lateral, conventia de montaj', test_offset_lateral_conventia_de_montaj),
@@ -370,6 +418,9 @@ TESTS = [
     ('PiDetector: latenta reala (desktop)', test_pidetector_latenta_reala_pe_desktop),
     ('PiDetector: fir separat', test_pidetector_fir_separat),
     ('calibrare: salvare/incarcare/refuz', test_calibrare_salvare_incarcare_refuz),
+    ('REGRESIE: meta nu strica calibrarea', test_regresie_meta_nu_strica_calibrarea),
+    ('REGRESIE: last_corners nu schimba Detection',
+     test_regresie_last_corners_nu_schimba_Detection),
 ]
 
 

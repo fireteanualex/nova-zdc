@@ -251,36 +251,52 @@ def synth_views(kind, cols, rows, n=25, seed=11, scale=1.0, seen_cells=3):
     return target, dets, sets, meta
 
 
+def _recovery_errors(cal):
+    return {
+        'fx': cal.fx / SYN_K[0, 0] - 1,
+        'fy': cal.fy / SYN_K[1, 1] - 1,
+        'cx': (cal.cx - SYN_K[0, 2]) / SYN_W,
+        'cy': (cal.cy - SYN_K[1, 2]) / SYN_W,
+        'k1': cal.dist[0] / SYN_DIST[0] - 1,
+        'rms': cal.rms,
+    }
+
+
 def _check_recovered(cal, eticheta):
-    e_fx = cal.fx / SYN_K[0, 0] - 1
-    e_fy = cal.fy / SYN_K[1, 1] - 1
-    e_k1 = cal.dist[0] / SYN_DIST[0] - 1
-    assert abs(e_fx) < 0.02, f"{eticheta}: fx {e_fx:+.2%} (prag 2%)"
-    assert abs(e_fy) < 0.02, f"{eticheta}: fy {e_fy:+.2%} (prag 2%)"
-    assert abs(e_k1) < 0.10, f"{eticheta}: k1 {e_k1:+.1%} (prag 10%)"
+    """Pragurile din PROMPT_RUNDA4_AUTONOM: fx/fy sub 1%, cx/cy sub 1% din
+    latime, k1 sub 10%, RMS sub 0.3 px."""
+    e = _recovery_errors(cal)
+    assert abs(e['fx']) < 0.01, f"{eticheta}: fx {e['fx']:+.2%} (prag 1%)"
+    assert abs(e['fy']) < 0.01, f"{eticheta}: fy {e['fy']:+.2%} (prag 1%)"
+    assert abs(e['cx']) < 0.01, f"{eticheta}: cx {e['cx']:+.2%} din latime"
+    assert abs(e['cy']) < 0.01, f"{eticheta}: cy {e['cy']:+.2%} din latime"
+    assert abs(e['k1']) < 0.10, f"{eticheta}: k1 {e['k1']:+.1%} (prag 10%)"
     assert cal.rms < 0.3, f"{eticheta}: RMS {cal.rms:.3f} px (prag 0.3)"
-    return e_fx, e_fy, e_k1
+    return e['fx'], e['fy'], e['k1']
 
 
 def test_F2_charuco_25_vederi():
     target, dets, sets, meta = synth_views('charuco', 9, 6, n=25)
     assert len(dets) >= 20, f"doar {len(dets)}/25 vederi utile"
     cal = cc.calibrate_points(dets, SYN_WH)
-    e_fx, e_fy, e_k1 = _check_recovered(cal, 'charuco')
+    _check_recovered(cal, 'charuco')
+    e = _recovery_errors(cal)
     seen = cc.coverage(SYN_WH, sets)
     assert all(all(r) for r in seen), cc.coverage_text(seen)
-    return (f"{len(dets)}/25 vederi, fx {e_fx:+.2%}, fy {e_fy:+.2%}, "
-            f"k1 {e_k1:+.1%} ({cal.dist[0]:+.5f}), RMS {cal.rms:.3f} px, "
-            f"acoperire 9/9")
+    return (f"{len(dets)}/25, fx {e['fx']:+.2%}, fy {e['fy']:+.2%}, "
+            f"cx {e['cx']:+.3%} cy {e['cy']:+.3%} din latime, "
+            f"k1 {e['k1']:+.1%}, RMS {cal.rms:.3f} px, acoperire 9/9")
 
 
 def test_F2_checker_25_vederi():
     target, dets, sets, meta = synth_views('checker', 9, 6, n=25)
     assert len(dets) >= 20, f"doar {len(dets)}/25 vederi utile"
     cal = cc.calibrate_points(dets, SYN_WH)
-    e_fx, e_fy, e_k1 = _check_recovered(cal, 'checker')
-    return (f"{len(dets)}/25 vederi, fx {e_fx:+.2%}, fy {e_fy:+.2%}, "
-            f"k1 {e_k1:+.1%}, RMS {cal.rms:.3f} px")
+    _check_recovered(cal, 'checker')
+    e = _recovery_errors(cal)
+    return (f"{len(dets)}/25, fx {e['fx']:+.2%}, fy {e['fy']:+.2%}, "
+            f"cx {e['cx']:+.3%} cy {e['cy']:+.3%} din latime, "
+            f"k1 {e['k1']:+.1%}, RMS {cal.rms:.3f} px")
 
 
 def test_F2_NEGATIV_colt_deplasat_8px_respins():
@@ -367,6 +383,61 @@ def test_F2_NEGATIV_marker_mai_mare_decat_patratul():
     return "marker >= patrat: refuzat; implicit 75% = 27.75 mm"
 
 
+def test_F2_NEGATIV_prea_putine_poze():
+    """12 poze: refuz, chiar daca sunt perfecte."""
+    target, dets, sets, meta = synth_views('charuco', 9, 6, n=12, seed=3)
+    cal = cc.calibrate_points(dets, SYN_WH)
+    tmp = os.path.join(tempfile.mkdtemp(), 'cam.yaml')
+    assert cc.save_if_acceptable(cal, tmp, min_images=20) is False
+    assert not os.path.exists(tmp), 'a scris fisierul desi a refuzat'
+    return f"{len(dets)} poze (RMS {cal.rms:.3f} px, altfel bun): refuzat"
+
+
+def test_F2_NEGATIV_calibrare_degenerata():
+    """24 de poze din ACEEASI poza: geometria nu constrange intrinsecii.
+
+    Modul de esec periculos ar fi: RMS mic si parametri gresiti, adica o
+    calibrare care pare buna si nu e. Testul verifica ce se intampla de
+    fapt si cere ca macar unul dintre semnale sa traga alarma."""
+    page, meta = mt.build('charuco', 'A3', 9, 6)
+    ph, pw = page.shape
+    ppm = meta['dpi'] / mt.MM_PER_INCH
+    sq = meta['square_mm_nominal']
+    target = cc.CharucoTarget((9, 6), sq, sq * meta['marker_ratio'])
+    R, t = syn.rot(0, 0, 0), np.array([0.0, 0.0, 700.0])
+    img = syn.render_planar_target(page, ppm, (pw / 2, ph / 2), SYN_K,
+                                   SYN_DIST, R, t, SYN_WH, bg=128)
+    got = target.detect(img)
+    assert got is not None
+    dets = [(got[0], got[1])] * 24
+    sets = [got[2]] * 24
+
+    try:
+        cal = cc.calibrate_points(dets, SYN_WH)
+    except cv2.error as e:
+        return f"calibrarea a esuat explicit: {str(e).splitlines()[-1][:60]}"
+
+    e = _recovery_errors(cal)
+    seen = cc.coverage(SYN_WH, sets)
+    n_cells = sum(sum(r) for r in seen)
+    cal.n_images = max(cal.n_images, 24)       # ca refuzul sa nu vina din nr.
+
+    # Cifrele care fac modul de esec periculos: RMS excelent, parametri absurzi
+    assert cal.rms < 0.3, f"RMS {cal.rms:.3f} - testul presupunea RMS mic"
+    assert abs(e['fx']) > 0.5, (
+        f"fx {e['fx']:+.1%} - setul degenerat a iesit totusi corect; "
+        f"testul nu mai demonstreaza nimic")
+
+    tmp = os.path.join(tempfile.mkdtemp(), 'cam.yaml')
+    salvat = cc.save_if_acceptable(cal, tmp, min_images=20, seen=seen)
+    assert salvat is False, (
+        f"MOD DE ESEC PERICULOS: calibrare acceptata cu fx {e['fx']:+.1%} si "
+        f"k1 {e['k1']:+.1%}, doar pentru ca RMS-ul e {cal.rms:.3f} px")
+    assert not os.path.exists(tmp)
+    return (f"RMS {cal.rms:.3f} px (arata excelent) dar fx {e['fx']:+.0%}, "
+            f"k1 {e['k1']:+.0%}, acoperire {n_cells}/9 -> REFUZAT de garzi")
+
+
 TESTS = [
     ('recupereaza intrinsecii din tabla sintetica', test_recupereaza_intrinsecii),
     ('acoperirea grilei 3x3', test_acoperire_grila),
@@ -381,6 +452,8 @@ TESTS = [
     ('F2 charuco: vederi partiale', test_F2_charuco_tolereaza_vederi_partiale),
     ('F2: metadate de trasabilitate', test_F2_metadate_trasabilitate),
     ('F2 NEGATIV: marker >= patrat', test_F2_NEGATIV_marker_mai_mare_decat_patratul),
+    ('F2 NEGATIV: 12 poze, refuz', test_F2_NEGATIV_prea_putine_poze),
+    ('F2 NEGATIV: calibrare degenerata', test_F2_NEGATIV_calibrare_degenerata),
 ]
 
 

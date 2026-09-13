@@ -1,0 +1,26 @@
+{
+  "type": "checker",
+  "paper": "A3",
+  "paper_mm": [
+    420.0,
+    297.0
+  ],
+  "dpi": 300,
+  "squares_cols": 9,
+  "squares_rows": 6,
+  "inner_corners_cols": 8,
+  "inner_corners_rows": 5,
+  "square_mm_nominal": 37.0,
+  "board_mm": [
+    333.0,
+    222.0
+  ],
+  "margin_mm_actual": [
+    43.5,
+    37.5
+  ],
+  "page_px": [
+    4961,
+    3508
+  ]
+}

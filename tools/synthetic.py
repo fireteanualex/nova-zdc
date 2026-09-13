@@ -20,6 +20,16 @@ Conventii:
   - tinta sta in planul z=0 al cadrului ei propriu, in MILIMETRI
   - (x_mm, y_mm) -> pixel in imaginea-sursa prin `px_per_mm` si `origin_px`
   - R, t duc un punct din cadrul tintei in cadrul camerei: p_cam = R @ p + t
+
+**Axa y a cadrului tintei e IN JOS**, ca in imagine: un punct cu y_mm mai
+mare cade mai jos in imaginea-sursa. Deci o tinta plana, dreapta, vazuta de
+sus, e `R = identitate` - normala ei iese dinspre camera, ca a unei foi pe
+masa privita de deasupra.
+
+Capcana pe care am calcat-o o data: daca definesti colturile obiectului cu y
+in SUS (conventia uzuala in 3D) si le randezi prin maparea de aici, iese o
+imagine OGLINDITA. Un marker ArUco oglindit nu se decodeaza deloc - nu da
+nici macar o detectie gresita, pur si simplu tace. Vezi §5.21 din CLAUDE.md.
 """
 
 import math
@@ -157,30 +167,35 @@ def aruco_marker_image(marker_id, dictionary, module_px=50, quiet_modules=1):
     return img, coded, q
 
 
+#: Colturile markerului in cadrul lui propriu, cu y IN JOS, in ordinea pe
+#: care o raporteaza `detectMarkers`: stanga-sus, dreapta-sus, dreapta-jos,
+#: stanga-jos. Cu y in jos, "sus" inseamna y negativ.
+def marker_corners_mm(size_mm):
+    s = size_mm / 2.0
+    return np.array([[-s, -s], [s, -s], [s, s], [-s, s]], np.float64)
+
+
 def render_marker(K, dist, out_wh, R, t_m, marker_id=26, size_m=0.48,
                   dictionary=None, bg=110, module_px=50):
     """Marker ArUco la poza (R, t_m) in METRI. Intoarce (cadru, colturi_px).
 
-    Colturile intoarse sunt ale ZONEI CODATE, in ordinea ArUco
-    (stanga-sus, dreapta-sus, dreapta-jos, stanga-jos), asa cum le va
-    raporta detectorul.
+    Colturile intoarse sunt ale markerului intreg (date + bordura neagra),
+    adica exact ce raporteaza `detectMarkers`, in aceeasi ordine.
     """
     if dictionary is None:
         dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     src, coded_px, q = aruco_marker_image(marker_id, dictionary, module_px)
-    # Scara: latura codata (size_m) ocupa coded_px pixeli-sursa.
+    # Scara: latura markerului (size_m) ocupa coded_px pixeli-sursa.
     size_mm = size_m * 1000.0
     px_per_mm = coded_px / size_mm
     origin_px = (q + coded_px / 2.0, q + coded_px / 2.0)   # centrul markerului
     t_mm = np.asarray(t_m, np.float64) * 1000.0
     frame = render_planar_target(src, px_per_mm, origin_px, K, dist, R, t_mm,
                                  out_wh, bg=bg)
-    s = size_mm / 2.0
-    corners_mm = np.array([[-s, s], [s, s], [s, -s], [-s, -s]], np.float64)
-    corners_px = project(K, dist, R, t_mm, corners_mm)
+    corners_px = project(K, dist, R, t_mm, marker_corners_mm(size_mm))
     return frame, corners_px
 
 
-#: Marker pe sol, camera priveste in jos cu varful imaginii spre nas:
-#: normala markerului catre camera, "sus"-ul markerului sus in imagine.
-R_MARKER_FLAT = np.diag([1.0, -1.0, -1.0])
+#: Marker plan, drept, vazut de deasupra. Cu conventia y-in-jos de mai sus,
+#: asta e pur si simplu identitatea - vezi nota din capul modulului.
+R_MARKER_FLAT = np.eye(3)

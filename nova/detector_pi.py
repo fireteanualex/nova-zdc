@@ -272,6 +272,11 @@ class ArucoMarkerDetector:
         # starea pentru ROI
         self.last_center = None
         self.last_range_m = None
+        #: Colturile ultimei detectii (cadru intreg, ordinea ArUco). Nu intra
+        #: in Detection - contractul cu masina de stari ramane neschimbat -
+        #: dar tools/compare_detectors.py are nevoie de ele ca sa compare
+        #: cele doua implementari pe colturi, nu doar pe distanta.
+        self.last_corners = None
 
         # contoare
         self.n_frames = 0
@@ -328,9 +333,11 @@ class ArucoMarkerDetector:
     def detect(self, gray, t_capture):
         """Detection sau None. `gray` e cadrul intreg, uint8, un canal."""
         self.n_frames += 1
+        self.last_corners = None
         corners, used_roi = self._find(gray)
         if corners is None:
             return None
+        self.last_corners = corners
 
         marker_px = self.side_px(corners)
         # §5.2: markerul trebuie sa incapa INTREG in cadru. Sub ~0.38 m nu

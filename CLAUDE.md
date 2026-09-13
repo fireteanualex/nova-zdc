@@ -873,6 +873,73 @@ Limitarea rămasă: un singur Gaussian pe toată sursa. Pentru înclinări sub
 ~40° variația de scară în cadru e mică; la înclinări extreme ar trebui blur
 variabil.
 
+### 5.21 Un marker ArUco oglindit nu se detectează — și tace
+
+Randorul sintetic mapează un punct `(x_mm, y_mm)` al țintei la pixelul
+`origin + (x, y)·px_per_mm`, deci **axa y a cadrului țintei e în jos**, ca în
+imagine. Dacă definești colțurile obiectului cu y în **sus** (convenția
+uzuală în 3D) și le randezi prin acea mapare, iese o imagine **oglindită**.
+
+Un marker ArUco oglindit nu produce o detecție greșită. Nu produce nimic:
+`detectMarkers` întoarce pur și simplu zero markeri, la orice distanță și
+orice rezoluție a sursei. Am pierdut o oră căutând în sampling și în
+antialiasing înainte să mă uit la orientare.
+
+Semnul care distinge cauzele: dacă e o problemă de rezoluție sau de blur,
+detecția merge la unele distanțe și cade la altele. Dacă tace la **toate**
+distanțele, inclusiv la 448 px unde markerul umple un sfert din cadru, e o
+problemă de orientare sau de dicționar, nu de calitate a imaginii.
+
+### 5.22 RMS-ul nu e un criteriu de valabilitate a calibrării
+
+Măsurat: **24 de poze identice** dau `RMS = 0.061 px` — mai bun decât un set
+bun (0.105 px) — cu **`fx` greșit cu +754%** și `k1` cu +429%.
+
+Motivul e că RMS-ul măsoară cât de bine se potrivește modelul cu punctele
+date, nu dacă punctele spun ceva despre cameră. Un set de poze care nu
+constrânge geometria are o infinitate de soluții echivalente, iar
+`calibrateCamera` alege una — care reproiectează perfect și nu descrie nimic.
+
+Ăsta e un mod de eșec periculos: o calibrare care *arată* excelentă și e
+inutilizabilă. `tools/calibrate_camera.py` are acum două gărzi, verificate
+**după** pragul de RMS tocmai pentru că un set degenerat îl trece:
+
+| gardă | prag | ce prinde |
+|---|---|---|
+| focala față de cea geometrică | `FOCAL_SANITY_REL` 30% | cazul de mai sus (+754%) |
+| acoperirea cadrului | `MIN_COVERAGE_CELLS` 5 din 9 | poze îngrămădite într-o zonă |
+
+Aceeași logică se aplică pe teren: dacă cineva ține tabla nemișcată și apasă
+de 25 de ori, RMS-ul va fi superb.
+
+### 5.23 Acuratețea distanței scade cu `marker_px`, nu cu distanța
+
+Măsurat pe 15 poze sintetice, marker de 480 mm, colțuri fără zgomot adăugat:
+
+| distanță | `marker_px` | eroare pe distanță | eroare pe colțuri |
+|---|---|---|---|
+| 2.45 m | 202 | +0.12% | 0.70 px |
+| 6.00 m | 74 | +0.22% | 0.28 px |
+| 9.80 m | 49 | +0.38% | 0.51 px |
+| 12.7 m | 36 | +0.72% | 0.35 px |
+| 15.0 m | **29** | **+1.99%** | 0.68 px |
+
+Relația e aproximativ `eroare_relativă ≈ eroare_colțuri / marker_px`, ceea ce
+se verifică: 0.68/29 = 2.3% față de 1.99% măsurat.
+
+Consecințe practice:
+
+- La 5 m (90 px) așteptăm ~0.5% eroare de range — criteriul E2 de sub 5% e
+  confortabil.
+- La 12 m (37 px) așteptăm 1–2% **din zgomotul de colțuri singur**, înainte
+  de orice efect de lumină sau blur.
+- Explică observația din §4: zgomotul la altitudine nu contează pentru
+  aterizare, pentru că precizia se decide în ultimii 50 cm, unde `marker_px`
+  e ~900 și aceeași eroare de colțuri înseamnă 0.08%.
+
+Cifrele sunt sintetice, fără blur de mișcare și fără hârtie reală. E2 le
+poate doar înrăutăți.
+
 ---
 
 ## 6. Cerințe care constrâng software-ul

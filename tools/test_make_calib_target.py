@@ -315,6 +315,28 @@ def test_margine_si_alb_negru():
             f"{meta['square_mm_nominal']:g} mm; doar 2 niveluri de gri")
 
 
+def test_dimensiuni_px_exacte():
+    """mm x 300/25.4, eroare 0 px: pagina, tabla si patratul."""
+    for kind in ('checker', 'charuco'):
+        page, meta, _, _ = build_page(kind, 9, 6)
+        dpi = meta['dpi']
+        ph, pw = page.shape
+        for mm, got, eticheta in (
+                (meta['paper_mm'][0], pw, 'latime pagina'),
+                (meta['paper_mm'][1], ph, 'inaltime pagina')):
+            astept = mt.mm_to_px(mm, dpi)
+            assert got == astept, (f"{kind} {eticheta}: {got} px, astept "
+                                   f"{astept} px pentru {mm} mm")
+        spx = mt.mm_to_px(meta['square_mm_nominal'], dpi)
+        for n, mm, eticheta in (
+                (meta['squares_cols'], meta['board_mm'][0], 'latime tabla'),
+                (meta['squares_rows'], meta['board_mm'][1], 'inaltime tabla')):
+            assert n * spx == mt.mm_to_px(mm, dpi), eticheta
+    sq = mt.mm_to_px(37.0, 300)
+    assert sq == round(37.0 / 25.4 * 300), sq
+    return f"pagina, tabla si patratul: 0 px eroare (patrat 37 mm = {sq} px)"
+
+
 def test_png_are_dpi():
     """PNG-ul trebuie sa poarte rezolutia fizica (chunk pHYs), altfel
     driverul de imprimanta poate scala si latura masurata nu mai corespunde."""
@@ -378,6 +400,7 @@ TESTS = [
     ('NEGATIV: refuza daca nu incape pe hartie',
      test_NEGATIV_refuza_daca_nu_incape),
     ('margine alba si doar alb-negru', test_margine_si_alb_negru),
+    ('dimensiuni px exacte', test_dimensiuni_px_exacte),
     ('PNG poarta DPI (pHYs)', test_png_are_dpi),
     ('metadate de geometrie', test_metadate_geometrie),
     ('dictionar diferit de markerul de misiune',

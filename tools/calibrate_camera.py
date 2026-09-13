@@ -66,6 +66,20 @@ LIVE_MIN_MOVE_PX = 40.0
 LIVE_MIN_INTERVAL_S = 0.7
 
 
+#: Doua garzi impotriva calibrarii DEGENERATE, adica a unui set de poze care
+#: nu constrange geometric intrinsecii. Masurat: 24 de poze identice dau
+#: RMS 0.061 px - mai bun decat un set bun! - cu fx gresit cu +754% si k1 cu
+#: +429%. RMS-ul NU e un criteriu de valabilitate: masoara cat de bine se
+#: potriveste modelul cu punctele date, nu daca punctele spun ceva despre
+#: camera. Vezi §5.22 din CLAUDE.md.
+#:
+#: 1. Acoperirea cadrului: sub atatea celule din 9, refuzam.
+MIN_COVERAGE_CELLS = 5
+#: 2. Focala fata de cea geometrica (W/2 / tan(HFOV/2)). Obiectivul e de
+#: ~102 grade; o focala care se abate atat de mult nu descrie aceasta camera,
+#: indiferent ce spune RMS-ul.
+FOCAL_SANITY_REL = 0.30
+
 #: ChArUco: sub atatea colturi intr-o vedere, poza nu merita pastrata.
 #: `matchImagePoints` cere minimum 4; 6 lasa marja pentru o poza stabila.
 CHARUCO_MIN_CORNERS = 6
@@ -290,7 +304,8 @@ def calibrate(corner_sets, image_size, pattern, square_mm,
     return cal
 
 
-def save_if_acceptable(cal, path, max_rms=MAX_REPROJ_ERR_PX, min_images=20):
+def save_if_acceptable(cal, path, max_rms=MAX_REPROJ_ERR_PX, min_images=20,
+                       seen=None):
     """True daca s-a salvat. Refuza explicit, cu motiv, altfel."""
     if cal.n_images < min_images:
         print(f"  REFUZ: {cal.n_images} imagini, minimum {min_images}.")
@@ -300,6 +315,27 @@ def save_if_acceptable(cal, path, max_rms=MAX_REPROJ_ERR_PX, min_images=20):
         print("  Cauze tipice: tabla indoita, cadre cu blur, acoperire slaba"
               " a marginilor, prea putine poze. Reia captura.")
         return False
+
+    # Garzile impotriva calibrarii degenerate. Se verifica DUPA RMS tocmai
+    # pentru ca un set degenerat trece pragul de RMS fara probleme.
+    geo = CameraCalibration.geometric(cal.width, cal.height)
+    dev = abs(cal.fx / geo.fx - 1)
+    if dev > FOCAL_SANITY_REL:
+        print(f"  REFUZ: focala {cal.fx:.0f} px se abate cu {dev:+.0%} de la "
+              f"cea geometrica ({geo.fx:.0f} px).")
+        print(f"  RMS-ul de {cal.rms:.3f} px nu salveaza asta: un set de poze "
+              f"care nu constrange\n  geometria da RMS mic si parametri "
+              f"absurzi. Vezi §5.22 din CLAUDE.md.")
+        return False
+    if seen is not None:
+        n_cells = sum(sum(r) for r in seen)
+        if n_cells < MIN_COVERAGE_CELLS:
+            print(f"  REFUZ: acoperire {n_cells}/9 celule, minimum "
+                  f"{MIN_COVERAGE_CELLS}.")
+            print("  Fara poze in zone diferite ale cadrului, distorsiunea e "
+                  "extrapolata,\n  iar focala si centrul optic nu sunt "
+                  "constranse. Misca tinta prin tot cadrul.")
+            return False
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     cal.save(path)
     print(f"  salvat: {path}")
@@ -471,8 +507,10 @@ def main():
         'lens_position': lens,
         'calibrated_at': time.strftime('%Y-%m-%d %H:%M:%S'),
     })
-    report(cal, coverage(size, sets), target, n_total)
-    return 0 if save_if_acceptable(cal, a.out, a.max_rms, a.min_images) else 1
+    seen = coverage(size, sets)
+    report(cal, seen, target, n_total)
+    return 0 if save_if_acceptable(cal, a.out, a.max_rms, a.min_images,
+                                   seen) else 1
 
 
 if __name__ == '__main__':
