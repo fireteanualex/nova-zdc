@@ -145,6 +145,7 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── setup_pi.sh           # instalare pe Raspberry Pi OS (Trixie/Bookworm)
 │   ├── preflight_check.py    # verificare de banc; cod 0 doar dacă toate trec
 │   ├── run_e2.py             # colectarea interactivă a datelor E2
+│   ├── start_flight.sh       # pornire completa pe Pi: venv, port, E0, race_mode
 │   ├── race_mode.py          # ziua cursei: preflight + un singur ecran
 │   ├── collect_session.py    # evidența 6.2.1.30: .bin, loguri, cadre, manifest
 │   ├── fake_detector.py      # detector sintetic + aplicația de SIM (ocolește E0)

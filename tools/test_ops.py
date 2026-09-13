@@ -11,7 +11,9 @@ inlocuind cele doua cai de iesire spre sistem - `subprocess` pentru
 systemctl/fuser, si variabilele de mediu pentru sesiunea grafica.
 """
 
+import json
 import os
+import subprocess
 import sys
 import tempfile
 
@@ -762,6 +764,116 @@ def test_H4_checklistul_acopera_simptomele():
     return "toate sectiunile + 8 simptome-cheie prezente"
 
 
+
+# --- start_flight.sh --------------------------------------------------------
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FLIGHT = os.path.join(REPO, 'tools', 'start_flight.sh')
+
+
+def _flight(args, config, raspuns='', env=None):
+    e = dict(os.environ)
+    e.update({'NOVA_CONFIG': config, 'NOVA_CONN': 'udp:x'})
+    e.update(env or {})
+    return subprocess.run(['bash', FLIGHT] + args, input=raspuns,
+                          capture_output=True, text=True, env=e, timeout=120)
+
+
+def _cfg_copy(tmp, valoare='false'):
+    sursa = os.path.join(REPO, 'config', 'nova.json')
+    dest = os.path.join(tmp, 'nova.json')
+    txt = open(sursa).read().replace('"autonomy_enabled": false',
+                                     f'"autonomy_enabled": {valoare}')
+    open(dest, 'w').write(txt)
+    return dest
+
+
+def _e0(cale):
+    return json.load(open(cale)).get('autonomy_enabled')
+
+
+def test_FLIGHT_NEGATIV_confirmarea_gresita_nu_armeaza():
+    """E0 e singura garda intre un detector nevalidat si o coborare comandata.
+    Un 'da' grabit nu are voie sa o ridice."""
+    tmp = tempfile.mkdtemp()
+    cfg = _cfg_copy(tmp)
+    for raspuns in ('da\n', 'y\n', '\n', 'armez\n'):
+        r = _flight([], cfg, raspuns=raspuns)
+        assert r.returncode != 0, f"{raspuns!r} a fost acceptat ca aprobare"
+        assert _e0(cfg) is False, f"{raspuns!r} a armat autonomia"
+    assert 'neconfirmat' in r.stderr
+    return "4 raspunsuri plauzibile respinse; doar 'ARMEZ' armeaza"
+
+
+def test_FLIGHT_armare_si_citire_inapoi():
+    tmp = tempfile.mkdtemp()
+    cfg = _cfg_copy(tmp)
+    r = _flight([], cfg, raspuns='ARMEZ\n')
+    assert _e0(cfg) is True, r.stdout + r.stderr
+    assert 'autonomy_enabled = true' in r.stdout, r.stdout
+
+    # §5.10 aplicat unui JSON: scriptul citeste inapoi ce a scris
+    assert r.stdout.count('autonomy_enabled =') >= 2, (
+        "nu citeste inapoi valoarea dupa ce o scrie")
+
+    # explicatia E0 din fisier trebuie sa supravietuiasca editarii
+    txt = open(cfg).read()
+    assert '_E0' in txt and 'E2' in txt, (
+        "comentariul care explica de ce exista garda s-a pierdut la editare")
+    assert '_comment' in txt
+    return "armata, citita inapoi, comentariile intacte"
+
+
+def test_FLIGHT_monitor_coboara_garda():
+    """--monitor trebuie sa INCHIDA garda, nu doar sa nu o deschida."""
+    tmp = tempfile.mkdtemp()
+    cfg = _cfg_copy(tmp, valoare='true')
+    assert _e0(cfg) is True
+    r = _flight(['--monitor'], cfg)
+    assert _e0(cfg) is False, r.stdout + r.stderr
+    return "config pornit cu true + --monitor -> false"
+
+
+def test_FLIGHT_NEGATIV_fara_cale_laterala():
+    """E0 se ridica DOAR din fisier. Scriptul nu are voie sa il ocoleasca.
+
+    Daca ar exporta o variabila de mediu sau ar pasa un flag catre aplicatie,
+    garda ar deveni ridicabila din linia de comanda - exact ce §5.16 spune ca
+    nu trebuie sa fie posibil."""
+    src = open(FLIGHT).read()
+    for interzis in ('NOVA_AUTONOMY', 'autonomy_enabled=True',
+                     '--autonomy', 'export AUTONOMY'):
+        assert interzis not in src, f"cale laterala in script: {interzis}"
+
+    # si garda insasi nu citeste mediul
+    import nova.config as nc
+    tmp = tempfile.mkdtemp()
+    cfg = _cfg_copy(tmp)
+    vechi = dict(os.environ)
+    try:
+        os.environ['NOVA_AUTONOMY'] = 'true'
+        os.environ['AUTONOMY_ENABLED'] = 'true'
+        assert nc.autonomy_enabled(cfg) is False, (
+            "autonomy_enabled se poate ridica din mediu")
+    finally:
+        os.environ.clear()
+        os.environ.update(vechi)
+    return "niciun flag/variabila nu ridica garda; doar fisierul"
+
+
+def test_FLIGHT_deleaga_catre_race_mode():
+    """Acelasi motiv ca la race_mode.py: un singur cablaj (§5.14)."""
+    src = open(FLIGHT).read()
+    assert 'race_mode.py' in src, "nu porneste modul de concurs"
+    for interzis in ('nova_pi.py --conn', 'fake_detector.py', 'run_loop'):
+        assert interzis not in src, f"start_flight ocoleste race_mode: {interzis}"
+    tmp = tempfile.mkdtemp()
+    r = _flight(['--monitor', '--dry-run'], _cfg_copy(tmp))
+    assert r.returncode == 0, r.stderr
+    assert 'race_mode.py' in r.stdout
+    return "--dry-run arata exact comanda race_mode.py care ar rula"
+
+
 TESTS = [
     ('H2: serviciul activ e identificat', test_H2_serviciul_activ_e_identificat),
     ('H2: port liber trece', test_H2_port_liber_trece),
@@ -818,6 +930,13 @@ TESTS = [
      test_H4_race_mode_nu_isi_face_propriul_cablaj),
     ('H4: checklistul acopera simptomele',
      test_H4_checklistul_acopera_simptomele),
+    ('FLIGHT NEGATIV: confirmarea gresita nu armeaza',
+     test_FLIGHT_NEGATIV_confirmarea_gresita_nu_armeaza),
+    ('FLIGHT: armare si citire inapoi', test_FLIGHT_armare_si_citire_inapoi),
+    ('FLIGHT: --monitor coboara garda', test_FLIGHT_monitor_coboara_garda),
+    ('FLIGHT NEGATIV: fara cale laterala',
+     test_FLIGHT_NEGATIV_fara_cale_laterala),
+    ('FLIGHT: deleaga catre race_mode', test_FLIGHT_deleaga_catre_race_mode),
 ]
 
 
