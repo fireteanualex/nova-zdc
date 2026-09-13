@@ -756,6 +756,65 @@ opțiune. Așa `nova/state_machine.py` și `nova/safety.py` rămân neatinse (su
 validate), iar garda are trei teste, inclusiv cel care verifică că fișierul
 din repo e în starea închisă.
 
+### 5.17 Grila pătrată de calibrare: ambiguă la rotație, dar **nu** strică intrinsecii
+
+Sfatul obișnuit e „folosește o grilă asimetrică, altfel apar erori tăcute în
+calibrare". Măsurat pe date sintetice, jumătatea a doua e falsă.
+
+**Ce se schimbă cu adevărat.** Pe o grilă pătrată (8×8 colțuri interioare),
+permutarea *colț detectat → colț fizic* depinde de cum cade tabla în cadru:
+
+| rotație | 9×6 pătrate (8×5 colțuri) | 9×9 pătrate (8×8 colțuri) |
+|---|---|---|
+| 0° | permutare P | permutare identitate |
+| 90° | **aceeași P** | alta (64/64 indici diferă) |
+| 180° | **aceeași P** | inversă |
+| 270° | **aceeași P** | alta |
+
+Pe grila asimetrică ordinea e legată de tablă și se rotește odată cu ea.
+
+**Ce NU se schimbă.** 25 de vederi sintetice, aceleași poze, aceeași cameră
+(f = 932.87 px, k1 = −0.050):
+
+| | fx recuperat | k1 recuperat | RMS |
+|---|---|---|---|
+| 9×6 pătrate | 932.97 (**+0.01%**) | −0.05014 (+0.3%) | 0.103 px |
+| 9×9 pătrate | 933.40 (**+0.06%**) | −0.05037 (+0.7%) | 0.108 px |
+
+Motivul e simplu odată văzut: o permutare cu 90° a unei grile pătrate
+corespunde unei **rotații rigide a tablei**, iar `calibrateCamera` are câte
+un `rvec`/`tvec` per imagine, deci o absoarbe. Intrinsecii nu simt nimic.
+
+**Unde chiar contează:** oriunde tabla definește un cadru de referință —
+estimare de poză, extrinseci, hand-eye. Acolo poza sare cu 90° între cadre.
+
+Rămânem pe 9×6 implicit: nu costă nimic și elimină o clasă de erori la
+utilizări viitoare. Dar nu invocăm „precizia calibrării" ca motiv, pentru că
+măsurătoarea nu o susține. **ChArUco elimină ambiguitatea complet** —
+fiecare colț are ID din markerii vecini, verificat identic la toate patru
+rotațiile.
+
+### 5.18 Zona liniștită contează doar pentru detectorul clasic
+
+„`findChessboardCorners` are nevoie de margine albă" e adevărat, dar numai
+pentru varianta clasică, și numai pe fundal închis. Măsurat, 5 poze cu
+înclinări 0–40°:
+
+| detector | fundal | cu margine | fără margine |
+|---|---|---|---|
+| `findChessboardCorners` | gri | 5/5 | 5/5 |
+| `findChessboardCorners` | **negru** | **5/5** | **0/5** |
+| `findChessboardCornersSB` | gri | 5/5 | 5/5 |
+| `findChessboardCornersSB` | **negru** | 5/5 | **5/5** |
+
+Fără margine, pătratele negre de pe marginea tablei fuzionează cu fundalul
+și conturul nu mai poate fi delimitat. Varianta sector-based nu are această
+sensibilitate.
+
+Păstrăm marginea de o lățime de pătrat oricum: `calibrate_camera.py` cade pe
+detectorul clasic dacă SB lipsește, alte unelte îl pot folosi direct, iar
+marginea nu costă nimic pe hârtie.
+
 ---
 
 ## 6. Cerințe care constrâng software-ul
