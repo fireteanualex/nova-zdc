@@ -1095,6 +1095,82 @@ Corolar pentru teste: **nu determina secțiunea unui fișier .ini cu
 mută granița, iar verificarea „cheia nu e în `[Service]`" trece din motivul
 greșit. Testul din `test_pi_tooling.py` parsează pe linii ancorate.
 
+### 5.27 Două procese, un singur `/dev/serial0`
+
+`nova-monitor.service` pornește la boot și ține portul serial. `nova_pi.py`
+pornit după el primește:
+
+```
+SerialException: could not open port /dev/serial0: [Errno 16] Device or
+resource busy
+```
+
+Mesajul spune **ce**, nu spune **cine** și nici **ce să faci**. Pe teren,
+între două curse, arată ca o problemă de cablu sau de permisiuni și trimite
+căutarea în direcția greșită. Costul nu e tehnic — reparația e o comandă —
+ci timpul până când cineva se prinde ce e.
+
+`nova/serial_guard.py` întreabă **înainte** de a deschide portul:
+
+| sursă | ce află |
+|---|---|
+| `systemctl is-active nova-monitor` | serviciul nostru; răspuns clar + comanda de reparare |
+| `fuser` sau `/proc/*/fd` | orice alt proces: PID + linia de comandă |
+
+```
+[bord] EROARE: nova-monitor ocupa /dev/serial0.
+        sudo systemctl stop nova-monitor
+        (sau porneste cu --stop-service, care o face singur)
+```
+
+Trei decizii care nu sunt evidente:
+
+- **Diagnosticul care nu se poate face nu blochează pornirea.** Fără
+  systemd, sau fără drept de citire în `/proc`, funcțiile întorc „nu știu",
+  nu o eroare. Un proces al altui utilizator nu se vede fără root, deci
+  lista goală **nu** înseamnă „portul e liber" — blocarea o decide
+  apelantul, și doar când știe sigur.
+- **`--stop-service` cere confirmare.** Oprirea unui serviciu are efect în
+  afara procesului nostru. `--yes` există pentru scripturi.
+- **Cod de ieșire 3**, distinct de 2 (refuz de pornire: calibrare lipsă).
+  Un script de teren poate deosebi „repar portul și reîncerc" de „nu pot
+  zbura".
+
+Pe `udpin:`/`tcp:` verificarea se sare: în SITL nu există port exclusiv.
+
+### 5.28 Previzualizarea: `WINDOW_AUTOSIZE` ignoră tăcut fullscreen-ul
+
+`setWindowProperty(WND_PROP_FULLSCREEN, WINDOW_FULLSCREEN)` **nu face nimic**
+pe o fereastră creată cu `WINDOW_AUTOSIZE` — și `AUTOSIZE` e ce primești dacă
+apelezi `imshow` fără `namedWindow`. Nu apare nicio eroare; fereastra rămâne
+mică și pare că fullscreen-ul nu merge pe Pi.
+
+```python
+cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)          # obligatoriu
+cv2.setWindowProperty(WIN, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+```
+
+**Ieșirea se leagă și pe Escape, nu doar pe `q`.** O fereastră fullscreen nu
+are decorațiuni, deci nu există buton de închidere; dacă singura ieșire e `q`
+și fereastra pierde focusul tastaturii, unealta se oprește doar din alt
+terminal.
+
+**Trei contexte, trei comportamente** (`nova/preview.py`):
+
+| context | fereastră | de ce |
+|---|---|---|
+| unelte de banc (calibrare) | fullscreen, pornită | operatorul are nevoie de detaliu, ecranul Pi-ului e mic |
+| prin VNC | `--preview-scale 0.5` | cadrul plin e lent pe VNC, iar sacadarea **arată** ca o detecție lentă și trimite căutarea aiurea |
+| vehicul de concurs | **oprită implicit** | fără `vc4-kms-v3d` nu există accelerare grafică: fiecare `imshow` ia CPU din bugetul detecției |
+
+Redimensionarea e **numai pentru afișare** — detecția rulează pe cadrul plin,
+iar overlay-ul se desenează pe o copie. Un overlay desenat peste cadrul de
+intrare ar fi exact genul de bug care nu se vede până la reproiecție.
+
+Fără sesiune grafică (`DISPLAY`/`WAYLAND_DISPLAY` nesetate, adică SSH fără
+`-X`), `imshow` aruncă `Can't initialize GUI backend`. `Preview` verifică
+înainte, se stinge singură și spune de ce.
+
 ---
 
 ## 6. Cerințe care constrâng software-ul

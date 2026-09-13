@@ -398,15 +398,46 @@ def collect_from_dir(path, target):
     return dets, sets, size
 
 
-def collect_live(target, min_images, max_images):
+def draw_overlay(gray, corners, n_dets, cov, total, acceptat):
+    """Cadrul cu ce vede detectorul desenat peste.
+
+    Se deseneaza pe o COPIE color: cadrul gri original merge nemodificat in
+    calibrare. Un overlay desenat peste datele de intrare ar fi exact genul
+    de bug care nu se vede pana la reproiectie."""
+    img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    if corners is not None:
+        for pt in corners.reshape(-1, 2):
+            cv2.circle(img, (int(pt[0]), int(pt[1])), 4,
+                       (0, 255, 0) if acceptat else (0, 200, 255), -1)
+    h = img.shape[0]
+    eticheta = (f"poze {n_dets}  acoperire {cov}/9  "
+                f"{'ACCEPTAT' if acceptat else 'misca tabla'}")
+    cv2.putText(img, eticheta, (20, h - 30), cv2.FONT_HERSHEY_SIMPLEX,
+                1.2, (0, 0, 0), 6, cv2.LINE_AA)
+    cv2.putText(img, eticheta, (20, h - 30), cv2.FONT_HERSHEY_SIMPLEX,
+                1.2, (0, 255, 0) if acceptat else (0, 200, 255), 2,
+                cv2.LINE_AA)
+    return img
+
+
+def collect_live(target, min_images, max_images, show_window=True,
+                 preview_scale=0.5):
     from nova.detector_pi import PiCameraSource
+    from nova.preview import bench_preview
     src = PiCameraSource(verbose=True)
+    # H3, contextul 1: unealta de banc -> fullscreen. Operatorul trebuie sa
+    # vada colturile detectate ca sa stie daca a acoperit marginile cadrului,
+    # si ecranul Pi-ului e mic.
+    pv = bench_preview('NOVA calibrare (q sau Esc = gata)',
+                       enabled=show_window, scale=preview_scale)
     print(f"\n  Misca tabla prin TOT cadrul, mai ales pe margini si colturi."
           f"\n  Accept un cadru cand tabla e gasita si s-a mutat >= "
-          f"{LIVE_MIN_MOVE_PX:.0f} px. Ctrl-C cand ai destule.\n")
+          f"{LIVE_MIN_MOVE_PX:.0f} px. "
+          f"{'q sau Esc' if pv.enabled else 'Ctrl-C'} cand ai destule.\n")
     dets, sets, last_c, last_t = [], [], None, 0.0
     size = TRACK_SIZE
     lens = None
+    cov = 0
     total = target.expected_corners()
     try:
         while len(dets) < max_images:
@@ -416,26 +447,39 @@ def collect_live(target, min_images, max_images):
             now = time.monotonic()
             if got is None:
                 print("\r  tinta: negasita           ", end='', flush=True)
+                # Se afiseaza si cadrele fara tinta: altfel, cand detectia
+                # nu merge, ecranul ingheata si nu se vede ce filmeaza
+                # camera - exact cand ai nevoie sa vezi.
+                if pv.enabled and not pv.show(
+                        draw_overlay(gray, None, len(dets), cov, total, False)):
+                    print("\n  gata (tasta de iesire)")
+                    break
                 continue
             objp, imgp, c = got
             moved = (last_c is None
                      or np.linalg.norm(c.mean(axis=0) - last_c.mean(axis=0))
                      >= LIVE_MIN_MOVE_PX)
-            if moved and now - last_t >= LIVE_MIN_INTERVAL_S:
+            acceptat = moved and now - last_t >= LIVE_MIN_INTERVAL_S
+            if acceptat:
                 dets.append((objp, imgp))
                 sets.append(c)
                 last_c, last_t = c, now
-                seen = coverage(size, sets)
-                cov = sum(sum(r) for r in seen)
                 print(f"\r  acceptat #{len(dets)}  {len(objp)}/{total} puncte"
                       f"  acoperire {cov}/9  "
                       f"{'(minim atins)' if len(dets) >= min_images else ''}"
                       f"      ", flush=True)
             else:
                 print("\r  tinta: gasita, misc-o     ", end='', flush=True)
+            if sets:
+                cov = sum(sum(r) for r in coverage(size, sets))
+            if pv.enabled and not pv.show(
+                    draw_overlay(gray, c, len(dets), cov, total, acceptat)):
+                print("\n  gata (tasta de iesire)")
+                break
     except KeyboardInterrupt:
         print()
     finally:
+        pv.close()
         # LensPosition-ul e parte din calibrare: focusul schimba intrinsecii.
         try:
             lens = src.picam2.capture_metadata().get('LensPosition')
@@ -466,6 +510,13 @@ def main():
     p.add_argument('--max-images', type=int, default=60)
     p.add_argument('--out', default=DEFAULT_OUT)
     p.add_argument('--max-rms', type=float, default=MAX_REPROJ_ERR_PX)
+    # H3: unealta de banc -> fereastra PORNITA implicit, fullscreen. Daca nu
+    # exista sesiune grafica, nova/preview.py o stinge singur si spune de ce,
+    # deci `--no-window` e nevoie doar cand vrei explicit fara.
+    p.add_argument('--no-window', action='store_true',
+                   help='fara previzualizare (implicit: fullscreen)')
+    p.add_argument('--preview-scale', type=float, default=0.5,
+                   help='scara ferestrei; detectia ruleaza pe cadrul plin')
     a = p.parse_args()
 
     if a.square_mm is None:
@@ -483,8 +534,9 @@ def main():
     if a.from_dir:
         dets, sets, size = collect_from_dir(a.from_dir, target)
     elif a.live:
-        dets, sets, size, lens = collect_live(target, a.min_images,
-                                              a.max_images)
+        dets, sets, size, lens = collect_live(
+            target, a.min_images, a.max_images,
+            show_window=not a.no_window, preview_scale=a.preview_scale)
     else:
         p.error('alege --from-dir sau --live')
 
