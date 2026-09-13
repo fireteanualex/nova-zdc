@@ -1,0 +1,12 @@
+{
+  "_comment": "Configuratia companion-ului. Valorile implicite si sensul fiecarei chei: nova/config.py.",
+
+  "_E0": "GARDA DE SIGURANTA. Cat timp autonomy_enabled e false, poarta de handover refuza orice cerere. Se pune pe true DOAR dupa ce E2 (validarea offline a detectorului) a trecut criteriile de acceptare, cu un commit separat care citeaza raportul E2.",
+  "autonomy_enabled": false,
+
+  "marker_id": 26,
+  "marker_size_m": 0.48,
+  "camera_calibration": "config/camera_pi.yaml",
+  "roi_below_m": 5.0,
+  "roi_size_px": [640, 480]
+}

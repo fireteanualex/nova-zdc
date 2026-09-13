@@ -21,7 +21,20 @@ SURFTRAK_MODE,0
 TERRAIN_ENABLE,0
 
 # --- Precision landing ---
-PLND_ENABLED,1
+# A1: pornim cu PLND DEZACTIVAT si il armeaza companion-ul doar pentru
+# segmentul autonom (nova/state_machine.py: set_precland).
+# Motiv: mode_rtl.cpp:439 si mode_auto.cpp:1124 apeleaza acelasi
+# Mode::land_run_normal_or_precland() ca LAND. Cu PLND activ permanent, faza
+# de coborare a unui RTL ateriza pe marker in loc de home ori de cate ori
+# markerul era vizibil de la RTL_ALT - fix opusul a ce cere 15.2.4, si
+# periculos: un RTL se declanseaza tocmai cand ceva a mers prost.
+# Se poate comuta in zbor pentru ca AC_PrecLand::init() creeaza backend-ul
+# dupa PLND_TYPE, nu dupa PLND_ENABLED, iar
+# Mode::land_run_normal_or_precland() citeste enabled() la fiecare ciclu.
+# Acelasi mecanism acopera si modul de urgenta din 16.2.3 (comutator legat
+# direct de FC, deci companion-ul nu il poate intercepta): in afara
+# segmentului autonom PLND e 0, deci un LAND de urgenta coboara pe verticala.
+PLND_ENABLED,0
 PLND_TYPE,1
 PLND_EST_TYPE,1
 PLND_STRICT,2
@@ -33,3 +46,51 @@ PLND_YAW_ALIGN,0
 # incape in cadru la 74 mm), deci verificarea e imposibil de trecut.
 # Compensat prin PLND_STRICT=2 si monitorizare in Safety Supervisor.
 ARMING_SKIPCHK,32768
+
+# --- 15.2.7: urcare la 5 m dupa touchdown (arhitectura A) ---
+# Takeoff-ul din GUIDED (ModeGuided::do_user_takeoff_start_m) interpreteaza
+# altitudinea ca "deasupra terenului" daca wp_nav are voie sa foloseasca
+# telemetrul. Telemetrul nostru e derivat din viziune, deci apare si dispare
+# odata cu markerul, iar ultima citire dinainte de contact e ~0.4 m: o urcare
+# interpretata fata de "terenul" acela ar fi gresita si imprevizibila.
+# Cu 0, altitudinea de takeoff e interpretata deasupra HOME. Aceeasi motivatie
+# ca la SURFTRAK_MODE: telemetrul e intermitent prin constructie.
+# ATENTIE la nume: obiectul AC_WPNav e inregistrat cu prefixul "WP_"
+# (ArduCopter/Parameters.cpp:370 GOBJECTPTR(wp_nav, "WP_", AC_WPNav)), deci
+# parametrul e WP_RFND_USE. "WPNAV_RFND_USE" NU exista: un PARAM_SET pe el
+# nu da eroare, pur si simplu nu face nimic. La fel WPNAV_SPEED_DN -> WP_SPD_DN.
+WP_RFND_USE,0
+
+# Dupa contact ramanem armati pe sol ~1 s (stabilizare ceruta de 15.2.7)
+# inainte de comanda de urcare. In GUIDED, singurul care mai dezarmeaza e
+# Copter::auto_disarm_check(), dupa DISARM_DELAY secunde de stat pe sol cu
+# maneta jos. 10 s implicit ar ajunge, dar lasam marja pentru intarzierile
+# Safety Supervisor-ului si pentru reincercarile de NAV_TAKEOFF.
+DISARM_DELAY,20
+
+# --- 15.2.4: geofence ---
+# Parametrii FENCE_* NU se pun aici: ii gestioneaza companion-ul in zbor
+# (nova/fence.py), pentru ca geometria difera intre segmentul autonom (cerc
+# de 10 m pe marker) si restul turului (limita de traseu, 16.3.2).
+# FenceManager.save() salveaza starea dinainte de handover si restore() o
+# pune inapoi la handback. Valorile folosite pentru segmentul autonom sunt in
+# FENCE_PARAMS_AUTONOM si se verifica prin citire inapoi.
+
+# --- Pilotare manuala de la gamepad (tools/gamepad_rc.py) ---------------
+# Canalul 5 selecteaza modul; pozitiile trimise de punte sunt 1100/1500/1900,
+# care cad in treptele 1, 4 si 6 ale lui ArduPilot.
+FLTMODE_CH,5
+FLTMODE1,0
+FLTMODE4,5
+FLTMODE6,4
+
+# FS_THR_ENABLE 0 e valabil DOAR pentru SITL.
+# Puntea de gamepad tine canalele vii prin RC_CHANNELS_OVERRIDE la 25 Hz.
+# Orice intrerupere - un Ctrl-C, o fereastra care pierde focusul, o pauza de
+# GC - arata ca o pierdere de emitator si, cu failsafe activ, taie testul in
+# mijloc. Nu vrem asta cand testam poarta de handover.
+#
+# PE VEHICULUL REAL (config/nova_flight.parm) TREBUIE SA FIE 1.
+# Acolo nu exista punte software: canalele vin de la un receptor adevarat, iar
+# pierderea emitatorului e exact evenimentul pentru care exista failsafe-ul.
+FS_THR_ENABLE,0

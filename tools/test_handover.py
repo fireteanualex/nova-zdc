@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""
+NOVA - ZDC 2026
+Teste pentru nova/handover.py (§8, 15.3.1 B3.1), fara SITL.
+
+    python3 tools/test_handover.py
+
+Poarta de handover decide daca o incercare autonoma incepe. Un refuz costa
+cateva secunde; o acceptare gresita costa 10 puncte. Fiecare criteriu are
+aici si un caz pozitiv, si unul negativ.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from nova.handover import (HANDOVER_ALT_MAX_M, HANDOVER_ALT_MIN_M,  # noqa: E402
+                           HandoverGate, Reject)
+from nova.rc import OverrideMonitor  # noqa: E402
+
+
+class StubVehicle:
+    def __init__(self, alt=8.0):
+        self.z = -alt
+        self.params = {'RC1_TRIM': 1500, 'RC2_TRIM': 1500,
+                       'RC3_TRIM': 1100, 'RC4_TRIM': 1500}
+        self.rc = (1500, 1500, 1100, 1500, 1000, 1000, 1000, 1000)
+        self.rc_t = 100.0
+
+    @property
+    def alt(self):
+        return -self.z
+
+    def request_param(self, name):
+        pass
+
+    def set_rc(self, ch, value):
+        rc = list(self.rc)
+        rc[ch - 1] = value
+        self.rc = tuple(rc)
+
+
+def build(alt=8.0, autonomy=True):
+    v = StubVehicle(alt)
+    ov = OverrideMonitor(v)
+    rejects = []
+    gate = HandoverGate(v, ov, on_reject=rejects.append,
+                        autonomy_enabled=autonomy)
+    gate.on_aux_requested(100.0)
+    return v, ov, gate, rejects
+
+
+SETTLED = 101.5      # dupa fereastra de 1.0 s
+GOOD = dict(dist_to_marker_m=2.0, detection_age_s=0.05)
+
+
+#: Se opreste INAINTE ca fereastra sa expire: altfel ultimul apel ar face
+#: validarea completa, cu argumentele de aici, si ar decide in locul testului.
+SETTLE_END = 100.95
+
+
+def settle(gate, start=100.0, until=SETTLE_END, step=0.05):
+    """Ruleaza fereastra de asezare, ca in bucla reala. Esantionarea din ea e
+    criteriul pentru throttle, deci nu poate fi sarita."""
+    t = start
+    while t < until:
+        gate.check(t, **GOOD)
+        t += step
+
+
+# --- teste -----------------------------------------------------------------
+
+def test_accept_in_conditii_bune():
+    v, ov, gate, rej = build()
+    settle(gate)
+    ok, why = gate.check(SETTLED, **GOOD)
+    assert ok is True, f"refuzat: {why}"
+    assert not rej
+    assert ov.neutral == (1500, 1500, 1100, 1500), ov.neutral
+    return f"acceptat, neutru memorat {ov.neutral}"
+
+
+def test_nu_decide_in_fereastra_de_asezare():
+    """B3.1: cat timp arcurile se asaza, nu e nici accept, nici refuz."""
+    v, ov, gate, rej = build()
+    v.set_rc(1, 1800)                       # tranzitoriu violent de arc
+    ok, why = gate.check(100.5, **GOOD)
+    assert ok is None, f"a decis {ok} in fereastra de asezare"
+    assert why == Reject.SETTLING
+    assert not rej, "a semnalizat un refuz in timpul asezarii"
+    return "nicio decizie in primele 1.0 s"
+
+
+def test_refuz_mansa_in_afara_neutrului():
+    v, ov, gate, rej = build()
+    v.set_rc(2, 1500 + 150)                 # pitch tinut deoparte
+    settle(gate)
+    ok, why = gate.check(SETTLED, **GOOD)
+    assert ok is False, f"a acceptat cu mansa deviata ({why})"
+    assert Reject.STICKS in why, why
+    assert rej and rej[0] == why, "refuzul nu a fost semnalizat pilotului"
+    return f"refuzat: {why}"
+
+
+def test_roll_pitch_yaw_fata_de_trim_nu_de_1500():
+    """Axele care se auto-centreaza se compara cu RCx_TRIM, nu cu 1500."""
+    v, ov, gate, rej = build()
+    v.params.update({'RC1_TRIM': 1512, 'RC2_TRIM': 1488, 'RC4_TRIM': 1505})
+    v.set_rc(1, 1512)
+    v.set_rc(2, 1488)
+    v.set_rc(4, 1505)
+    settle(gate)
+    ok, why = gate.check(SETTLED, **GOOD)
+    assert ok is True, f"a confundat offset-ul de trim cu o deviatie: {why}"
+    return "offset-uri de trim de pana la 12 PWM acceptate"
+
+
+def test_throttle_departe_de_trim_dar_nemiscat():
+    """Pe un emitator real throttle-ul sta la mijlocul cursei pentru hover,
+    iar RC3_TRIM e adesea la capatul de jos. Nu e o mansa deviata.
+
+    Varianta care compara si throttle-ul cu trim-ul a refuzat primul handover
+    din SITL, cu throttle la 500 PWM de RC3_TRIM."""
+    v, ov, gate, rej = build()
+    v.params['RC3_TRIM'] = 1100
+    v.set_rc(3, 1600)                       # 500 PWM de trim, dar nemiscat
+    settle(gate)
+    ok, why = gate.check(SETTLED, **GOOD)
+    assert ok is True, f"a refuzat un throttle stationar: {why}"
+    assert ov.neutral[2] == 1600, ov.neutral
+    return "throttle la 500 PWM de trim, dar stationar, acceptat"
+
+
+def test_refuz_throttle_care_se_misca():
+    """CAZ NEGATIV al testului de mai sus: throttle-ul care se misca in
+    fereastra de asezare inseamna ca pilotul inca zboara."""
+    v, ov, gate, rej = build()
+    t = 100.0
+    val = 1400
+    while t < SETTLE_END:
+        val += 20                           # pilotul urca lent throttle-ul
+        v.set_rc(3, val)
+        gate.check(t, **GOOD)
+        t += 0.05
+    ok, why = gate.check(SETTLED, **GOOD)
+    assert ok is False, "a acceptat cu throttle-ul in miscare"
+    assert 'throttle' in why, why
+    return f"refuzat: {why}"
+
+
+def test_refuz_altitudine_prea_mica():
+    v, ov, gate, rej = build(alt=HANDOVER_ALT_MIN_M - 0.5)
+    settle(gate)
+    ok, why = gate.check(SETTLED, **GOOD)
+    assert ok is False and Reject.ALTITUDE in why, why
+    return f"refuzat la {v.alt:.1f} m"
+
+
+def test_refuz_altitudine_prea_mare():
+    v, ov, gate, rej = build(alt=HANDOVER_ALT_MAX_M + 0.5)
+    settle(gate)
+    ok, why = gate.check(SETTLED, **GOOD)
+    assert ok is False and Reject.ALTITUDE in why, why
+    return f"refuzat la {v.alt:.1f} m (plafon {HANDOVER_ALT_MAX_M:.0f} m)"
+
+
+def test_accept_la_marginile_ferestrei():
+    """Cazul negativ al testelor de mai sus: exact pe limita se accepta."""
+    for alt in (HANDOVER_ALT_MIN_M, HANDOVER_ALT_MAX_M):
+        v, ov, gate, rej = build(alt=alt)
+        settle(gate)
+        ok, why = gate.check(SETTLED, **GOOD)
+        assert ok is True, f"la {alt} m a refuzat: {why}"
+    return f"{HANDOVER_ALT_MIN_M:.0f} m si {HANDOVER_ALT_MAX_M:.0f} m acceptate"
+
+
+def test_refuz_prea_departe():
+    v, ov, gate, rej = build()
+    settle(gate)
+    ok, why = gate.check(SETTLED, dist_to_marker_m=7.0, detection_age_s=0.05)
+    assert ok is False and Reject.DISTANCE in why, why
+    return f"refuzat: {why}"
+
+
+def test_refuz_marker_nedetectat():
+    v, ov, gate, rej = build()
+    settle(gate)
+    ok, why = gate.check(SETTLED, dist_to_marker_m=2.0, detection_age_s=None)
+    assert ok is False and Reject.NO_MARKER in why, why
+    v2, ov2, gate2, rej2 = build()
+    settle(gate2)
+    ok2, why2 = gate2.check(SETTLED, dist_to_marker_m=2.0,
+                            detection_age_s=1.0)
+    assert ok2 is False and Reject.NO_MARKER in why2, why2
+    return "refuzat si fara detectie, si cu detectie veche de 1 s"
+
+
+def test_neutrul_nu_se_memoreaza_la_refuz():
+    """Daca handover-ul e refuzat, nu ramanem cu o referinta de neutru
+    luata dintr-un moment prost."""
+    v, ov, gate, rej = build()
+    v.set_rc(1, 1500 + 200)
+    settle(gate)
+    gate.check(SETTLED, **GOOD)
+    assert ov.neutral is None, f"a memorat neutru la refuz: {ov.neutral}"
+    return "fara referinta de neutru dupa refuz"
+
+
+def test_decizia_e_stabila():
+    """Odata decis, nu se razgandeste la urmatorul ciclu."""
+    v, ov, gate, rej = build()
+    settle(gate)
+    ok, _ = gate.check(SETTLED, **GOOD)
+    assert ok is True
+    v.set_rc(1, 1800)                       # pilotul misca dupa acceptare
+    ok2, _ = gate.check(SETTLED + 0.1, **GOOD)
+    assert ok2 is True, "s-a razgandit; miscarea de dupa e treaba override-ului"
+    return "decizia ramane; ce urmeaza tine de monitorul de override"
+
+
+# --- E0: garda de autonomie -------------------------------------------------
+
+def test_E0_autonomie_dezactivata_refuza_imediat():
+    """E0. Cu autonomy_enabled=false, refuz explicit, cu motiv, INAINTE de
+    fereastra de asezare - pilotul afla imediat. Nu se memoreaza neutru."""
+    v, ov, gate, rej = build(autonomy=False)
+    ok, why = gate.check(100.1, **GOOD)          # inca in fereastra
+    assert ok is False, f"a intors {ok}"
+    assert why == Reject.AUTONOMY_DISABLED, why
+    assert rej == [Reject.AUTONOMY_DISABLED], "refuzul nu a ajuns la pilot"
+    assert ov.neutral is None
+    settle(gate)
+    ok2, _ = gate.check(SETTLED, **GOOD)
+    assert ok2 is False, "s-a razgandit dupa asezare"
+    return "REJECT imediat, motiv explicit, fara neutru memorat"
+
+
+def test_E0_config_implicit_este_dezactivat():
+    """E0. Fara fisier de config, si fara valoare explicita, garda e INCHISA.
+    Nu exista cale de activare din mediu sau din linia de comanda."""
+    import os
+    import tempfile
+    from nova import config as nova_config
+    missing = os.path.join(tempfile.mkdtemp(), 'nu_exista.json')
+    assert nova_config.autonomy_enabled(missing) is False
+    with open(missing, 'w') as f:
+        f.write('{"autonomy_enabled": "true"}')      # string, nu bool
+    assert nova_config.autonomy_enabled(missing) is False, \
+        'un string "true" a trecut drept activare'
+    with open(missing, 'w') as f:
+        f.write('{"autonomy_enabled": true}')
+    assert nova_config.autonomy_enabled(missing) is True
+    # si fisierul din repo, in starea de acum, trebuie sa fie INCHIS
+    assert nova_config.autonomy_enabled() is False, (
+        "config/nova.json are autonomy_enabled=true; E0 cere false pana la E2")
+    return "lipsa fisier -> fals; \"true\" string -> fals; repo -> fals"
+
+
+def test_E0_gate_citeste_config_cand_nu_e_explicit():
+    """Aplicatia de bord nu paseaza valoarea: poarta citeste fisierul."""
+    v = StubVehicle(8.0)
+    ov = OverrideMonitor(v)
+    gate = HandoverGate(v, ov)                   # autonomy_enabled=None
+    gate.on_aux_requested(100.0)
+    ok, why = gate.check(100.1, **GOOD)
+    assert ok is False and why == Reject.AUTONOMY_DISABLED, (ok, why)
+    return "fara valoare explicita -> politica din config/nova.json"
+
+
+TESTS = [
+    ('accept in conditii bune', test_accept_in_conditii_bune),
+    ('fara decizie in fereastra de asezare', test_nu_decide_in_fereastra_de_asezare),
+    ('NEGATIV: mansa deviata', test_refuz_mansa_in_afara_neutrului),
+    ('roll/pitch/yaw fata de trim', test_roll_pitch_yaw_fata_de_trim_nu_de_1500),
+    ('throttle departe de trim dar nemiscat', test_throttle_departe_de_trim_dar_nemiscat),
+    ('NEGATIV: throttle in miscare', test_refuz_throttle_care_se_misca),
+    ('NEGATIV: altitudine prea mica', test_refuz_altitudine_prea_mica),
+    ('NEGATIV: altitudine prea mare', test_refuz_altitudine_prea_mare),
+    ('accept pe limitele ferestrei', test_accept_la_marginile_ferestrei),
+    ('NEGATIV: prea departe de marker', test_refuz_prea_departe),
+    ('NEGATIV: marker nedetectat', test_refuz_marker_nedetectat),
+    ('fara neutru dupa refuz', test_neutrul_nu_se_memoreaza_la_refuz),
+    ('decizia e stabila', test_decizia_e_stabila),
+    ('E0: autonomie dezactivata -> REJECT imediat',
+     test_E0_autonomie_dezactivata_refuza_imediat),
+    ('E0: implicit inchis, fara cale laterala',
+     test_E0_config_implicit_este_dezactivat),
+    ('E0: poarta citeste config-ul', test_E0_gate_citeste_config_cand_nu_e_explicit),
+]
+
+
+def main():
+    fails = 0
+    for name, fn in TESTS:
+        try:
+            note = fn()
+            print(f"  OK    {name}" + (f"   ({note})" if note else ""))
+        except AssertionError as e:
+            fails += 1
+            print(f"  ESEC  {name}\n        {e}")
+        except Exception as e:                      # noqa: BLE001
+            fails += 1
+            print(f"  EROARE {name}\n        {type(e).__name__}: {e}")
+    print(f"\n  {len(TESTS) - fails}/{len(TESTS)} teste trecute")
+    return 1 if fails else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

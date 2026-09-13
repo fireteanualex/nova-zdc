@@ -1,0 +1,28 @@
+{
+  "axes": {
+    "pitch": {
+      "index": 4,
+      "invert": false
+    },
+    "roll": {
+      "index": 3,
+      "invert": false
+    },
+    "throttle": {
+      "index": 1,
+      "invert": true
+    },
+    "yaw": {
+      "index": 0,
+      "invert": false
+    }
+  },
+  "buttons": {
+    "abort": 1,
+    "guided": 3,
+    "handover": 5,
+    "loiter": 0,
+    "stabilize": 2
+  },
+  "device": "DualSense (preset, DE VERIFICAT cu --check)"
+}
