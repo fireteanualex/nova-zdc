@@ -1,0 +1,45 @@
+# NOVA - ZDC 2026 - dependente pip pentru Raspberry Pi 4 / Raspberry Pi OS Bookworm
+#
+# Se instaleaza cu tools/setup_pi.sh, NU direct. Scriptul creeaza venv-ul cu
+# --system-site-packages, iar fara acel flag lista de mai jos se instaleaza
+# "cu succes" si apoi nimic nu merge.
+#
+# CE NU E AICI, DELIBERAT
+#
+#   picamera2, libcamera  - vin din APT (python3-picamera2, python3-libcamera).
+#     Sunt legate de stiva libcamera a sistemului si de binarele ei; versiunea
+#     de pe PyPI nu se potriveste cu ele. Se vad din venv doar prin
+#     --system-site-packages.
+#   numpy                 - vine tot din apt, ca dependenta a lui picamera2
+#     (Bookworm: 1.24.2). NU il fixa aici. Vezi nota despre OpenCV.
+#
+# DE CE OpenCV 4.10 SI NU 5.0 (versiunea de pe desktop)
+#
+#   Masurat, nu presupus: opencv-contrib-python 5.0.0.93 declara
+#   `numpy>=2; python_version >= "3.9"`. Pe Bookworm (Python 3.11) pip ar
+#   rezolva asta instaland numpy 2.x IN venv, peste numpy 1.24.2 din apt.
+#   simplejpeg si restul stivei picamera2 sunt compilate pentru ABI-ul
+#   numpy 1.x, deci se rup - si eroarea apare la `import picamera2`, departe
+#   de cauza. OpenCV 4.10 cere numpy>=1.21, deci se multumeste cu cel din apt
+#   si nu instaleaza nimic peste el.
+#
+#   Consecinta: Pi-ul ruleaza OpenCV 4.10, desktopul OpenCV 5.0. Diferenta e
+#   masurata, nu ignorata - vezi §5.24 din CLAUDE.md:
+#     - pe markerul de misiune, detectie identica pana la 0.023 px
+#     - pe tinta de calibrare ChArUco, 4.10 produce detectii false in
+#       DICT_4X4_50 (ID 48) pe care 5.0 nu le produce; ID 26 nu apare
+#       niciodata, deci filtrul de ID e cel care ne protejeaza
+#
+# DIAGNOSTIC: conflict pe numpy sau simplejpeg
+#
+#   `ImportError: numpy.core.multiarray failed to import`, `_ARRAY_API not
+#   found` sau un simplejpeg care nu se incarca inseamna una din doua:
+#     1. venv-ul a fost creat FARA --system-site-packages, deci pip a tras
+#        numpy de pe PyPI in loc sa il vada pe cel din apt; sau
+#     2. ceva a instalat numpy 2.x in venv peste cel din apt (tipic: un
+#        `pip install opencv-contrib-python` fara versiune fixata, care ia 5.x).
+#   In ambele cazuri: sterge venv-ul si reia tools/setup_pi.sh. Nu incerca sa
+#   repari cu `pip install --force-reinstall numpy` - ar reface acelasi drum.
+
+opencv-contrib-python==4.10.0.84
+pymavlink==2.4.49

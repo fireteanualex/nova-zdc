@@ -124,6 +124,7 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── nova_sitl.parm        # parametri ArduPilot SITL, încărcați la boot
 │   ├── nova.json             # config companion; E0: autonomy_enabled=false
 │   ├── gamepad.json          # maparea gamepad-ului, din --calibrate
+│   ├── nova_flight.parm      # parametri ArduPilot VEHICUL REAL (neverificat pe hardware)
 │   └── camera_pi.yaml        # calibrarea camerei, din calibrate_camera.py (evidență: se commit-uiește)
 ├── nova/                     # cod companion, identic sim ↔ Raspberry Pi
 │   ├── config.py             # config/nova.json + garda E0
@@ -137,6 +138,10 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   └── state_machine.py      # mașina de stări a segmentului autonom
 ├── tools/
 │   ├── nova_pi.py            # aplicația de BORD (detector real, fără ocolire E0)
+│   ├── nova_service.py       # serviciul RACE_MONITOR (fără comenzi) + unitatea systemd
+│   ├── setup_pi.sh           # instalare pe Raspberry Pi OS Bookworm
+│   ├── preflight_check.py    # verificare de banc; cod 0 doar dacă toate trec
+│   ├── run_e2.py             # colectarea interactivă a datelor E2
 │   ├── fake_detector.py      # detector sintetic + aplicația de SIM (ocolește E0)
 │   ├── calibrate_camera.py   # E1.2: tablă de șah → camera_pi.yaml
 │   ├── calibrate_sticks.py   # zgomotul manșelor → deadband
@@ -145,8 +150,16 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── gamepad_rc.py         # punte gamepad → RC_CHANNELS_OVERRIDE
 │   └── test_*.py             # suite offline: state_machine, safety, handover,
 │                             #   detector_pi, calibrate_camera
+├── systemd/
+│   └── nova-monitor.service  # generat de nova_service.py --install-unit
+├── requirements-pi.txt       # dependențe pip pentru Pi (fără picamera2/numpy)
 └── docs/
 ```
+
+**Două stive Python de producție, nu una.** Desktopul rulează OpenCV 5.0 +
+numpy 2.x; Pi-ul rulează OpenCV 4.10 + numpy 1.24 din apt, pentru că
+picamera2 nu suportă numpy 2. Nu e o scăpare, e un conflict fără soluție —
+vezi §5.24 pentru ce diferă între ele, măsurat.
 
 **Separarea detector ↔ control.** Detectorul *publică* doar detecții
 (`poll(now)` → `Detection`: offset unghiular, distanță, `marker_px`, range,
@@ -940,6 +953,115 @@ Consecințe practice:
 Cifrele sunt sintetice, fără blur de mișcare și fără hârtie reală. E2 le
 poate doar înrăutăți.
 
+### 5.24 Pi-ul și desktopul NU pot rula aceeași versiune de OpenCV
+
+Nu e o preferință, e un conflict dur de dependențe:
+
+- `opencv-contrib-python 5.0.0.93` declară `numpy>=2` pentru Python ≥ 3.9
+- Raspberry Pi OS Bookworm are Python 3.11 și **numpy 1.24.2 din apt**, ca
+  dependență a lui `python3-picamera2`
+- `simplejpeg` și restul stivei picamera2 sunt compilate pentru ABI-ul
+  numpy 1.x
+
+Deci un `pip install opencv-contrib-python==5.*` într-un venv cu
+`--system-site-packages` instalează numpy 2.x **în venv**, peste cel din apt,
+și rupe picamera2. Simptomul (`_ARRAY_API not found`, `numpy.core.multiarray
+failed to import`) apare la `import picamera2`, adică departe de cauză.
+
+`requirements-pi.txt` fixează deci **OpenCV 4.10.0.84**, care cere
+`numpy>=1.21` și se mulțumește cu cel din apt. Pi-ul rulează 4.10, desktopul
+5.0, și asta rămâne așa.
+
+**Ce costă, măsurat pe un venv care imită stiva Bookworm.**
+
+Pe markerul de misiune, nimic care să conteze — aceleași cadre sintetice,
+ambele versiuni:
+
+| distanță | colțuri | distanță | unghiuri |
+|---|---|---|---|
+| 1.0 m | 0.023 px | 0.0002% | 0.024° |
+| 5.0 m | 0.005 px | 0.0005% | 0.000° |
+| 12.0 m | 0.004 px | 0.0059% | 0.000° |
+
+Praguri E1: 1 px, 2%, 0.3°. Cifrele validate pe desktop se transferă.
+Întreaga suită (126 de teste) trece identic pe ambele stive.
+
+Pe ținta de calibrare **NU**, și asta a invalidat un test din runda 4, care
+raporta „0 detecții în `DICT_4X4_50`" ca dovadă a separării de dicționare:
+
+| | OpenCV 5.0 | OpenCV 4.10 |
+|---|---|---|
+| detecții false în `DICT_4X4_50` | 0 / 36 | **5 / 36** (ID 48) |
+| ID 26 (markerul de misiune) | 0 | 0 |
+
+Afirmația era adevărată doar pe versiunea de pe desktop — exact versiunea pe
+care **nu** o rulează vehiculul. Ce ne protejează pe ambele e **filtrul de ID**
+din `ArucoMarkerDetector`, nu alegerea dicționarului.
+
+**Regula generală:** un test rulat pe altă platformă decât cea de producție
+măsoară platforma de test. Înainte de a scrie „verificat" despre ceva ce
+depinde de o bibliotecă, verifică pe versiunea de pe vehicul. Un venv de
+unică folosință cu versiunile de pe Pi costă două minute:
+
+```bash
+python3 -m venv /tmp/bookworm-sim
+/tmp/bookworm-sim/bin/pip install numpy==1.24.2 \
+    opencv-contrib-python==4.10.0.84 pymavlink==2.4.49
+for t in tools/test_*.py; do /tmp/bookworm-sim/bin/python "$t"; done
+```
+
+(Nu are picamera2, deci testele de cameră nu rulează acolo — dar tot restul
+suitei da.)
+
+### 5.25 O barieră de siguranță se scrie ca listă albă
+
+`ReadOnlyVehicle` din `tools/nova_service.py` împiedică serviciul de bord să
+comande vehiculul. Prima variantă enumera metodele de **comandă** și lăsa
+restul să treacă. A ratat imediat `Vehicle.update_params()`, care retrimite
+`PARAM_SET` pentru valorile neconfirmate: nu începe cu niciun prefix de
+„comandă" și arată ca o metodă de întreținere.
+
+Direcția implicită e tot ce contează:
+
+| | metodă nouă în `Vehicle` |
+|---|---|
+| listă neagră | **permisă** până își amintește cineva să o interzică |
+| listă albă | **interzisă** până decide cineva că e sigură |
+
+Pentru o barieră de siguranță, doar a doua e acceptabilă. Același raționament
+ca la `DETECTION_MONITORED_PHASES` din §8, unde lista e scrisă pozitiv ca o
+fază nouă să nu fie supravegheată din greșeală.
+
+Două detalii care fac diferența între barieră și decor:
+
+- **`m` se blochează explicit.** E conexiunea mavutil brută; fără asta,
+  `vehicle.m.mav.command_long_send(...)` ocolește tot.
+- **Un test citește sursa** fiecărei metode permise și caută apeluri
+  `self.m.mav.*_send(` care nu sunt cereri. Altfel lista albă se degradează
+  tăcut la următoarea adăugire.
+
+### 5.26 `systemd-analyze verify` prinde chei puse în secțiunea greșită
+
+`StartLimitIntervalSec` și `StartLimitBurst` sunt chei de **`[Unit]`**, nu de
+`[Service]`. Puse în `[Service]`, systemd le **ignoră tăcut**: serviciul
+pornește, `systemctl status` arată verde, iar limita de reporniri pur și
+simplu nu există.
+
+Exact tiparul din §5.10, într-un alt sistem: acceptat fără eroare nu înseamnă
+aplicat. Verificarea costă o comandă și nu are nevoie de `sudo`:
+
+```bash
+systemd-analyze verify systemd/nova-monitor.service
+```
+
+Ieșire goală = unitate validă. Raportează `Unknown key name ... ignoring`
+pentru orice cheie pusă unde nu trebuie.
+
+Corolar pentru teste: **nu determina secțiunea unui fișier .ini cu
+`text.split('[Service]')`.** Un comentariu care conține literalul `[Service]`
+mută granița, iar verificarea „cheia nu e în `[Service]`" trece din motivul
+greșit. Testul din `test_pi_tooling.py` parsează pe linii ancorate.
+
 ---
 
 ## 6. Cerințe care constrâng software-ul
@@ -1251,6 +1373,11 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 14 | **E2**: validare offline a detectorului real (marker printat, ruletă, 3 condiții de lumină); până atunci `autonomy_enabled=false` | E0, 15.2.3 |
 | 15 | Confirmare pe hardware: moduri de senzor IMX708 (30 fps binned, ~14 fps nativ), durata comutării de mod, controale aplicate, temperatură | §5.15, E2 |
 | 16 | Latența detectorului pe Pi 4 (desktop: 4/6 ms; criteriu E2: p99 < 150 ms) | E1.4 |
+| 17 | `tools/setup_pi.sh` rulat efectiv pe Bookworm (gărzile sunt testate, instalarea nu) | E2 |
+| 18 | `nova-monitor.service` pornit sub systemd; `ProtectSystem=strict` poate bloca scrieri neanticipate | E2 |
+| 19 | `check_params.py` pe FC-ul real, cu `config/nova_flight.parm` (fișier neverificat pe hardware) | scrutineering |
+| 20 | `FLTMODE_CH` + `FLTMODE1..6` pe emițătorul de concurs; lipsesc deliberat din `nova_flight.parm` | 16.2.3, 15.3.1 |
+| 21 | Paritatea OpenCV 4.10 verificată pe x86-64; Pi-ul e aarch64 (§5.24) | E2 |
 | 7 | ~~Măsurare latență override~~ 150 ms în SITL; deadband de măsurat pe emițătorul de concurs | 15.3.1 |
 | 8 | Mail organizatori: imagine scoring la 0.45 m | 8.3.3 |
 | 9 | Model SDF cu inerția reală (avem tensorul din Onshape) | fidelitate sim |

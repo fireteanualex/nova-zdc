@@ -1,0 +1,63 @@
+# NOVA - ZDC 2026 - serviciu de monitorizare (RACE_MONITOR)
+#
+# Generat de tools/nova_service.py --install-unit. Nu edita direct: valorile
+# de mai jos sunt cele de pe masina pe care s-a rulat generarea.
+#
+# IMPLICIT DEZACTIVAT (E0). Se activeaza manual, dupa ce E2 trece:
+#     sudo systemctl enable --now nova-monitor.service
+# Oprire:
+#     sudo systemctl disable --now nova-monitor.service
+#
+# Serviciul NU comanda vehiculul - vezi ReadOnlyVehicle in nova_service.py.
+
+[Unit]
+Description=NOVA ZDC - monitor de bord (RACE_MONITOR, fara comenzi)
+Documentation=file:///home/fireteanualex/nova-zdc/CLAUDE.md
+# Camera si serialul nu au unitati proprii pe care sa le asteptam: libcamera
+# apare odata cu udev, iar /dev/serial0 e un symlink creat de firmware.
+# Asteptarea propriu-zisa o face serviciul (--wait-serial), care poate da si
+# un mesaj util in log. Aici cerem doar ca sistemul de fisiere si reteaua
+# locala sa fie gata.
+After=local-fs.target network.target
+Wants=network.target
+# StartLimit* sunt chei de [Unit], nu de [Service]. Puse in [Service] sunt
+# ignorate TACUT - `systemd-analyze verify` le raporteaza ca "Unknown key
+# name", dar serviciul porneste si pare configurat. Inca o instanta din §5.10:
+# acceptat fara eroare nu inseamna aplicat.
+# Daca pica de 5 ori in 5 minute, ceva e rupt structural (calibrare lipsa,
+# camera defecta). Ne oprim si lasam logul sa fie citit, in loc sa
+# reincercam la infinit.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+[Service]
+Type=simple
+User=fireteanualex
+Group=fireteanualex
+WorkingDirectory=/home/fireteanualex/nova-zdc
+ExecStart=/usr/bin/python3 /home/fireteanualex/nova-zdc/tools/nova_service.py --conn /dev/serial0 --baud 921600
+
+# Restart la esec, nu la oprire curata: `systemctl stop` trebuie sa opreasca.
+# RestartSec 5 s ca o camera ocupata sau un serial inca inexistent sa aiba
+# timp sa apara, fara sa umple logul.
+Restart=on-failure
+RestartSec=5
+
+# Logul propriu e in /home/fireteanualex/nova-zdc/logs/ (rotativ). Ce apare pe stdout merge si in
+# journal, ca `systemctl status` sa arate ceva util.
+StandardOutput=journal
+StandardError=journal
+
+# Acces la camera si la serial.
+SupplementaryGroups=video dialout
+
+# Intarire: serviciul citeste camera si serialul si scrie doar in logs/ si
+# data/. Nu are nevoie de nimic altceva.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/fireteanualex/nova-zdc/logs /home/fireteanualex/nova-zdc/data
+
+[Install]
+WantedBy=multi-user.target

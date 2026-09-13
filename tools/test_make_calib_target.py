@@ -374,16 +374,41 @@ def test_metadate_geometrie():
 
 
 def test_dictionarul_nu_se_confunda_cu_markerul_de_misiune():
-    """Tinta de calibrare nu are voie sa produca o detectie in DICT_4X4_50,
-    ca sa nu poata fi luata drept markerul ID 26."""
+    """Tinta de calibrare nu are voie sa fie luata drept markerul de misiune.
+
+    Prima varianta a testului cerea ZERO detectii in DICT_4X4_50 si trecea -
+    pe OpenCV 5.0. Pe OpenCV 4.10, adica versiunea care ruleaza pe Pi (vezi
+    requirements-pi.txt si §5.24), aceeasi tinta produce 5 detectii false pe
+    36 de cadre, toate cu ID 48.
+
+    Deci afirmatia "dictionare diferite, deci nicio confuzie" era adevarata
+    doar pe versiunea de pe desktop. Ce ne protejeaza de fapt, pe ambele
+    versiuni, e FILTRUL DE ID din ArucoMarkerDetector: ID 26 nu apare
+    niciodata. Testul verifica acum asta, pe o plaja de distante si rotatii,
+    si raporteaza numarul de detectii false ca masuratoare - nu ca esec."""
     page, meta, ppm, org = build_page('charuco', 9, 6)
-    img = render(page, ppm, org, syn.rot(0, 0, 0), [0, 0, 700.0])
     d4 = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     det = cv2.aruco.ArucoDetector(d4, cv2.aruco.DetectorParameters())
-    _, ids, _ = det.detectMarkers(img)
-    n = 0 if ids is None else len(ids)
-    assert n == 0, f"tinta de calibrare a produs {n} detectii in DICT_4X4_50: {ids}"
-    return "zero detectii in DICT_4X4_50 pe tinta ChArUco"
+
+    fp, cadre, ids_vazute = 0, 0, {}
+    for depth in (400.0, 500.0, 700.0, 1000.0, 1500.0, 2000.0):
+        for r in ((0, 0, 0), (0.3, 0, 0), (0, 0.3, 0), (0, 0, 0.4)):
+            img = render(page, ppm, org, syn.rot(*r), [0, 0, depth])
+            _, ids, _ = det.detectMarkers(img)
+            cadre += 1
+            if ids is None:
+                continue
+            for i in ids.flatten():
+                fp += 1
+                ids_vazute[int(i)] = ids_vazute.get(int(i), 0) + 1
+
+    assert 26 not in ids_vazute, (
+        f"tinta de calibrare a fost decodata ca markerul de misiune ID 26 "
+        f"({ids_vazute[26]} cadre din {cadre}). Schimba dictionarul tintei.")
+    alte = ', '.join(f"ID {k} x{v}" for k, v in sorted(ids_vazute.items()))
+    return (f"ID 26 nu apare in {cadre} cadre (cv2 {cv2.__version__}); "
+            f"detectii false cu alte ID-uri: {fp}"
+            + (f" ({alte})" if alte else ""))
 
 
 TESTS = [

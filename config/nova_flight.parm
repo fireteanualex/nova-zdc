@@ -1,0 +1,113 @@
+# NOVA - ZDC 2026 - configuratie VEHICUL REAL (CUAV X7+)
+#
+# Perechea de zbor a lui config/nova_sitl.parm. Se incarca prin Mission
+# Planner / QGroundControl si se verifica OBLIGATORIU prin citire inapoi:
+#
+#     python3 tools/check_params.py --conn /dev/serial0 --baud 921600 \
+#                                   --parm config/nova_flight.parm
+#
+# §5.10 si §5.13: incarcarea unui fisier de parametri NU garanteaza ca s-au
+# aplicat. Pe FC-ul real nu exista `--wipe`; un parametru deja salvat poate
+# ramane neschimbat, iar interfata raporteaza "upload complete". Cod de
+# iesire 0 de la check_params e singura dovada.
+#
+# !! NEVERIFICAT PE HARDWARE. Fisierul e derivat din nova_sitl.parm, care e
+# !! validat in SITL. Diferentele fata de el sunt marcate cu [ZBOR] mai jos.
+# !! Prima rulare a lui check_params.py pe FC-ul real e si prima verificare a
+# !! acestui fisier; pana atunci, trateaza-l ca pe o propunere.
+
+# --- Frame: Quad in X ---
+FRAME_CLASS,1
+FRAME_TYPE,1
+
+# --- Telemetru: MAVLink de la companion (camera face solvePnP, §5.3) ---
+RNGFND1_TYPE,10
+RNGFND1_ORIENT,25
+RNGFND1_MIN,0.05
+RNGFND1_MAX,30
+# Camera la 74.5 mm deasupra solului la contact (§2). De remasurat pe
+# vehiculul asamblat, cu trenul de aterizare montat: o eroare de 1 cm aici
+# se transfera direct in altitudinea raportata la contact.
+RNGFND1_GNDCLR,0.0745
+
+# Urmarirea de suprafata dezactivata: telemetrul nostru e intermitent prin
+# constructie (dispare cand markerul iese din cadru) si ar declansa
+# "Failsafe: Terrain Rangefinder Unhealthy" (§5.4).
+SURFTRAK_MODE,0
+TERRAIN_ENABLE,0
+
+# --- Precision landing (§5.8) ---
+# Porneste DEZACTIVAT; il armeaza companion-ul doar pentru segmentul autonom
+# (nova/state_machine.py: set_precland). Motivul e in §5.8: aceeasi functie
+# e apelata din LAND, RTL si AUTO, deci PLND activ permanent ar face un RTL
+# sa aterizeze pe marker in loc de home - fix opusul a ce cere 15.2.4.
+PLND_ENABLED,0
+PLND_TYPE,1
+PLND_EST_TYPE,1
+PLND_STRICT,2
+PLND_ALT_MIN,0.35
+PLND_YAW_ALIGN,0
+
+# --- Verificari de armare (§5.13) ---
+# Bit 15 = Rangefinder. Camera nu poate produce range la sol (markerul nu
+# incape in cadru la 74 mm), deci verificarea e imposibil de trecut.
+# Compensat prin PLND_STRICT=2 si prin Safety Supervisor.
+ARMING_SKIPCHK,32768
+
+# --- 15.2.7: urcare la 5 m dupa touchdown (§5.7) ---
+# Numele e WP_RFND_USE, nu WPNAV_RFND_USE - obiectul AC_WPNav e inregistrat
+# cu prefixul "WP_". Un PARAM_SET pe numele gresit nu da eroare si nu face
+# nimic; asa l-am pierdut in toate cele 13 rulari din Faza 1.
+WP_RFND_USE,0
+
+# Dupa contact ramanem armati pe sol ~1 s (15.2.7) inainte de urcare.
+DISARM_DELAY,20
+
+# --- [ZBOR] Failsafe de emitator ---
+# SINGURA diferenta functionala fata de nova_sitl.parm, si e deliberata.
+# In SITL e 0 pentru ca puntea de gamepad tine canalele vii prin
+# RC_CHANNELS_OVERRIDE si orice pauza ar arata ca pierdere de emitator.
+# Pe vehiculul real canalele vin de la un receptor adevarat, iar pierderea
+# emitatorului e exact evenimentul pentru care exista failsafe-ul.
+# 1 = activat, actiunea implicita a firmware-ului.
+FS_THR_ENABLE,1
+
+# --- 15.2.4: geofence ---
+# Parametrii FENCE_* NU se pun aici, la fel ca in SITL: ii gestioneaza
+# companion-ul in zbor (nova/fence.py), pentru ca geometria difera intre
+# segmentul autonom (cerc de 10 m pe marker) si restul turului (16.3.2).
+# FenceManager.save()/restore() acopera trecerea intre ele.
+
+# =========================================================================
+# DECIZII DESCHISE - de completat inainte de primul zbor
+# =========================================================================
+#
+# Ce urmeaza depinde de hardware si de emitatorul de concurs, pe care nu le
+# am. Le las NECOMPLETATE deliberat: un parametru inventat care trece
+# check_params e mai rau decat unul lipsa, pentru ca arata ca o afirmatie
+# verificata in Compliance Matrix (§5.10).
+#
+# 1. FLTMODE_CH + FLTMODE1..6
+#    In SITL sunt legate de puntea de gamepad (canal 5, pozitii 1100/1500/
+#    1900). Pe emitatorul de concurs, canalul si treptele sunt altele.
+#    16.2.3 cere un mod de urgenta comutabil direct de la emitator, iar
+#    §5.8/15.3.1 recomanda un abort mapat pe FLTMODE_CH, ca sa nu treaca
+#    prin Pi. De stabilit odata cu emitatorul, apoi adaugat AICI.
+#
+# 2. BATT_MONITOR, BATT_CAPACITY, BATT_LOW_VOLT, BATT_FS_LOW_ACT
+#    2x 6S LiPo 4000 mAh, 25.2 V max (§2). Senzorul de curent si divizorul
+#    depind de placa de putere, care nu e finalizata (§7 pozitia 3).
+#
+# 3. MOT_SPOOL_TIM_DN
+#    §5.6: fereastra intre land_complete si GROUND_IDLE e cea in care
+#    comutam in GUIDED. In SITL implicitul de 0.5 s da o marja de ~5x. Daca
+#    pe Pi reactia iese mai lenta, se MARESTE acesta - nu MOT_SPOOL_TIME,
+#    care ar incetini si spool-up-ul la decolare. De masurat pe banc.
+#
+# 4. INS_*, ATC_* (reglaj PID)
+#    Iyy (pitch) > Ixx (roll) cu 8% conform tensorului din Onshape (§7), deci
+#    castigurile NU se copiaza de pe o axa pe alta. Reglaj dupa asamblare.
+#
+# 5. SERIALn_PROTOCOL / SERIALn_BAUD pentru legatura cu Pi-ul
+#    Depinde de portul fizic folosit pe X7+. MAVLink2, 921600, ca in
+#    tools/nova_pi.py. De adaugat cand se stie portul.
