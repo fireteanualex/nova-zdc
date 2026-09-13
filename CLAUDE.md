@@ -1550,3 +1550,4 @@ Pe desktop, cadru întreg 2304×1296: p50/p99 = 4/6 ms; cu ROI 640×480 sub 5 m:
   comentariu care explică **de ce** — fișierul e sursă de evidență
   pentru Compliance Matrix
 - Orice descoperire empirică se adaugă la §5 al acestui fișier
+§9 ca regulă: testele contează pe platforma de producție, nu pe cea de dezvoltare.
