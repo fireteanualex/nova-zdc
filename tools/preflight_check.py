@@ -278,13 +278,21 @@ def check_mavlink(conn, baud, timeout=MAVLINK_TIMEOUT_S):
         hb = m.wait_heartbeat(timeout=timeout)
     except Exception as e:                                   # noqa: BLE001
         return Result('mavlink', ESEC, f"{type(e).__name__}: {e}")
+    sysid, comp = m.target_system, m.target_component
+    # Portul se ELIBEREAZA explicit. Fara asta, obiectul mavutil tine
+    # /dev/serial0 pana il colecteaza GC-ul, iar `Vehicle.connect()` de dupa
+    # preflight ar putea gasi portul ocupat - de noi insine. Acelasi tipar ca
+    # in §5.27, doar ca vinovatul e propriul proces.
+    try:
+        m.close()
+    except Exception:                                        # noqa: BLE001
+        pass
     if hb is None:
         return Result('mavlink', ESEC,
                       f"niciun heartbeat in {timeout:.0f} s pe {conn}. "
                       f"FC pornit? Baud {baud} corect de ambele parti?")
     return Result('mavlink', OK,
-                  f"heartbeat sys={m.target_system} comp={m.target_component}",
-                  {'sysid': m.target_system})
+                  f"heartbeat sys={sysid} comp={comp}", {'sysid': sysid})
 
 
 def check_params(conn, baud, parm=FLIGHT_PARM, timeout=120):

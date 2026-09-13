@@ -313,6 +313,23 @@ class FrameRing:
             return 0.0
         return self.buf[-1][0] - self.buf[0][0]
 
+    def dump(self, out_dir, prefix='ring'):
+        """Scrie cadrele pe disc. Intoarce lista de fisiere.
+
+        Numele contine timestamp-ul de CAPTURA in milisecunde, nu un index:
+        asa cadrul se poate alinia cu logul supervizorului si cu .bin, care e
+        tot rostul lui 8.3.3 / 6.2.1.30. Un `0001.png` nu se poate pune in
+        relatie cu nimic."""
+        import cv2
+        os.makedirs(out_dir, exist_ok=True)
+        scrise = []
+        for t, frame in list(self.buf):
+            nume = f"{prefix}_{int(t * 1000):015d}.png"
+            cale = os.path.join(out_dir, nume)
+            if cv2.imwrite(cale, frame):
+                scrise.append(cale)
+        return scrise
+
     def since(self, t):
         """Cadrele capturate dupa `t`, cronologic. Grupul C scoate de aici
         cadrul de touchdown, dupa timestamp-ul capturii - nu dupa cel al
@@ -444,6 +461,26 @@ def run_monitor(cfg, cal, args, log, detector=None, vehicle=None, ring=None,
             vehicle = ReadOnlyVehicle(Vehicle(args.conn, baud=baud).connect())
             log.info("telemetrie: %s (numai citire)", args.conn)
 
+    # Dump la cerere, pe SIGUSR1. Serviciul tine ultima secunda in RAM;
+    # fara o cale de a o scoate, ea se pierde la fiecare repornire - exact
+    # cadrele de care e nevoie dupa un incident.
+    #     kill -USR1 $(systemctl show -p MainPID --value nova-monitor)
+    def _dump(_signum=None, _frame=None):
+        try:
+            scrise = ring.dump(args.frames_dir)
+            log.info("ring buffer scris: %d cadre in %s", len(scrise),
+                     args.frames_dir)
+        except Exception as e:                               # noqa: BLE001
+            log.error("dump-ul ring bufferului a esuat: %s", e)
+
+    try:
+        import signal
+        signal.signal(signal.SIGUSR1, _dump)
+        log.info("SIGUSR1 -> scrie ring bufferul in %s", args.frames_dir)
+    except (ValueError, OSError, AttributeError):
+        # Fara fir principal (teste) sau pe platforme fara SIGUSR1.
+        pass
+
     log.info("RACE_MONITOR pornit | calibrare %s | buffer %d cadre",
              cal, args.buffer_frames)
     log.info("autonomy_enabled=%s | serviciul NU comanda vehiculul",
@@ -518,6 +555,9 @@ def main(argv=None):
     p.add_argument('--max-seconds', type=float, default=0.0,
                    help='0 = la nesfarsit (implicit sub systemd)')
     p.add_argument('--log-dir', default=LOG_DIR)
+    p.add_argument('--frames-dir',
+                   default=os.path.join(REPO_ROOT, 'data', 'frames'),
+                   help='unde scrie ring bufferul la SIGUSR1')
     p.add_argument('--check', action='store_true',
                    help='ruleaza verificarile de pornire si iese')
     p.add_argument('--install-unit', action='store_true')

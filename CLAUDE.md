@@ -135,24 +135,33 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── safety.py             # Safety Supervisor
 │   ├── rc.py                 # override pe manșe
 │   ├── fence.py              # geofence prin protocolul de misiune
+│   ├── serial_guard.py       # cine ocupă /dev/serial0 (§5.27)
+│   ├── preview.py            # previzualizare: banc / VNC / bord (§5.28)
+│   ├── race_screen.py        # ecranul de concurs (§5.29)
 │   └── state_machine.py      # mașina de stări a segmentului autonom
 ├── tools/
 │   ├── nova_pi.py            # aplicația de BORD (detector real, fără ocolire E0)
 │   ├── nova_service.py       # serviciul RACE_MONITOR (fără comenzi) + unitatea systemd
-│   ├── setup_pi.sh           # instalare pe Raspberry Pi OS Bookworm
+│   ├── setup_pi.sh           # instalare pe Raspberry Pi OS (Trixie/Bookworm)
 │   ├── preflight_check.py    # verificare de banc; cod 0 doar dacă toate trec
 │   ├── run_e2.py             # colectarea interactivă a datelor E2
+│   ├── race_mode.py          # ziua cursei: preflight + un singur ecran
+│   ├── collect_session.py    # evidența 6.2.1.30: .bin, loguri, cadre, manifest
 │   ├── fake_detector.py      # detector sintetic + aplicația de SIM (ocolește E0)
-│   ├── calibrate_camera.py   # E1.2: tablă de șah → camera_pi.yaml
+│   ├── calibrate_camera.py   # E1.2: ChArUco/tablă de șah → camera_pi.yaml
 │   ├── calibrate_sticks.py   # zgomotul manșelor → deadband
 │   ├── check_params.py       # citire înapoi a parametrilor (§5.10)
 │   ├── check_rc_override.py  # RC_CHANNELS_OVERRIDE se reflectă în RC_CHANNELS?
 │   ├── gamepad_rc.py         # punte gamepad → RC_CHANNELS_OVERRIDE
 │   └── test_*.py             # suite offline: state_machine, safety, handover,
-│                             #   detector_pi, calibrate_camera
+│                             #   detector_pi, calibrate_camera, link, ops,
+│                             #   pi_tooling, make_calib_target
+├── docs/
+│   └── CHECKLIST_TEREN.md    # checklist + tabel simptom → cauză → fix
 ├── systemd/
 │   └── nova-monitor.service  # generat de nova_service.py --install-unit
-├── requirements-pi.txt       # dependențe pip pentru Pi (fără picamera2/numpy)
+├── requirements-pi.txt       # pip comun (fără picamera2/numpy/opencv)
+├── requirements-pi-bookworm.txt  # + OpenCV din pip (§5.24)
 └── docs/
 ```
 
@@ -1170,6 +1179,44 @@ intrare ar fi exact genul de bug care nu se vede până la reproiecție.
 Fără sesiune grafică (`DISPLAY`/`WAYLAND_DISPLAY` nesetate, adică SSH fără
 `-X`), `imshow` aruncă `Can't initialize GUI backend`. `Preview` verifică
 înainte, se stinge singură și spune de ce.
+
+### 5.29 Un ecran de teren se proiectează invers față de un dashboard
+
+Ecranul de concurs (`nova/race_screen.py`) se citește **de la un metru, în
+soare, pe un ecran mic**, în secundele dintre curse. Fiecare decizie e contra
+instinctului normal de interfață:
+
+| instinct | ce trebuie de fapt |
+|---|---|
+| cât mai multă informație | **sub 10 linii**, fiecare cu un singur lucru |
+| nuanțe de culoare pe stări | **trei culori**, binare: verde / galben / roșu |
+| culoarea transmite starea | **cuvintele** o transmit: `NU ZBURA`, `GATA` |
+| cifra e de ajuns | cifra **și unitatea**: `5.2 m`, nu `5.2` |
+| valoarea lipsă = 0 | valoarea lipsă = `-`; `0 fps` și „nu știu" sunt diferite |
+
+Verdictul raportează **cel mai grav** lucru, nu primul găsit: cine vede
+`GATA` trebuie să poată să nu mai citească restul.
+
+Două lucruri prinse abia când s-a desenat ecranul, nu la citirea codului:
+
+- **Eticheta lipită de valoare.** Coloana avea 11 caractere, iar
+  `LEGATURA FC` și `TEMPERATURA` au exact 11 → `LEGATURA FCOK  0.3 s`. La un
+  metru nu se mai citește ca două lucruri. Coloana trebuie **mai lată** decât
+  cea mai lungă etichetă, nu egală.
+- **Unitatea dispărea odată cu valoarea.** Pe un rând cu două cifre
+  (`29 fps   detecție 97%`), un `-` singur nu spune care dintre ele lipsește.
+  Corect: `- fps`.
+
+Terminal pur, nu OpenCV: merge prin SSH, nu cere sesiune grafică și nu ia CPU
+din bugetul detecției (§5.28).
+
+**Modul de concurs refuză să pornească dacă preflight-ul nu e integral verde**
+— inclusiv când singura problemă e o verificare **sărită**. Cod de ieșire 4.
+`tools/race_mode.py` e un lansator subțire peste `nova_pi.py --race`,
+deliberat: al doilea punct de intrare care și-ar construi singur piesele ar
+reintroduce exact clasa de bug din §5.14. Un test citește sursa lui
+`race_mode.py` și pică dacă apare `SafetySupervisor(`, `HandoverGate(`,
+`LandingStateMachine(` sau `run_loop(`.
 
 ---
 

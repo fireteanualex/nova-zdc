@@ -40,6 +40,7 @@ from pymavlink import mavutil                              # noqa: E402
 
 from nova import config as nova_config                     # noqa: E402
 from nova import preview as preview_mod                    # noqa: E402
+from nova import race_screen                              # noqa: E402
 from nova import serial_guard                             # noqa: E402
 from nova.detector_pi import (CameraCalibration, PiCameraSource,  # noqa: E402
                               ArucoMarkerDetector, PiDetector,
@@ -106,6 +107,69 @@ def camera_check(cfg, seconds, show_window=False, preview_scale=0.5):
     return 0 if det.stats()['fps'] else 1
 
 
+class LastDetection:
+    """Invelis peste detector care retine ultima Detection publicata.
+
+    Deleaga tot restul. Exista doar pentru ecran: `poll()` goleste coada, deci
+    fara asta ultima detectie s-ar pierde intre doua redesenari."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.last_detection = None
+
+    def poll(self, now):
+        dets = self._inner.poll(now)
+        if dets:
+            self.last_detection = dets[-1]
+        return dets
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def run_preflight(a):
+    """H4: preflight OBLIGATORIU inainte de modul de concurs.
+
+    Ruleaza exact aceleasi verificari ca `tools/preflight_check.py` - prin
+    import, nu reimplementate, ca sa nu poata diverge. Cod diferit de 0
+    inseamna ca NU pornim: o verificare sarita nu e o verificare trecuta, si
+    o cursa pornita cu preflight-ul picat e o cursa pierduta plus un risc.
+    """
+    import argparse as _ap
+    import preflight_check as pf
+
+    args = _ap.Namespace(
+        config=a.config, conn=a.conn, baud=a.baud,
+        parm=os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), 'config', 'nova_flight.parm'),
+        frames=30, mavlink_timeout=10.0, no_camera=False,
+        no_mavlink=a.no_mavlink, json=False, os_release='/etc/os-release')
+    print("\n  [race] preflight...\n")
+    rezultate = pf.run_checks(args)
+    for r in rezultate:
+        print(r)
+    picate = [r for r in rezultate if r.status == pf.ESEC]
+    sarite = [r for r in rezultate if r.status == pf.SARIT]
+    return rezultate, picate, sarite
+
+
+def race_mode(a, cfg):
+    """Modul de concurs: preflight -> RACE_MONITOR -> un singur ecran."""
+    rezultate, picate, sarite = run_preflight(a)
+    if picate or sarite:
+        print("\n" + race_screen.bar(
+            race_screen.spaced('NU PORNESC'), 'rosu'))
+        for r in picate:
+            print(f"  PICAT  {r.name}: {r.detail}")
+        for r in sarite:
+            print(f"  SARIT  {r.name}: {r.detail} "
+                  f"(o verificare sarita nu e trecuta)")
+        print()
+        return 4
+    print("\n  [race] preflight trecut integral.\n")
+    return None
+
+
 def main():
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -129,6 +193,12 @@ def main():
     # detectiei. Se aprinde explicit, si logul o spune.
     p.add_argument('--show-window', action='store_true',
                    help='previzualizare pe ecran (DEGRADEAZA performanta)')
+    p.add_argument('--race', action='store_true',
+                   help='mod de concurs: preflight obligatoriu + ecran unic')
+    p.add_argument('--no-mavlink', action='store_true',
+                   help='preflight fara FC (banc); NU trece in --race')
+    p.add_argument('--screen-hz', type=float, default=4.0,
+                   help='cat de des se redeseneaza ecranul de concurs')
     p.add_argument('--preview-scale', type=float, default=0.5,
                    help='scara ferestrei; detectia ruleaza pe cadrul plin')
     a = p.parse_args()
@@ -154,6 +224,20 @@ def main():
         print("\n[bord] anulat.\n")
         return 3
 
+    # H4: preflight INAINTE de a construi detectorul.
+    #
+    # Prima varianta il rula DUPA, cu motivarea ca "asa un esec de camera se
+    # vede in preflight, nu ca exceptie". Gresit, si greseala se vedea doar
+    # pe Pi: detectorul tine deja camera, iar `check_camera` incearca sa
+    # deschida a doua oara acelasi senzor. Pe desktop nu se manifesta (nu
+    # exista picamera2), deci ar fi ajuns pe teren. Preflight-ul e oricum
+    # scris ca sa deschida SI sa inchida singur camera - exact ca sa poata
+    # rula primul.
+    if a.race:
+        rc = race_mode(a, cfg)
+        if rc is not None:
+            return rc
+
     try:
         if a.camera_check:
             return camera_check(cfg, a.seconds, a.show_window,
@@ -178,6 +262,8 @@ def main():
     sup = SafetySupervisor(vehicle, override=override)
 
     def signal_reject(reason):
+        if ecran is not None:
+            ecran.note_handover(False, reason, time.time())
         print(f"\n!! HANDOVER REFUZAT: {reason}\n")
         try:
             vehicle.m.mav.statustext_send(
@@ -189,11 +275,29 @@ def main():
 
     # Fara autonomy_enabled= aici: poarta citeste config/nova.json (E0).
     gate = HandoverGate(vehicle, override, on_reject=signal_reject)
+    # Ecranul are nevoie de ultima detectie (px si varsta). O ia dintr-un
+    # invelis peste detector, nu dintr-o modificare in run_loop: bucla e
+    # validata si nu vrem sa o atingem pentru afisare.
+    detector = LastDetection(detector)
     sm = LandingStateMachine(vehicle, SequenceConfig(conv=a.conv), gate=gate)
 
+    ecran = race_screen.RaceScreen() if a.race else None
+
     def status(now):
-        print(f"{sm.status_line()} | {detector.status_line()} | "
-              f"{sup.status()}")
+        if ecran is None:
+            print(f"{sm.status_line()} | {detector.status_line()} | "
+                  f"{sup.status()}")
+            return
+        # Verdictul de handover se CITESTE din poarta la fiecare redesenare,
+        # nu se tine intr-o variabila proprie actualizata prin callback. Un
+        # ecran care isi tine propria copie a starii poate ramane in urma,
+        # si exact asta nu are voie sa se intample cu un refuz de handover.
+        if gate.decided is not None:
+            ecran.note_handover(bool(gate.decided), gate.reason, now)
+        snap = race_screen.snapshot(cfg, sm=sm, detector=detector,
+                                    vehicle=vehicle, preflight_ok=True,
+                                    last_det=detector.last_detection, now=now)
+        ecran.draw(snap)
 
     pv = preview_mod.onboard_preview('NOVA bord', enabled=a.show_window,
                                      scale=a.preview_scale)
