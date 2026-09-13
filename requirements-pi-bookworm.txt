@@ -1,0 +1,22 @@
+# NOVA - ZDC 2026 - dependente pip SUPLIMENTARE pentru Raspberry Pi OS Bookworm
+#
+# Pe Bookworm, python3-opencv din apt e 4.6.0, adica inainte de API-ul nou de
+# ArUco (`cv2.aruco.ArucoDetector`, aparut in 4.7.0). Deci OpenCV vine din
+# pip aici - singura distributie unde facem asta.
+#
+# DE CE 4.10 SI NU 5.x PE BOOKWORM
+#
+#   opencv-contrib-python 5.0.0.93 declara `numpy>=2; python_version>="3.9"`.
+#   Bookworm are Python 3.11 si numpy 1.24.2 din apt, deci pip ar instala
+#   numpy 2.x IN venv, peste cel de sistem, iar simplejpeg si restul stivei
+#   picamera2 - compilate pentru ABI-ul numpy 1.x - se rup. Eroarea apare la
+#   `import picamera2`, departe de cauza.
+#
+#   4.10.0.84 cere numpy>=1.21, deci se multumeste cu cel din apt.
+#
+#   Pe TRIXIE constrangerea asta nu mai exista (apt da numpy 2.2.4), dar
+#   acolo oricum luam OpenCV din apt. Vezi §5.24 din CLAUDE.md.
+
+-r requirements-pi.txt
+
+opencv-contrib-python==4.10.0.84

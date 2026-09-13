@@ -54,6 +54,23 @@ DESCENT_RATE_HOLD_S = 0.5
 MAX_TILT_DEG = 30.0
 TILT_HOLD_S = 0.3
 
+#: H1 - varsta maxima a legaturii cu FC-ul inainte de a pluti.
+#:
+#: De ce are acelasi tratament ca pierderea detectiei: sunt moduri de esec
+#: diferite cu ACEEASI consecinta. Daca LANDING_TARGET nu ajunge la FC,
+#: vehiculul continua sa coboare in LAND fara corectie laterala - exact ce
+#: se intampla cand markerul nu mai e vazut. Un supervizor care monitorizeaza
+#: doar detectia acopera jumatate din cazuri.
+#:
+#: 1.0 s, adica dublul lui DETECTION_MAX_AGE_S si o treime din
+#: HEARTBEAT_TIMEOUT_S al lui Vehicle. Mai lung decat pragul de detectie
+#: pentru ca o cadere de link e mai rara si mai grava decat un cadru pierdut,
+#: si nu vrem sa declansam pe o intarziere de planificare a Pi-ului.
+#: Mai scurt decat pragul de reconectare pentru ca supervizorul trebuie sa
+#: reactioneze INAINTE ca Vehicle sa inceapa sa reincerce - franarea nu are
+#: voie sa astepte dupa un cablu. PROVIZORIU: de recalibrat pe teren.
+LINK_MAX_AGE_S = 1.0
+
 #: Cat asteptam confirmarea modului comandat, inainte de a reincerca.
 MODE_CONFIRM_S = 0.3
 MODE_RETRY_MAX = 5
@@ -136,7 +153,8 @@ class SafetySupervisor:
                  geofence_radius_m=GEOFENCE_RADIUS_M,
                  ceiling_agl_m=CEILING_AGL_M,
                  max_descent_rate_ms=MAX_DESCENT_RATE_MS,
-                 max_tilt_deg=MAX_TILT_DEG):
+                 max_tilt_deg=MAX_TILT_DEG,
+                 link_max_age_s=LINK_MAX_AGE_S):
         self.v = vehicle
         self.on_event = on_event
         self.verbose = verbose
@@ -146,6 +164,7 @@ class SafetySupervisor:
         self.ceiling_agl_m = ceiling_agl_m
         self.max_descent_rate_ms = max_descent_rate_ms
         self.max_tilt_deg = max_tilt_deg
+        self.link_max_age_s = link_max_age_s
 
         self.armed = False
         self.auto_arm = True      # se armeaza singur din faza primita
@@ -267,7 +286,7 @@ class SafetySupervisor:
 
         worst, monitor, detail = Action.NONE, None, ''
         for mon in (self._mon_override, self._mon_detection_age,
-                    self._mon_radius, self._mon_ceiling,
+                    self._mon_link, self._mon_radius, self._mon_ceiling,
                     self._mon_descent_rate, self._mon_tilt):
             act, name, why = mon(now, detection_age_s, phase)
             if act > worst:
@@ -319,9 +338,15 @@ class SafetySupervisor:
                            f"FC ramane in {self.v.mode_name()} dupa "
                            f"{MODE_RETRY_MAX} comenzi", 'FAIL')
             return
+        # H1: daca legatura e cazuta, request_mode() intoarce False fara sa
+        # trimita nimic. Nu contorizam incercarea - altfel supervizorul si-ar
+        # consuma cele MODE_RETRY_MAX incercari vorbind cu un port inchis si
+        # ar declara mode_fail fara sa fi emis vreun octet. Cand legatura
+        # revine, comanda pleaca si numaratoarea e intacta.
         self._mode_req_t = now
+        if self.v.request_mode(self._want_mode) is False:
+            return
         self._mode_req_n += 1
-        self.v.request_mode(self._want_mode)
 
     # -- monitoare ---------------------------------------------------------
     # Fiecare intoarce (actiune, nume, motiv). Niciunul nu are voie sa
@@ -353,6 +378,37 @@ class SafetySupervisor:
             return (Action.BRAKE, 'detection_age',
                     f"ultima detectie acum {age:.2f} s "
                     f"(prag {self.detection_max_age_s:.2f} s)")
+        return Action.NONE, None, ''
+
+    def _mon_link(self, now, age, phase):
+        """H1: legatura cu FC-ul cazuta -> planeaza, ca la pierderea detectiei.
+
+        ACELEASI faze ca monitorul de detectie, si pentru acelasi motiv
+        (DETECTION_MONITORED_PHASES). In FINAL_DESCENT si dupa, coborarea e
+        deliberat oarba si verticala: nu mai trimitem corectii laterale, deci
+        o legatura cazuta acolo nu schimba traiectoria. A abortat in ultimul
+        metru pentru un cablu ar fi exact greseala pe care o evitam la
+        detectie.
+
+        Se bazeaza pe `Vehicle.time_since_heartbeat()`. Un vehicul care nu
+        expune metoda (teste vechi, obiecte simulate) nu e monitorizat -
+        formulat asa deliberat, ca introducerea monitorului sa nu strice ce
+        mergea; testele care CHIAR verifica monitorul folosesc un vehicul
+        care o expune."""
+        if phase not in DETECTION_MONITORED_PHASES:
+            return Action.NONE, None, ''
+        fn = getattr(self.v, 'time_since_heartbeat', None)
+        if fn is None:
+            return Action.NONE, None, ''
+        link_age = fn(now)
+        if link_age is None:
+            return (Action.BRAKE, 'link_age',
+                    'niciun HEARTBEAT de la FC de la pornire')
+        if link_age > self.link_max_age_s:
+            return (Action.BRAKE, 'link_age',
+                    f"fara HEARTBEAT de {link_age:.2f} s "
+                    f"(prag {self.link_max_age_s:.2f} s); "
+                    f"LANDING_TARGET nu mai ajunge la FC")
         return Action.NONE, None, ''
 
     def _mon_radius(self, now, age, phase):
@@ -420,7 +476,13 @@ class SafetySupervisor:
         if not self.armed:
             return 'SAFETY dezarmat'
         if self.latched == Action.NONE:
-            return f"SAFETY activ | {self.override.status()}"
+            fn = getattr(self.v, 'time_since_heartbeat', None)
+            link = ''
+            if fn is not None:
+                a = fn()
+                link = (' | link -' if a is None
+                        else f" | link {a:.1f}s")
+            return f"SAFETY activ | {self.override.status()}{link}"
         conf = 'confirmat' if self._mode_confirmed else 'NECONFIRMAT'
         return (f"SAFETY {Action.NAMES[self.latched]} "
                 f"({self.latched_monitor}), mod {conf}")

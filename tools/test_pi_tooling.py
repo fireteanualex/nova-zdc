@@ -99,8 +99,10 @@ def test_G1_poarta_de_platforma():
     with open(model, 'w') as f:
         f.write('Raspberry Pi 4 Model B Rev 1.5\x00')
     cazuri = [
+        ('trixie', 'debian', 'trixie', 'Debian GNU/Linux 13 (trixie)', 0),
         ('bookworm', 'debian', 'bookworm', 'Debian GNU/Linux 12 (bookworm)', 0),
         ('bullseye', 'raspbian', 'bullseye', 'Raspbian GNU/Linux 11', 1),
+        ('forky', 'debian', 'forky', 'Debian GNU/Linux 14', 1),
         ('ubuntu', 'ubuntu', 'jammy', 'Ubuntu 22.04.5 LTS', 1),
     ]
     vazute = []
@@ -198,26 +200,95 @@ def test_G1_NEGATIV_verificarea_finala_chiar_verifica():
             "si ESEC")
 
 
-def test_G1_requirements():
-    """picamera2 si numpy NU sunt in requirements; versiunile sunt fixate;
-    OpenCV e 4.x, nu 5.x (vezi §5.24)."""
-    path = os.path.join(REPO, 'requirements-pi.txt')
-    linii = [l.split('#')[0].strip() for l in open(path)]
-    pachete = [l for l in linii if l]
-    nume = {p.split('==')[0].lower() for p in pachete}
-    assert 'picamera2' not in nume, "picamera2 vine din apt, nu din pip"
-    assert 'numpy' not in nume, "numpy vine din apt, cu picamera2"
-    for p in pachete:
-        assert '==' in p, f"versiune nefixata: {p}"
-    ocv = [p for p in pachete if p.startswith('opencv')]
-    assert len(ocv) == 1, f"asteptam exact un pachet opencv: {ocv}"
+def _requirements(name):
+    linii = [l.split('#')[0].strip()
+             for l in open(os.path.join(REPO, name))]
+    return [l for l in linii if l and not l.startswith('-r ')]
+
+
+def test_H0_requirements_pe_doua_cai():
+    """Trixie ia OpenCV din apt; Bookworm din pip, 4.x. numpy niciodata."""
+    comun = _requirements('requirements-pi.txt')
+    bw = _requirements('requirements-pi-bookworm.txt')
+    for eticheta, pachete in (('comun', comun), ('bookworm', bw)):
+        nume = {p.split('==')[0].lower() for p in pachete}
+        assert 'picamera2' not in nume, f"{eticheta}: picamera2 vine din apt"
+        assert 'numpy' not in nume, (
+            f"{eticheta}: numpy vine din apt. O versiune pip peste cea de "
+            f"sistem sparge simplejpeg (§5.24).")
+        for pk in pachete:
+            assert '==' in pk, f"{eticheta}: versiune nefixata: {pk}"
+
+    assert not [p for p in comun if p.startswith('opencv')], (
+        "requirements-pi.txt nu are voie sa contina OpenCV: pe Trixie vine "
+        "din apt")
+    ocv = [p for p in bw if p.startswith('opencv')]
+    assert len(ocv) == 1, f"asteptam exact un opencv pe Bookworm: {ocv}"
     ver = ocv[0].split('==')[1]
     assert ver.startswith('4.'), (
-        f"OpenCV {ver}: 5.x cere numpy>=2, care sparge picamera2 pe Bookworm "
-        f"(numpy 1.24.2 din apt). Vezi §5.24.")
-    txt = open(path).read()
-    assert 'system-site-packages' in txt, "lipseste diagnosticul de conflict"
-    return f"{len(pachete)} pachete fixate, fara picamera2/numpy; opencv {ver}"
+        f"OpenCV {ver} pe Bookworm: 5.x cere numpy>=2, iar apt da 1.24.2, "
+        f"deci pip ar instala numpy in venv si ar sparge picamera2 (§5.24).")
+    major, minor = (int(x) for x in ver.split('.')[:2])
+    assert (major, minor) >= (4, 7), (
+        f"OpenCV {ver} < 4.7: fara cv2.aruco.ArucoDetector")
+
+    # requirements-pi-bookworm.txt trebuie sa includa fisierul comun, altfel
+    # pe Bookworm ar lipsi pymavlink.
+    assert any(l.strip().startswith('-r ') and 'requirements-pi.txt' in l
+               for l in open(os.path.join(REPO,
+                                          'requirements-pi-bookworm.txt'))), \
+        "requirements-pi-bookworm.txt nu include requirements-pi.txt"
+    assert 'system-site-packages' in open(
+        os.path.join(REPO, 'requirements-pi.txt')).read()
+    return (f"comun: {len(comun)} pachete fara opencv; "
+            f"bookworm: +opencv {ver}")
+
+
+def test_H0_setup_alege_calea_dupa_distributie():
+    """Trixie -> apt opencv + requirements-pi.txt;
+    Bookworm -> pip opencv prin requirements-pi-bookworm.txt."""
+    tmp = tempfile.mkdtemp()
+    model = os.path.join(tmp, 'model')
+    open(model, 'w').write('Raspberry Pi 4 Model B\x00')
+    vazute = {}
+    for code in ('trixie', 'bookworm'):
+        osr = os_release_fixture(tmp, code, 'debian', code, f"Debian ({code})")
+        r = run_setup(['--dry-run'], {
+            'NOVA_OS_RELEASE': osr, 'NOVA_MODEL_FILE': model,
+            'NOVA_VENV': os.path.join(tmp, f'v-{code}')})
+        assert r.returncode == 0, f"{code} refuzat:\n{r.stderr}"
+        apt = [l for l in r.stdout.splitlines() if 'apt-get install' in l][0]
+        pip = [l for l in r.stdout.splitlines() if 'pip install -r' in l][0]
+        vazute[code] = (('python3-opencv' in apt), os.path.basename(pip.split()[-1]))
+
+    assert vazute['trixie'] == (True, 'requirements-pi.txt'), vazute['trixie']
+    assert vazute['bookworm'] == (False, 'requirements-pi-bookworm.txt'), \
+        vazute['bookworm']
+    return (f"trixie: opencv din apt + {vazute['trixie'][1]}; "
+            f"bookworm: pip + {vazute['bookworm'][1]}")
+
+
+def test_H0_verificarea_de_stiva():
+    """preflight raporteaza CALEA fiecarui pachet; pe Pi, numpy din venv e ESEC."""
+    r = pf.check_stack()
+    assert r.status == pf.OK, (
+        f"pe desktop, numpy din venv nu e o problema (nu exista picamera2), "
+        f"dar a fost raportat ca {r.status}: {r.detail}")
+    assert 'numpy' in r.detail and 'cv2' in r.detail
+    assert '/' in r.detail, "nu raporteaza CALEA, doar versiunea"
+
+    # acelasi mediu, dar pretinzand ca suntem pe Pi -> devine ESEC
+    vechi = pf._model
+    try:
+        pf._model = lambda path=None: 'Raspberry Pi 4 Model B Rev 1.5'
+        r2 = pf.check_stack()
+    finally:
+        pf._model = vechi
+    assert r2.status == pf.ESEC, (
+        "pe Pi, numpy incarcat din venv trebuie sa pice: picamera2 si "
+        "simplejpeg sunt compilate impotriva celui de sistem")
+    assert 'setup_pi.sh' in r2.detail, "refuzul nu spune cum se repara"
+    return "desktop: OK cu cale; acelasi mediu pretinzand Pi: ESEC"
 
 
 # --- G2: serviciul ----------------------------------------------------------
@@ -589,15 +660,17 @@ def test_G4_totul_trece_da_zero():
                               parm=os.path.join(REPO, 'config',
                                                 'nova_flight.parm'),
                               frames=12, mavlink_timeout=1.0, no_camera=False,
-                              no_mavlink=True, json=False)
+                              no_mavlink=True, json=False,
+                              os_release='/etc/os-release')
     res = pf.run_checks(args, source_factory=SursaBuna)
     dupa = {r.name: r.status for r in res}
-    for nume in ('calibrare', 'rezolutie', 'camera', 'imagine', 'controale'):
+    for nume in ('stiva', 'calibrare', 'rezolutie', 'camera', 'imagine',
+                 'controale'):
         assert dupa[nume] == pf.OK, f"{nume}: {dupa[nume]}"
     # Cu --no-mavlink raman doua SARIT, deci codul NU e 0 - asta e regula.
     sarite = [r.name for r in res if r.status == pf.SARIT]
     assert sarite == ['mavlink', 'parametri'], sarite
-    return (f"5 verificari locale OK; sarite: {', '.join(sarite)} "
+    return (f"6 verificari locale OK; sarite: {', '.join(sarite)} "
             f"-> cod de iesire diferit de 0, cum trebuie")
 
 
@@ -652,7 +725,8 @@ def test_G4_NEGATIV_rezolutie_nepotrivita():
 
     args = argparse.Namespace(config=cfg_path, conn='/dev/null', baud=1,
                               parm='x', frames=4, mavlink_timeout=0.1,
-                              no_camera=False, no_mavlink=True, json=False)
+                              no_camera=False, no_mavlink=True, json=False,
+                              os_release='/etc/os-release')
     res = {r.name: r for r in pf.run_checks(args, source_factory=SursaMica)}
     assert res['rezolutie'].status == pf.ESEC, res['rezolutie'].detail
     assert '1280x720' in res['rezolutie'].detail
@@ -729,13 +803,16 @@ def test_G4_codul_de_iesire_ca_poarta():
 
 
 TESTS = [
-    ('G1: poarta de platforma (Bookworm)', test_G1_poarta_de_platforma),
+    ('H0: poarta de platforma (trixie+bookworm)', test_G1_poarta_de_platforma),
     ('G1: ordinea apt -> venv -> pip', test_G1_ordinea_pasilor),
     ('G1 NEGATIV: venv fara --system-site-packages',
      test_G1_NEGATIV_venv_fara_system_site_packages),
     ('G1 NEGATIV: verificarea finala chiar verifica',
      test_G1_NEGATIV_verificarea_finala_chiar_verifica),
-    ('G1: requirements-pi.txt', test_G1_requirements),
+    ('H0: requirements pe doua cai', test_H0_requirements_pe_doua_cai),
+    ('H0: setup alege calea dupa distributie',
+     test_H0_setup_alege_calea_dupa_distributie),
+    ('H0: verificarea de stiva', test_H0_verificarea_de_stiva),
     ('G2: calibrarea ceruta la pornire', test_G2_calibrarea_ceruta_la_pornire),
     ('G2: bariera de comanda', test_G2_bariera_de_comanda),
     ('G2: ring buffer', test_G2_ring_buffer),

@@ -156,10 +156,11 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 └── docs/
 ```
 
-**Două stive Python de producție, nu una.** Desktopul rulează OpenCV 5.0 +
-numpy 2.x; Pi-ul rulează OpenCV 4.10 + numpy 1.24 din apt, pentru că
-picamera2 nu suportă numpy 2. Nu e o scăpare, e un conflict fără soluție —
-vezi §5.24 pentru ce diferă între ele, măsurat.
+**Două stive Python de producție, nu una.** Desktopul rulează Ubuntu 22.04 cu
+OpenCV 5.0; vehiculul rulează **Raspberry Pi OS Trixie**, Python 3.13, cu
+numpy 2.2.4 și OpenCV 4.10 **din apt**. Pe Pi nimic nu se instalează peste
+pachetele de sistem, pentru că picamera2 e compilat împotriva lor — vezi
+§5.24 pentru regula completă și pentru ce diferă între versiuni, măsurat.
 
 **Separarea detector ↔ control.** Detectorul *publică* doar detecții
 (`poll(now)` → `Detection`: offset unghiular, distanță, `marker_px`, range,
@@ -953,29 +954,47 @@ Consecințe practice:
 Cifrele sunt sintetice, fără blur de mișcare și fără hârtie reală. E2 le
 poate doar înrăutăți.
 
-### 5.24 Pi-ul și desktopul NU pot rula aceeași versiune de OpenCV
+### 5.24 Două stive Python: ce e pe vehicul, și de ce
 
-Nu e o preferință, e un conflict dur de dependențe:
+**Stiva reală, măsurată pe vehicul** (nu presupusă — vezi nota de la final):
 
-- `opencv-contrib-python 5.0.0.93` declară `numpy>=2` pentru Python ≥ 3.9
-- Raspberry Pi OS Bookworm are Python 3.11 și **numpy 1.24.2 din apt**, ca
-  dependență a lui `python3-picamera2`
-- `simplejpeg` și restul stivei picamera2 sunt compilate pentru ABI-ul
-  numpy 1.x
+| | desktop | Raspberry Pi |
+|---|---|---|
+| Distribuție | Ubuntu 22.04 | **Raspberry Pi OS Trixie** |
+| Python | 3.10 | **3.13.5** |
+| numpy | 2.2.6 (pip) | **2.2.4 (apt)** |
+| OpenCV | 5.0.0 (pip) | **4.10.0 (apt, `python3-opencv`)** |
 
-Deci un `pip install opencv-contrib-python==5.*` într-un venv cu
-`--system-site-packages` instalează numpy 2.x **în venv**, peste cel din apt,
-și rupe picamera2. Simptomul (`_ARRAY_API not found`, `numpy.core.multiarray
-failed to import`) apare la `import picamera2`, adică departe de cauză.
+Regula pe Pi, indiferent de distribuție: **numpy și picamera2 vin din apt și
+nimic nu se instalează peste ele.** picamera2 și `simplejpeg` sunt compilate
+împotriva numpy-ului de sistem; o copie pip în venv le umbrește și le rupe,
+iar eroarea (`_ARRAY_API not found`) apare la `import picamera2`, departe de
+cauză. De aceea venv-ul se creează cu `--system-site-packages`.
 
-`requirements-pi.txt` fixează deci **OpenCV 4.10.0.84**, care cere
-`numpy>=1.21` și se mulțumește cu cel din apt. Pi-ul rulează 4.10, desktopul
-5.0, și asta rămâne așa.
+**De unde vine OpenCV depinde de distribuție, și criteriul e versiunea din
+apt:**
 
-**Ce costă, măsurat pe un venv care imită stiva Bookworm.**
+| distribuție | `python3-opencv` din apt | ce facem |
+|---|---|---|
+| Trixie | **4.10.0** | apt. Construit împotriva numpy 2.2.4 de sistem. |
+| Bookworm | 4.6.0 | **pip**, fixat la 4.10.0.84 |
+| Bullseye | 4.5.x | nesuportat |
 
-Pe markerul de misiune, nimic care să conteze — aceleași cadre sintetice,
-ambele versiuni:
+Pragul e **4.7.0**, unde a apărut `cv2.aruco.ArucoDetector`. Codul îl
+folosește peste tot, deci pe Bookworm apt-ul nu e o opțiune. Iar acolo
+versiunea pip nu poate fi 5.x: `opencv-contrib-python 5.0.0.93` cere
+`numpy>=2`, iar Bookworm are 1.24.2 din apt → pip ar instala numpy 2 în venv
+→ picamera2 se rupe.
+
+> Pe **Trixie** constrângerea aceea nu mai există: apt dă numpy 2.2.4, care
+> satisface `numpy>=2`, deci OpenCV 5 prin pip ar merge. Rămânem totuși pe
+> apt — o copie pip peste build-ul de sistem înseamnă două OpenCV-uri în
+> același proces, iar cel din apt e cel împotriva căruia e construit restul
+> distribuției. Deci pe Trixie diferența de versiune față de desktop e o
+> **alegere**, nu o imposibilitate.
+
+**Ce costă diferența de versiune, măsurat.** Un venv de paritate
+(numpy 2.2.4 + OpenCV 4.10.0.84) față de desktop (numpy 2.2.6 + OpenCV 5.0):
 
 | distanță | colțuri | distanță | unghiuri |
 |---|---|---|---|
@@ -983,35 +1002,49 @@ ambele versiuni:
 | 5.0 m | 0.005 px | 0.0005% | 0.000° |
 | 12.0 m | 0.004 px | 0.0059% | 0.000° |
 
-Praguri E1: 1 px, 2%, 0.3°. Cifrele validate pe desktop se transferă.
-Întreaga suită (126 de teste) trece identic pe ambele stive.
+Praguri E1: 1 px, 2%, 0.3°. Cifrele validate pe desktop se transferă, iar
+suita trece integral pe ambele.
 
-Pe ținta de calibrare **NU**, și asta a invalidat un test din runda 4, care
-raporta „0 detecții în `DICT_4X4_50`" ca dovadă a separării de dicționare:
+**Rezultatele sunt identice bit cu bit cu cele măsurate pe stiva Bookworm**
+(numpy 1.24.2 + același OpenCV 4.10): versiunea de numpy nu schimbă nimic în
+ieșirea detectorului, ceea ce e de așteptat — numpy e doar containerul de
+array-uri. Ce contează e versiunea de **OpenCV**.
 
-| | OpenCV 5.0 | OpenCV 4.10 |
+**Unde versiunea de OpenCV chiar contează.** Pe ținta de calibrare ChArUco,
+detectorul `DICT_4X4_50` produce detecții false pe 4.10 și niciuna pe 5.0:
+
+| | OpenCV 5.0 | OpenCV 4.10 (ambele stive Pi) |
 |---|---|---|
 | detecții false în `DICT_4X4_50` | 0 / 36 | **5 / 36** (ID 48) |
 | ID 26 (markerul de misiune) | 0 | 0 |
 
-Afirmația era adevărată doar pe versiunea de pe desktop — exact versiunea pe
-care **nu** o rulează vehiculul. Ce ne protejează pe ambele e **filtrul de ID**
-din `ArucoMarkerDetector`, nu alegerea dicționarului.
+Runda 4 raportase „0 detecții în `DICT_4X4_50`" ca dovadă a separării de
+dicționare. Adevărat doar pe versiunea de pe desktop — exact cea pe care
+vehiculul nu o rulează. Ce ne protejează pe toate versiunile e **filtrul de
+ID** din `ArucoMarkerDetector`.
 
-**Regula generală:** un test rulat pe altă platformă decât cea de producție
-măsoară platforma de test. Înainte de a scrie „verificat" despre ceva ce
-depinde de o bibliotecă, verifică pe versiunea de pe vehicul. Un venv de
-unică folosință cu versiunile de pe Pi costă două minute:
+**Regula generală, plătită de două ori.** Prima oară testul măsura corect pe
+platforma greșită. A doua oară am scris o rundă întreagă de unelte pentru
+Bookworm, cu o gardă de platformă care **respingea** distribuția de pe
+vehicul. Codul era corect; presupunerea despre mediu nu.
+
+Deci: înainte de a scrie „verificat" despre ceva ce depinde de mediu,
+**citește mediul de pe vehicul**, nu specificația din care crezi că vine.
+`tools/preflight_check.py` raportează acum, la fiecare rulare, distribuția,
+Python, numpy, OpenCV și **calea** fiecăruia — calea e cea care arată dacă
+pip a pus o copie peste sistem.
+
+Venv de paritate pentru teste, două minute:
 
 ```bash
-python3 -m venv /tmp/bookworm-sim
-/tmp/bookworm-sim/bin/pip install numpy==1.24.2 \
-    opencv-contrib-python==4.10.0.84 pymavlink==2.4.49
-for t in tools/test_*.py; do /tmp/bookworm-sim/bin/python "$t"; done
+python3 -m venv /tmp/trixie-sim
+/tmp/trixie-sim/bin/pip install numpy==2.2.4 \
+    opencv-contrib-python==4.10.0.84 pymavlink==2.4.49 PyYAML
+for t in tools/test_*.py; do /tmp/trixie-sim/bin/python "$t"; done
 ```
 
-(Nu are picamera2, deci testele de cameră nu rulează acolo — dar tot restul
-suitei da.)
+Nu are picamera2 și rulează pe Python 3.10, nu 3.13, deci nu acoperă chiar
+tot — dar acoperă versiunea de OpenCV, care e ce contează pentru detecție.
 
 ### 5.25 O barieră de siguranță se scrie ca listă albă
 

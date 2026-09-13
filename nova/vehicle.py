@@ -44,6 +44,19 @@ PARAM_TRIES = 5
 RANGE_MIN_M = 0.05
 RANGE_MAX_M = 30.0
 
+# --- Sanatatea legaturii cu FC-ul (H1) -----------------------------------
+# Un cablu serial care se misca nu trebuie sa omoare procesul in mijlocul
+# unei curse. FC-ul trimite HEARTBEAT la 1 Hz; 3 s inseamna trei batai
+# pierdute, adica destul cat sa nu declansam pe o intarziere si destul de
+# putin cat sa reactionam inainte sa conteze.
+HEARTBEAT_TIMEOUT_S = 3.0
+
+#: Backoff exponential intre incercarile de redeschidere: 1, 2, 4, 8, 8, ...
+#: Plafonul exista pentru ca un cablu rebransat dupa zece minute trebuie sa
+#: fie prins in cel mult 8 s, nu dupa un interval care a crescut la infinit.
+RECONNECT_BACKOFF_S = (1.0, 2.0, 4.0, 8.0)
+RECONNECT_BACKOFF_MAX_S = 8.0
+
 
 class Vehicle:
 
@@ -85,6 +98,17 @@ class Vehicle:
         self.ds_extended = True
         self.m = None
 
+        # H1: sanatatea legaturii. `link_healthy` e False de la inceput si
+        # devine True la primul HEARTBEAT - nu presupunem ca merge pana la
+        # proba contrarie.
+        self.hb_t = None              # time.monotonic() al ultimului HEARTBEAT
+        self.link_healthy = False
+        self.reconnects = 0           # cate redeschideri au reusit
+        self.reconnect_attempts = 0   # cate s-au incercat de la ultima reusita
+        self._reconnect_next_t = None
+        self.on_link_event = None     # callback(dict) pentru log
+        self.link_verbose = True      # print pe stdout; testele il sting
+
         # Protocolul de misiune (fence) are nevoie de mesajele MISSION_*, dar
         # pump() le-ar consuma primul. Cine face upload/download isi pune aici
         # un handler si le primeste, fara sa oprim bucla principala.
@@ -97,12 +121,135 @@ class Vehicle:
         kwargs = {'baud': self.baud} if self.baud else {}
         self.m = mavutil.mavlink_connection(self.conn_str, **kwargs)
         self.m.wait_heartbeat()
+        self._note_heartbeat()
         if verbose:
             print(f"[vehicle] heartbeat sys={self.m.target_system} "
                   f"comp={self.m.target_component}")
         self._request_streams()
         self._probe_distance_api(verbose)
         return self
+
+    # -- sanatatea legaturii (H1) ------------------------------------------
+    def _note_heartbeat(self, now=None, detail='HEARTBEAT primit'):
+        """Un HEARTBEAT de la FC. Emite `link_up` DOAR la tranzitie.
+
+        Evenimentul e unul singur, aici: prima varianta il emitea si de aici,
+        si de la sfarsitul lui `_try_reopen`, deci fiecare reconectare aparea
+        de doua ori in log. Un log de siguranta care numara gresit
+        evenimentele e mai rau decat unul absent."""
+        now = now if now is not None else time.monotonic()
+        self.hb_t = now
+        if not self.link_healthy:
+            self.link_healthy = True
+            incercari = self.reconnect_attempts
+            self.reconnect_attempts = 0
+            self._reconnect_next_t = None
+            if incercari:
+                detail = (f"{detail} dupa {incercari} incercari "
+                          f"(reconectari reusite: {self.reconnects})")
+            self._link_event('link_up', now, detail)
+
+    def _link_event(self, kind, now, detail):
+        """Un eveniment de legatura, cu ceasul FC-ului cand exista.
+
+        `time_boot_ms` e ultima valoare primita INAINTE de caderea legaturii,
+        deci in logul de reconectare e o ancora spre .bin (6.2.1.30), nu o
+        valoare curenta. Se noteaza ca atare."""
+        ev = {'kind': kind, 't': now, 'time_boot_ms': self.time_boot_ms,
+              'detail': detail, 'attempts': self.reconnect_attempts}
+        if self.link_verbose:
+            tb = '-' if self.time_boot_ms is None else str(self.time_boot_ms)
+            print(f"[link {kind}] t={now:.3f} boot_ms={tb} {detail}")
+        if self.on_link_event:
+            self.on_link_event(ev)
+        return ev
+
+    def time_since_heartbeat(self, now=None):
+        """Secunde de la ultimul HEARTBEAT, sau None daca nu a existat."""
+        if self.hb_t is None:
+            return None
+        now = now if now is not None else time.monotonic()
+        return now - self.hb_t
+
+    def _backoff_s(self, attempt):
+        """Pauza DUPA incercarea `attempt` (1-based): 1, 2, 4, 8, 8, ...
+
+        Indexul e `attempt - 1`, nu `attempt`: prima incercare trebuie urmata
+        de 1 s, nu de 2. Scris gresit, secventa pornea de la al doilea
+        element si pierdeam prima secunda de reconectare - cel mai probabil
+        moment in care cablul e deja inapoi la loc."""
+        i = min(max(attempt - 1, 0), len(RECONNECT_BACKOFF_S) - 1)
+        return min(RECONNECT_BACKOFF_S[i], RECONNECT_BACKOFF_MAX_S)
+
+    def check_link(self, now=None):
+        """De apelat din bucla, dupa pump(). NU blocheaza niciodata.
+
+        Daca heartbeat-ul lipseste de peste HEARTBEAT_TIMEOUT_S, incearca sa
+        redeschida portul - o singura incercare per apel, distantata prin
+        backoff. Detectorul si restul buclei continua intre incercari; doar
+        emisia catre FC e suspendata (vezi `link_healthy`).
+
+        Intoarce True cat timp legatura e considerata buna."""
+        now = now if now is not None else time.monotonic()
+        age = self.time_since_heartbeat(now)
+        if age is not None and age <= HEARTBEAT_TIMEOUT_S:
+            return True
+
+        if self.link_healthy:
+            self.link_healthy = False
+            self._reconnect_next_t = now          # prima incercare imediat
+            self._link_event(
+                'link_down', now,
+                f"fara HEARTBEAT de {age:.1f} s (prag "
+                f"{HEARTBEAT_TIMEOUT_S:.0f} s)" if age is not None
+                else 'niciun HEARTBEAT de la pornire')
+
+        if self._reconnect_next_t is None or now < self._reconnect_next_t:
+            return False
+        self._try_reopen(now)
+        return self.link_healthy
+
+    def _try_reopen(self, now):
+        """O singura incercare de redeschidere. Orice esec e normal aici:
+        portul poate lipsi cu totul daca s-a scos cablul."""
+        self.reconnect_attempts += 1
+        wait = self._backoff_s(self.reconnect_attempts)
+        self._reconnect_next_t = now + wait
+        self._link_event('reconnect_try', now,
+                         f"incercarea {self.reconnect_attempts}, "
+                         f"urmatoarea peste {wait:.0f} s")
+        try:
+            if self.m is not None:
+                try:
+                    self.m.close()
+                except Exception:                           # noqa: BLE001
+                    pass
+            kwargs = {'baud': self.baud} if self.baud else {}
+            self.m = mavutil.mavlink_connection(self.conn_str, **kwargs)
+        except Exception as e:                              # noqa: BLE001
+            self._link_event('reconnect_fail', now,
+                             f"{type(e).__name__}: {e}")
+            return False
+
+        # Deschiderea portului nu inseamna ca FC-ul e acolo. Asteptam scurt
+        # un HEARTBEAT - NU wait_heartbeat(), care blocheaza la nesfarsit si
+        # ar ingheta bucla si supervizorul odata cu ea.
+        hb = self.m.recv_match(type='HEARTBEAT', blocking=True, timeout=0.5)
+        if hb is None:
+            self._link_event('reconnect_fail', now,
+                             'port deschis, dar niciun HEARTBEAT in 0.5 s')
+            return False
+
+        self.reconnects += 1
+        self._note_heartbeat(now, 'reconectat')
+        # Fluxurile se cer din nou: FC-ul nu retine intervalele peste o
+        # reconectare daca a fost si el repornit.
+        try:
+            self._request_streams()
+        except Exception as e:                              # noqa: BLE001
+            self._link_event('reconnect_warn', now,
+                             f"fluxurile nu s-au putut cere: {e}")
+        return True
 
     def _request_streams(self):
         rates = [
@@ -138,9 +285,17 @@ class Vehicle:
 
     # -- telemetrie --------------------------------------------------------
     def pump(self):
-        """Goleste coada de mesaje. De apelat la viteza buclei."""
+        """Goleste coada de mesaje. De apelat la viteza buclei.
+
+        Nu arunca daca portul a disparut sub noi: un cablu scos face
+        `recv_match` sa ridice OSError, iar asta ar omori bucla exact in
+        situatia pentru care exista reconectarea. Erorile de citire se
+        trateaza ca "niciun mesaj"; `check_link()` decide ce se intampla."""
         while True:
-            msg = self.m.recv_match(blocking=False)
+            try:
+                msg = self.m.recv_match(blocking=False)
+            except Exception:                               # noqa: BLE001
+                return
             if msg is None:
                 return
             t = msg.get_type()
@@ -162,6 +317,7 @@ class Vehicle:
             elif t == 'HEARTBEAT':
                 if msg.get_srcComponent() != mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1:
                     continue
+                self._note_heartbeat()
                 self.armed = bool(msg.base_mode &
                                   mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
                 self.mode = msg.custom_mode
@@ -218,14 +374,16 @@ class Vehicle:
         self._send_param(name, value)
 
     def _send_param(self, name, value):
-        self.m.mav.param_set_send(
+        return self._send(
+            self.m.mav.param_set_send,
             self.m.target_system, self.m.target_component,
             name.encode('ascii'), value,
             mavutil.mavlink.MAV_PARAM_TYPE_REAL32)
 
     def request_param(self, name):
         """Cere o citire; valoarea ajunge in self.params prin pump()."""
-        self.m.mav.param_request_read_send(
+        return self._send(
+            self.m.mav.param_request_read_send,
             self.m.target_system, self.m.target_component,
             name.encode('ascii'), -1)
 
@@ -250,8 +408,32 @@ class Vehicle:
         return name in self._param_pending
 
     # -- comenzi -----------------------------------------------------------
+    # Toate intorc True daca octetii chiar au plecat. Cand legatura e cazuta
+    # NU arunca si NU trimit: bucla principala trebuie sa continue (H1), iar
+    # apelantul trebuie sa poata deosebi "trimis" de "suspendat". Diferenta
+    # conteaza pentru SafetySupervisor, care altfel si-ar consuma cele 5
+    # reincercari de mod vorbind cu un port inchis, si ar declara mode_fail
+    # fara sa fi trimis nimic.
+
+    def _send(self, fn, *args, **kwargs):
+        if not self.link_healthy:
+            return False
+        try:
+            fn(*args, **kwargs)
+            return True
+        except Exception as e:                              # noqa: BLE001
+            # Scrierea a esuat: portul tocmai a disparut. Marcam legatura
+            # cazuta acum, ca sa nu asteptam expirarea heartbeat-ului.
+            if self.link_healthy:
+                self.link_healthy = False
+                self._reconnect_next_t = time.monotonic()
+                self._link_event('link_down', time.monotonic(),
+                                 f"scriere esuata: {type(e).__name__}: {e}")
+            return False
+
     def request_mode(self, mode):
-        self.m.mav.command_long_send(
+        return self._send(
+            self.m.mav.command_long_send,
             self.m.target_system, self.m.target_component,
             mavutil.mavlink.MAV_CMD_DO_SET_MODE, 0,
             mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
@@ -260,18 +442,22 @@ class Vehicle:
     def send_takeoff(self, alt_above_home_m):
         # Copter accepta NAV_TAKEOFF ca COMMAND_LONG; cadrul devine
         # GLOBAL_RELATIVE_ALT, deci param7 e altitudine deasupra HOME.
-        self.m.mav.command_long_send(
+        return self._send(
+            self.m.mav.command_long_send,
             self.m.target_system, self.m.target_component,
             mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0,
             0, 0, 0, 0, 0, 0, alt_above_home_m)
 
     def send_landing_target(self, angle_x, angle_y, dist):
-        self.m.mav.landing_target_send(
+        ok = self._send(
+            self.m.mav.landing_target_send,
             int(time.time() * 1e6), 0,
             mavutil.mavlink.MAV_FRAME_BODY_FRD,
             angle_x, angle_y, dist,
             MARKER_SIZE_M, MARKER_SIZE_M)
-        self.n_lt += 1
+        if ok:
+            self.n_lt += 1
+        return ok
 
     def send_distance(self, rng_m):
         cm = int(max(RANGE_MIN_M, min(rng_m, RANGE_MAX_M)) * 100)
@@ -279,9 +465,12 @@ class Vehicle:
                 mavutil.mavlink.MAV_DISTANCE_SENSOR_LASER, 1,
                 mavutil.mavlink.MAV_SENSOR_ROTATION_PITCH_270, 0)
         if self.ds_extended:
-            self.m.mav.distance_sensor_send(
-                *args, horizontal_fov=0.0, vertical_fov=0.0,
-                quaternion=[0.0, 0.0, 0.0, 0.0], signal_quality=100)
+            ok = self._send(self.m.mav.distance_sensor_send, *args,
+                            horizontal_fov=0.0, vertical_fov=0.0,
+                            quaternion=[0.0, 0.0, 0.0, 0.0],
+                            signal_quality=100)
         else:
-            self.m.mav.distance_sensor_send(*args)
-        self.n_ds += 1
+            ok = self._send(self.m.mav.distance_sensor_send, *args)
+        if ok:
+            self.n_ds += 1
+        return ok

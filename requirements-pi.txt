@@ -1,45 +1,50 @@
-# NOVA - ZDC 2026 - dependente pip pentru Raspberry Pi 4 / Raspberry Pi OS Bookworm
+# NOVA - ZDC 2026 - dependente pip pentru Raspberry Pi, COMUNE
 #
-# Se instaleaza cu tools/setup_pi.sh, NU direct. Scriptul creeaza venv-ul cu
-# --system-site-packages, iar fara acel flag lista de mai jos se instaleaza
-# "cu succes" si apoi nimic nu merge.
+# Se instaleaza cu tools/setup_pi.sh, NU direct: scriptul alege pachetele
+# apt si fisierul de requirements dupa distributie, si creeaza venv-ul cu
+# --system-site-packages. Fara acel flag lista se instaleaza "cu succes" si
+# apoi nimic nu merge.
 #
 # CE NU E AICI, DELIBERAT
 #
-#   picamera2, libcamera  - vin din APT (python3-picamera2, python3-libcamera).
-#     Sunt legate de stiva libcamera a sistemului si de binarele ei; versiunea
-#     de pe PyPI nu se potriveste cu ele. Se vad din venv doar prin
-#     --system-site-packages.
-#   numpy                 - vine tot din apt, ca dependenta a lui picamera2
-#     (Bookworm: 1.24.2). NU il fixa aici. Vezi nota despre OpenCV.
+#   picamera2, libcamera  - din APT (python3-picamera2, python3-libcamera).
+#     Sunt legate de stiva libcamera a sistemului si de binarele ei;
+#     versiunea de pe PyPI nu se potriveste cu ele.
+#   numpy                 - din APT, ca dependenta a lui picamera2.
+#     Bookworm 1.24.2, Trixie 2.2.4. NU il fixa aici: o versiune pip peste
+#     cea de sistem sparge simplejpeg (§5.24).
+#   opencv                - DEPINDE DE DISTRIBUTIE, vezi mai jos.
 #
-# DE CE OpenCV 4.10 SI NU 5.0 (versiunea de pe desktop)
+# OPENCV: DOUA CAI, DUPA DISTRIBUTIE
 #
-#   Masurat, nu presupus: opencv-contrib-python 5.0.0.93 declara
-#   `numpy>=2; python_version >= "3.9"`. Pe Bookworm (Python 3.11) pip ar
-#   rezolva asta instaland numpy 2.x IN venv, peste numpy 1.24.2 din apt.
-#   simplejpeg si restul stivei picamera2 sunt compilate pentru ABI-ul
-#   numpy 1.x, deci se rup - si eroarea apare la `import picamera2`, departe
-#   de cauza. OpenCV 4.10 cere numpy>=1.21, deci se multumeste cu cel din apt
-#   si nu instaleaza nimic peste el.
+#   Trixie   python3-opencv din APT (4.10.0). E construit impotriva
+#            numpy 2.2.4 din sistem, deci nu e nimic de rezolvat. Calea
+#            preferata: nimic nu se instaleaza peste sistem.
 #
-#   Consecinta: Pi-ul ruleaza OpenCV 4.10, desktopul OpenCV 5.0. Diferenta e
-#   masurata, nu ignorata - vezi §5.24 din CLAUDE.md:
-#     - pe markerul de misiune, detectie identica pana la 0.023 px
-#     - pe tinta de calibrare ChArUco, 4.10 produce detectii false in
-#       DICT_4X4_50 (ID 48) pe care 5.0 nu le produce; ID 26 nu apare
-#       niciodata, deci filtrul de ID e cel care ne protejeaza
+#   Bookworm python3-opencv din apt e 4.6.0, adica INAINTE de API-ul nou de
+#            ArUco: `cv2.aruco.ArucoDetector` a aparut in 4.7.0. Codul
+#            nostru il foloseste peste tot, deci pe Bookworm OpenCV trebuie
+#            luat din pip - vezi requirements-pi-bookworm.txt, unde e si
+#            explicatia de ce 4.10 si nu 5.x.
+#
+#   Regula, daca apare o distributie noua: ia OpenCV din apt daca e >= 4.7,
+#   altfel din pip, cu o versiune care nu trage numpy peste cel de sistem.
 #
 # DIAGNOSTIC: conflict pe numpy sau simplejpeg
 #
 #   `ImportError: numpy.core.multiarray failed to import`, `_ARRAY_API not
-#   found` sau un simplejpeg care nu se incarca inseamna una din doua:
-#     1. venv-ul a fost creat FARA --system-site-packages, deci pip a tras
-#        numpy de pe PyPI in loc sa il vada pe cel din apt; sau
-#     2. ceva a instalat numpy 2.x in venv peste cel din apt (tipic: un
-#        `pip install opencv-contrib-python` fara versiune fixata, care ia 5.x).
-#   In ambele cazuri: sterge venv-ul si reia tools/setup_pi.sh. Nu incerca sa
-#   repari cu `pip install --force-reinstall numpy` - ar reface acelasi drum.
+#   found`, sau un simplejpeg care nu se incarca inseamna ca numpy a ajuns
+#   sa fie instalat IN venv, peste cel din apt. Cauze uzuale:
+#     1. venv creat FARA --system-site-packages;
+#     2. un `pip install opencv-contrib-python` fara versiune fixata, care
+#        ia 5.x si cere numpy>=2 (problema pe Bookworm, unde apt da 1.24.2).
+#   In ambele cazuri: sterge venv-ul si reia tools/setup_pi.sh.
+#   `tools/preflight_check.py` raporteaza CALEA din care vin numpy si cv2,
+#   exact ca sa se vada asta dintr-o privire.
 
-opencv-contrib-python==4.10.0.84
 pymavlink==2.4.49
+
+# Folosit de tools/collect_session.py pentru manifestele de sesiune.
+# Nu e importat de codul de zbor: calibrarea se scrie si se citeste prin
+# cv2.FileStorage, nu prin pyyaml.
+PyYAML==6.0.2

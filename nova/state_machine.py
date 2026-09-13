@@ -569,6 +569,12 @@ def run_loop(vehicle, detector, sm, supervisor=None, on_status=None,
     while True:
         vehicle.pump()
         now = time.monotonic()
+        # H1: reconectarea se incearca din bucla, nu dintr-un fir separat, si
+        # nu blocheaza niciodata - o singura incercare per apel, distantata
+        # prin backoff. Detectorul si supervizorul continua intre incercari;
+        # doar emisia catre FC e suspendata (Vehicle.link_healthy).
+        if hasattr(vehicle, 'check_link'):
+            vehicle.check_link(now)
         vehicle.update_params(now)
 
         dets = detector.poll(now)

@@ -18,6 +18,9 @@ inseamna ceva.
 
 Ce verifica, si de ce fiecare:
 
+  stiva       distributia, Python, numpy, OpenCV - si CALEA fiecaruia. O cale
+              de numpy sau cv2 care trece prin venv inseamna ca pip a pus o
+              copie peste cea de sistem, iar picamera2 se rupe (§5.24).
   calibrare   fisierul exista, e o calibrare REALA (nu focala geometrica),
               RMS sub prag. Detectorul refuza oricum sa porneasca fara ea
               (E1.2), dar aici afli inainte sa urci pe scara.
@@ -41,6 +44,7 @@ ceva. Preflight-ul citeste.
 import argparse
 import json
 import os
+import platform
 import subprocess
 import sys
 import time
@@ -48,6 +52,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import cv2                                                  # noqa: E402
 import numpy as np                                          # noqa: E402
 
 from nova import config as nova_config                      # noqa: E402
@@ -90,6 +95,97 @@ class Result:
 
 
 # --- verificari -------------------------------------------------------------
+
+def _module_origin(mod):
+    """('VENV'|'sistem', cale) - de unde a fost incarcat modulul.
+
+    Nu e curiozitate. Pe Pi, numpy si (pe Trixie) cv2 TREBUIE sa vina din
+    apt: picamera2 si simplejpeg sunt compilate impotriva lor. O copie
+    instalata de pip in venv le umbreste si rupe camera, iar mesajul de
+    eroare (`_ARRAY_API not found`) nu seamana deloc cu cauza. Calea o arata
+    dintr-o privire."""
+    cale = os.path.realpath(getattr(mod, '__file__', '') or '')
+    in_venv = bool(cale) and cale.startswith(
+        os.path.realpath(sys.prefix) + os.sep)
+    return ('VENV' if in_venv else 'sistem'), cale
+
+
+def _model(path='/proc/device-tree/model'):
+    try:
+        with open(path) as f:
+            return f.read().strip('\x00').strip()
+    except OSError:
+        return ''
+
+
+def _os_release(path='/etc/os-release'):
+    out = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                if '=' in line:
+                    k, _, v = line.partition('=')
+                    out[k.strip()] = v.strip().strip('"')
+    except OSError:
+        pass
+    return out
+
+
+def check_stack(os_release_path='/etc/os-release'):
+    """Distributia, Python, numpy, OpenCV - cu CALEA fiecaruia.
+
+    Verificarea asta nu existase pana cand vehiculul s-a dovedit a rula
+    Trixie, nu Bookworm cum presupusesem (§5.24). Costul nu a fost tehnic -
+    codul mergea - ci ca am scris "verificat" despre o stiva pe care nimeni
+    nu o rula. De aceea preflight-ul o raporteaza acum de fiecare data."""
+    osr = _os_release(os_release_path)
+    codename = osr.get('VERSION_CODENAME', '?')
+    linii = [f"{osr.get('PRETTY_NAME', '?')} | Python "
+             f"{platform.python_version()}"]
+    probleme = []
+
+    # Pe desktop, numpy VINE din venv si e perfect corect asa - nu exista
+    # picamera2 pe care sa il rupa. Daca am raporta ESEC si acolo,
+    # preflight-ul ar fi rosu la fiecare rulare de dezvoltare, si exact asta
+    # invata operatorul sa treaca peste el. Verificarea are dinti doar unde
+    # are si consecinte.
+    pe_pi = 'raspberry pi' in _model().lower()
+    if not pe_pi:
+        linii.append('(nu suntem pe Pi: umbrirea numpy nu e o problema aici)')
+
+    import numpy
+    for eticheta, mod in (('numpy', numpy), ('cv2', cv2)):
+        unde, cale = _module_origin(mod)
+        linii.append(f"{eticheta} {mod.__version__} din {unde}: {cale}")
+        if unde == 'VENV' and eticheta == 'numpy' and pe_pi:
+            probleme.append(
+                f"numpy vine din venv ({cale}), nu din apt. picamera2 si "
+                f"simplejpeg sunt compilate impotriva celui de sistem si se "
+                f"vor rupe. Sterge venv-ul si reia tools/setup_pi.sh.")
+
+    ver = tuple(int(x) for x in cv2.__version__.split('.')[:2])
+    if ver < (4, 7):
+        probleme.append(
+            f"cv2 {cv2.__version__} < 4.7: fara cv2.aruco.ArucoDetector.")
+    elif not hasattr(cv2, 'aruco'):
+        probleme.append(
+            "cv2 nu are modulul aruco (build fara contrib). Pe Trixie: "
+            "python3-opencv din apt; pe Bookworm: opencv-contrib-python.")
+
+    # cv2 din venv nu e o problema in sine - pe Bookworm e chiar calea
+    # corecta - dar merita spus, ca sa se stie ce stiva ruleaza.
+    unde_cv, _ = _module_origin(cv2)
+    if pe_pi and codename == 'trixie' and unde_cv == 'VENV':
+        probleme.append(
+            "pe Trixie, OpenCV ar trebui sa vina din apt (python3-opencv). "
+            "O copie pip in venv o umbreste pe cea de sistem.")
+
+    detail = ' | '.join(linii)
+    if probleme:
+        return Result('stiva', ESEC, '; '.join(probleme),
+                      {'linii': linii, 'codename': codename})
+    return Result('stiva', OK, detail, {'linii': linii, 'codename': codename})
+
 
 def check_calib(cfg):
     """(Result, calibrare_sau_None). Calibrarea se intoarce pentru ca
@@ -226,7 +322,7 @@ def check_params(conn, baud, parm=FLIGHT_PARM, timeout=120):
 
 def run_checks(args, source_factory=None):
     cfg = nova_config.load(args.config)
-    results = []
+    results = [check_stack(args.os_release)]
 
     r, cal = check_calib(cfg)
     results.append(r)
@@ -297,6 +393,8 @@ def main(argv=None):
     p.add_argument('--no-camera', action='store_true')
     p.add_argument('--no-mavlink', action='store_true',
                    help='banc fara FC; verificarile de FC se raporteaza SARIT')
+    p.add_argument('--os-release', default='/etc/os-release',
+                   help='pentru teste')
     p.add_argument('--json', action='store_true')
     a = p.parse_args(argv)
 

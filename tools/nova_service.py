@@ -222,14 +222,26 @@ class ReadOnlyVehicle:
     #: Suprafata de CITIRE. Orice altceva ridica PermissionError.
     ALLOWED = frozenset({
         'pump',           # citeste mesaje din socket si actualizeaza starea
-        'alt',            # altitudinea din GLOBAL_POSITION_INT
+        'alt',            # PROPRIETATE, nu metoda: `v.alt`, nu `v.alt()`
         'on_ground',      # EXTENDED_SYS_STATE
         'mode_name',      # HEARTBEAT
         'connect',        # deschide legatura; nu comanda nimic
         'param_pending',  # interogare de stare interna
         'params',         # dictionarul de parametri cititi
-        'last',           # ultimele mesaje primite
-        'boot_ms',        # time_boot_ms de la FC (6.2.1.30)
+        'time_boot_ms',   # ceasul FC-ului (6.2.1.30)
+        # H1: sanatatea legaturii.
+        'link_healthy',
+        'time_since_heartbeat',
+        'reconnects',
+        'reconnect_attempts',
+        'on_link_event',
+        # `check_link` e singura intrare din lista care trimite ceva pe fir:
+        # dupa o redeschidere reusita cere din nou fluxurile de telemetrie
+        # (SET_MESSAGE_INTERVAL). E o cerere de DATE, nu o comanda de zbor -
+        # nu poate schimba modul, nu poate arma si nu poate misca vehiculul.
+        # Un monitor care nu se poate reconecta ar deveni inutil la prima
+        # miscare de cablu, adica exact scenariul pentru care exista H1.
+        'check_link',
     })
 
     def __init__(self, vehicle):
@@ -445,6 +457,7 @@ def run_monitor(cfg, cal, args, log, detector=None, vehicle=None, ring=None,
             now = time.monotonic()
             if vehicle is not None:
                 vehicle.pump()
+                vehicle.check_link(now)      # H1, nu blocheaza
             # Buffer-ul se umple in RingTapSource, pe firul de captura, deci
             # tine si cadrele in care markerul NU a fost vazut - exact ce
             # trebuie pentru 8.3.3, unde sub 0.38 m nu mai exista detectie.
@@ -452,16 +465,30 @@ def run_monitor(cfg, cal, args, log, detector=None, vehicle=None, ring=None,
             if now - t_status >= args.status_every:
                 t_status = now
 
+                # `alt` e o PROPRIETATE in Vehicle, nu o metoda. Prima
+                # varianta scria `vehicle.alt()`, ceea ce arunca TypeError
+                # ('float' object is not callable) - prins de except-ul de
+                # mai jos, deci altitudinea lipsea tacut din TOATE liniile de
+                # stare. Un except larg in jurul unei citiri de telemetrie
+                # ascunde exact genul asta de greseala.
                 alt = None
+                link = ''
                 if vehicle is not None:
                     try:
-                        alt = vehicle.alt()
+                        alt = vehicle.alt
                     except Exception:                        # noqa: BLE001
                         alt = None
+                    try:
+                        age = vehicle.time_since_heartbeat()
+                        link = (' | link CAZUT' if not vehicle.link_healthy
+                                else f" | link {age:.1f}s"
+                                if age is not None else '')
+                    except Exception:                        # noqa: BLE001
+                        link = ''
                 log.info("%s | detectii %d | buffer %d cadre / %.1f s / "
-                         "%.0f MB%s", detector.status_line(), n_det, len(ring),
-                         ring.span_s(), ring.nbytes() / 1e6,
-                         '' if alt is None else f" | alt {alt:.2f} m")
+                         "%.0f MB%s%s", detector.status_line(), n_det,
+                         len(ring), ring.span_s(), ring.nbytes() / 1e6,
+                         '' if alt is None else f" | alt {alt:.2f} m", link)
             if getattr(detector, 'exhausted', False) and not detector.poll(now):
                 log.info("sursa de cadre s-a terminat, ies")
                 break

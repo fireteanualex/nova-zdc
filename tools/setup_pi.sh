@@ -32,14 +32,20 @@ DRY_RUN=0
 VERIFY_ONLY=0
 FORCE=0
 
+# Comune ambelor distributii. Ce difera - OpenCV - se adauga in
+# check_platform(), dupa ce stim numele de cod.
 APT_PACKAGES=(
   python3-picamera2      # camera; trage si python3-numpy, python3-simplejpeg
   python3-libcamera      # legaturile libcamera folosite de picamera2
-  python3-venv           # Bookworm nu il are intotdeauna instalat
+  python3-venv           # nu e intotdeauna instalat
   python3-pip
-  libatlas-base-dev      # BLAS pentru numpy/OpenCV
   git
 )
+
+#: Se completeaza in check_platform(): fisierul de requirements si eventualul
+#: python3-opencv din apt depind de distributie.
+PIP_REQUIREMENTS=""
+DISTRO_CODENAME=""
 
 say()  { printf '\n\033[1m[setup]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[setup] ATENTIE:\033[0m %s\n' "$*" >&2; }
@@ -90,12 +96,38 @@ check_platform() {
        specifice Pi-ului (python3-picamera2). Pe desktop foloseste ~/nova-venv
        existent. Daca stii ce faci: --force."
   fi
-  if [[ "$codename" != "bookworm" ]]; then
-    die "nume de cod '$codename', asteptat 'bookworm'.
-       Pe Bullseye picamera2 se instala altfel (pip + libcamera din apt) si
-       versiunile nu se potrivesc. Reinstaleaza cu Raspberry Pi OS Bookworm
-       64-bit. Daca stii ce faci: --force."
-  fi
+
+  # Doua distributii suportate, cu stive DIFERITE. Diferenta care conteaza e
+  # versiunea de OpenCV din apt: pe Trixie e 4.10 si o folosim ca atare, pe
+  # Bookworm e 4.6.0, adica inainte de `cv2.aruco.ArucoDetector` (4.7.0), deci
+  # acolo OpenCV trebuie luat din pip. Vezi §5.24 din CLAUDE.md.
+  DISTRO_CODENAME="$codename"
+  case "$codename" in
+    trixie)
+      PIP_REQUIREMENTS="requirements-pi.txt"
+      APT_PACKAGES+=(python3-opencv python3-numpy)
+      say "     Trixie: OpenCV si numpy din apt; pip aduce doar pymavlink si PyYAML"
+      ;;
+    bookworm)
+      PIP_REQUIREMENTS="requirements-pi-bookworm.txt"
+      say "     Bookworm: python3-opencv din apt e 4.6.0, prea vechi pentru
+     API-ul nou de ArUco (ArucoDetector, din 4.7.0). OpenCV vine din pip,
+     fixat la 4.10.0.84 - 5.x ar cere numpy>=2 si ar sparge picamera2."
+      ;;
+    bullseye)
+      die "nume de cod 'bullseye'.
+       Pe Bullseye stiva picamera2 se instala altfel (pip + libcamera din
+       apt), iar python3-opencv e 4.5.x, adica fara ArucoDetector. Nu e
+       suportat. Reinstaleaza cu Raspberry Pi OS Bookworm sau Trixie, 64-bit."
+      ;;
+    *)
+      die "nume de cod '$codename', suportate: 'trixie' si 'bookworm'.
+       Daca e o distributie mai noua, regula e in requirements-pi.txt: ia
+       OpenCV din apt daca e >= 4.7, altfel din pip cu o versiune care nu
+       trage numpy peste cel de sistem. Adauga ramura in check_platform() si
+       ruleaza suita de teste inainte sa zbori. Daca stii ce faci: --force."
+      ;;
+  esac
   case "$model" in
     *"Raspberry Pi"*) ;;
     *) warn "modelul nu contine 'Raspberry Pi' ($model). Continui, dar
@@ -137,7 +169,18 @@ def _libcamera():
     return "OK  AfModeEnum.Manual prezent"
 
 def _aruco():
+    # `import cv2` care merge nu inseamna ca avem ce ne trebuie. Doua
+    # lucruri se verifica separat:
+    #   - aruco exista (pachetul `opencv-python` simplu NU il are; pe apt,
+    #     depinde daca distributia construieste modulele contrib)
+    #   - versiunea e >= 4.7, unde a aparut ArucoDetector. Bookworm are 4.6
+    #     in apt, si acolo importul reuseste dar clasa lipseste.
     import cv2
+    ver = tuple(int(x) for x in cv2.__version__.split('.')[:2])
+    if ver < (4, 7):
+        raise RuntimeError(
+            f"cv2 {cv2.__version__} < 4.7: nu are cv2.aruco.ArucoDetector. "
+            f"Pe Bookworm ia OpenCV din pip (requirements-pi-bookworm.txt).")
     cv2.aruco.ArucoDetector(
         cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50),
         cv2.aruco.DetectorParameters())
@@ -154,13 +197,21 @@ check('cv2.aruco', _aruco)
 check('pymavlink', _pymavlink)
 
 # numpy: DE UNDE vine conteaza mai mult decat ce versiune e.
+# Pentru cv2, calea e informativa: din apt pe Trixie, din venv pe Bookworm.
+import os
+
+def _origine(mod):
+    """('VENV'|'sistem', cale) - de unde a fost incarcat modulul."""
+    cale = os.path.realpath(getattr(mod, '__file__', '') or '')
+    in_venv = cale.startswith(os.path.realpath(sys.prefix) + os.sep)
+    return ('VENV' if in_venv else 'sistem'), cale
+
 try:
-    import numpy, os
-    in_venv = os.path.realpath(numpy.__file__).startswith(
-        os.path.realpath(sys.prefix) + os.sep)
-    unde = 'VENV' if in_venv else 'sistem (apt)'
+    import numpy
+    unde, cale = _origine(numpy)
     print(f"  {'numpy':<28} {numpy.__version__} din {unde}")
-    if in_venv:
+    print(f"  {'':<28} {cale}")
+    if unde == 'VENV':
         ok = False
         print("\n  numpy e instalat IN venv, peste cel din apt.")
         print("  picamera2/simplejpeg sunt compilate pentru numpy din sistem")
@@ -170,6 +221,14 @@ try:
 except Exception as e:                                       # noqa: BLE001
     ok = False
     print(f"  {'numpy':<28} ESEC: {e}")
+
+try:
+    import cv2
+    unde, cale = _origine(cv2)
+    print(f"  {'cv2':<28} {cv2.__version__} din {unde}")
+    print(f"  {'':<28} {cale}")
+except Exception:                                            # noqa: BLE001
+    pass
 
 print()
 print("  TOATE VERIFICARILE AU TRECUT" if ok
@@ -184,8 +243,15 @@ if [[ $VERIFY_ONLY -eq 1 ]]; then
   exit $?
 fi
 
-[[ $FORCE -eq 1 ]] && warn "--force: sar peste verificarea de platforma" \
-                   || check_platform
+if [[ $FORCE -eq 1 ]]; then
+  warn "--force: sar peste verificarea de platforma"
+  # Chiar si cu --force trebuie sa stim ce instalam. Presupunem varianta
+  # conservatoare (OpenCV din pip): merge si acolo unde apt are deja 4.10,
+  # doar ca instaleaza ceva in plus.
+  PIP_REQUIREMENTS="${PIP_REQUIREMENTS:-requirements-pi-bookworm.txt}"
+else
+  check_platform
+fi
 
 say "2/5  pachete apt (picamera2 NU se instaleaza cu pip)"
 run sudo "$APT" update
@@ -205,9 +271,9 @@ else
   run python3 -m venv --system-site-packages "$VENV"
 fi
 
-say "4/5  pip: requirements-pi.txt (versiuni fixate)"
+say "4/5  pip: $PIP_REQUIREMENTS (versiuni fixate)"
 run "$VENV/bin/pip" install --upgrade pip
-run "$VENV/bin/pip" install -r "$REPO/requirements-pi.txt"
+run "$VENV/bin/pip" install -r "$REPO/$PIP_REQUIREMENTS"
 
 say "5/5  verificare finala"
 if [[ $DRY_RUN -eq 1 ]]; then
