@@ -1446,35 +1446,52 @@ distorsiunea în **ordinea OpenCV** (`k1 k2 p1 p2 k3`), adică exact cum o
 consumă `nova/detector_pi.py`. Lanțul `camera_pi.yaml` → SDF → Gazebo →
 `camera_info` e verificat dus-întors, nu presupus.
 
-**Factorul de timp real: trei măsurători, niciuna curată.**
+**Un senzor de cameră nu randează fără abonat** — nici cu `<always_on>1</always_on>`.
 
-| | RTF | condiții |
-|---|---|---|
-| headless, camera inertă | 0.53 | randarea nu se întâmpla deloc |
-| cu `--check-topic` | 0.50 | **un server GUI + unul pornit de unealtă, în paralel** |
-| fără `--check-topic` | 0.96 | **un server GUI în paralel** |
+Testul care o dovedește, fără să depindă de costul transportului: aceeași
+lume, singura diferență fiind `update_rate`.
 
-Aceeași lume, aceeași comandă, **factor de doi** între ultimele două. Cauza:
-un `gz sim` concurent — mai ales unul cu GUI, care randează continuu — fură
-CPU. Iar unul dintre serverele concurente era pornit de **propria mea
-unealtă**: `--check-topic` lansa un server, iar `terminate()` pe lansator
-lăsa în viață procesele `gz sim server` și `gz sim gui` pe care acesta le
-forkează. Se omoară **grupul** de procese, nu lansatorul.
+| `update_rate` | RTF |
+|---|---|
+| 30 Hz | 0.57 |
+| **240 Hz** | **0.57** |
 
-Concluzia pe care o trăsesem din 0.53 vs 0.50 — „camera costă 6% din RTF,
-deci `--scale` nu ajută" — **era clădită pe date contaminate și se retrage**.
-Direcția ei rămâne plauzibilă (fizica la pas de 1 ms cu lift-drag pe patru
-rotoare nu e ieftină), dar nu e măsurată.
+De opt ori mai multe cadre, exact același cost. Într-un `gz sim -s` fără
+abonat, randarea pur și simplu nu se întâmplă.
 
-`tools/measure_rtf.py` **refuză acum să măsoare** dacă rulează alt `gz sim`,
-și verifică din nou imediat înainte de cronometru — pentru că
-`--check-topic` tocmai a pornit și oprit unul. `--force` există doar pentru
-depanare.
+**Consecința asupra metodei.** Cronometrarea pe `--iterations` nu poate ține
+un abonat pe toată fereastra — procesul rulează până se termină pașii. Deci
+acea metodă **nu poate măsura costul camerei**, oricât de curat ai
+cronometra-o. `tools/measure_rtf.py --subscribe /down_cam/image` comută pe o
+măsurătoare „vie": server continuu, abonați atașați tot timpul, iar RTF-ul se
+citește din `/world/<nume>/stats`, adică din ce raportează Gazebo — deci
+pornirea procesului nici nu mai intră în socoteală.
+
+**Ce știm măsurat curat, și ce nu.**
+
+| | RTF |
+|---|---|
+| lume fără cameră | 0.56 |
+| lume cu cameră 30 Hz, **fără abonat** | 0.56 |
+| lume cu cameră 240 Hz, **fără abonat** | 0.57 |
+| lume cu cameră **și abonat** | **nemăsurat** |
+
+Deci: **fizica e costul dominant** — 0.56 fără nicio cameră, la pas de 1 ms
+cu lift-drag pe patru rotoare. Asta e ferm, și e suficient ca să închidem
+`--scale` ca pârghie: chiar dacă randarea ar fi gratis, tot rămâi la 0.56.
+Cât costă camera în bucla reală rămâne deschis până la măsurătoarea cu abonat.
+
+**Contaminarea, de două ori.** Primele cifre (0.50 și 0.96 pe aceeași lume,
+factor de doi) au fost luate peste un `gz sim` cu GUI care randa în paralel —
+iar unul dintre serverele concurente era pornit de **propria unealtă**:
+`--check-topic` lansa un server, iar `terminate()` pe lansator lăsa în viață
+procesele `gz sim server` și `gz sim gui` pe care acesta le forkează. Se
+omoară **grupul**. Unealta refuză acum să măsoare dacă rulează alt `gz sim`.
 
 **Regula generală:** o măsurătoare de performanță făcută pe o mașină pe care
-rulează și altceva nu e o măsurătoare. Harness-ul trebuie să verifice asta,
-nu operatorul să își amintească — e aceeași lecție ca §5.11, mutată din teste
-în cronometrare.
+rulează și altceva nu e o măsurătoare, iar harness-ul trebuie să verifice
+asta — nu operatorul să își amintească. Aceeași lecție ca §5.11, mutată din
+teste în cronometrare.
 
 **Și verifică întâi că randarea chiar se întâmplă.** Headless, fără EGL
 funcțional, topicurile `/down_cam/image` și `/down_cam/camera_info` sunt

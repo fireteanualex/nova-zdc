@@ -178,6 +178,103 @@ def _kill_group(proc, timeout=10.0):
         time.sleep(0.5)
 
 
+# --- masuratoare "vie": citim RTF-ul raportat de Gazebo -----------------------
+
+def world_name(world, implicit='default'):
+    try:
+        import xml.etree.ElementTree as ET
+        w = ET.parse(world).getroot().find('world')
+        return w.get('name') or implicit
+    except Exception:                                        # noqa: BLE001
+        return implicit
+
+
+def parse_rtf(text):
+    """RTF dintr-un mesaj WorldStatistics, sau None.
+
+    Preferam campul `real_time_factor` daca exista; altfel il calculam din
+    sim_time/real_time, care sunt mereu acolo."""
+    import re
+    m = re.search(r'real_time_factor:\s*([0-9.eE+-]+)', text)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+
+    def bloc(nume):
+        b = re.search(nume + r'\s*\{([^}]*)\}', text, re.S)
+        if not b:
+            return None
+        sec = re.search(r'sec:\s*(-?\d+)', b.group(1))
+        nsec = re.search(r'nsec:\s*(-?\d+)', b.group(1))
+        return ((int(sec.group(1)) if sec else 0)
+                + (int(nsec.group(1)) if nsec else 0) * 1e-9)
+
+    st, rt = bloc('sim_time'), bloc('real_time')
+    if st is None or rt is None or rt <= 0:
+        return None
+    return st / rt
+
+
+def measure_live(world, subscribe=(), warmup=10.0, samples=8,
+                 printer=print):
+    """RTF cu abonati atasati pe TOATA fereastra de masurare.
+
+    De ce exista. Masurat: o camera 2304x1296 la 30 Hz si aceeasi camera la
+    240 Hz dau EXACT acelasi RTF intr-un `gz sim -s` fara abonat - adica nu
+    randeaza deloc, in ciuda lui `<always_on>1</always_on>`. Deci
+    cronometrarea pe `--iterations`, care nu poate tine un abonat pe toata
+    fereastra, nu poate masura costul camerei.
+
+    Aici serverul ruleaza continuu, abonatii stau atasati, iar RTF-ul se
+    citeste din ce raporteaza Gazebo insusi - deci pornirea procesului nu
+    mai intra in socoteala."""
+    nume = world_name(world)
+    topicuri = [f"/world/{nume}/stats", '/stats']
+    server = subprocess.Popen(['gz', 'sim', '-s', '-r', world],
+                              stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL,
+                              start_new_session=True)
+    abonati = []
+    try:
+        time.sleep(warmup * 0.6)
+        for t in subscribe:
+            abonati.append(subprocess.Popen(
+                ['gz', 'topic', '-e', '-t', t],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True))
+            printer(f"    abonat la {t}")
+        time.sleep(warmup * 0.4)
+
+        valori = []
+        for topic in topicuri:
+            for _ in range(samples):
+                try:
+                    r = subprocess.run(['gz', 'topic', '-e', '-t', topic,
+                                        '-n', '1'],
+                                       capture_output=True, text=True,
+                                       timeout=8)
+                except subprocess.TimeoutExpired:
+                    break
+                v = parse_rtf(r.stdout or '')
+                if v is not None:
+                    valori.append(v)
+            if valori:
+                break
+        if not valori:
+            printer("    niciun mesaj de statistici; nu pot masura")
+            return None, {}
+        valori.sort()
+        median = valori[len(valori) // 2]
+        return median, {'n': len(valori), 'min': valori[0],
+                        'max': valori[-1], 'topic': topic}
+    finally:
+        for a in abonati:
+            _kill_group(a, timeout=5)
+        _kill_group(server)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -188,6 +285,13 @@ def main(argv=None):
     p.add_argument('--force', action='store_true',
                    help='masoara chiar daca ruleaza alt gz sim (cifra va fi '
                         'falsa; exista doar pentru depanare)')
+    p.add_argument('--subscribe', action='append', default=[],
+                   metavar='TOPIC',
+                   help='tine un abonat atasat pe toata fereastra de '
+                        'masurare (ex. /down_cam/image). Comuta pe '
+                        'masuratoarea "vie": fara abonat, camera nu '
+                        'randeaza deloc si RTF-ul nu spune nimic despre ea.')
+    p.add_argument('--warmup', type=float, default=10.0)
     p.add_argument('--check-topic', default=None,
                    help='verifica intai ca soseste macar un mesaj, '
                         'ex. /down_cam/image')
@@ -215,12 +319,22 @@ def main(argv=None):
         # a oprit un server, iar daca a ramas ceva in viata cifra e gunoi
         if not a.force and not refuse_if_busy():
             return 2
-        rtf, pornire, d = measure(w, a.short, a.long)
-        if rtf is None:
-            continue
-        rezultate.append((w, rtf))
-        print(f"    pornire {pornire:.2f} s (exclusa din RTF)")
-        print(f"    RTF in regim stabil: {rtf:.2f}")
+        if a.subscribe:
+            rtf, d = measure_live(w, a.subscribe, warmup=a.warmup)
+            if rtf is None:
+                continue
+            rezultate.append((w, rtf))
+            print(f"    RTF raportat de Gazebo: {rtf:.2f}  "
+                  f"({d['n']} esantioane, {d['min']:.2f}-{d['max']:.2f})")
+        else:
+            rtf, pornire, d = measure(w, a.short, a.long)
+            if rtf is None:
+                continue
+            rezultate.append((w, rtf))
+            print(f"    pornire {pornire:.2f} s (exclusa din RTF)")
+            print(f"    RTF in regim stabil: {rtf:.2f}")
+            print("    (fara --subscribe: o camera fara abonat NU randeaza, "
+                  "deci\n     cifra asta nu spune nimic despre costul ei)")
         if rtf < 0.5:
             # NU recomanda --scale automat: costul camerei trebuie masurat
             # intai (o lume fara camera, in acelasi mediu). Daca fizica

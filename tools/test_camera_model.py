@@ -444,6 +444,24 @@ def test_OpenCV_vechi_da_mesaj_nu_AttributeError():
     return "mesaj cu versiunea, executabilul si venv-ul, nu AttributeError"
 
 
+
+def test_parse_rtf_din_statistici():
+    """RTF-ul se citeste din ce raporteaza Gazebo, nu din cronometrul nostru."""
+    import measure_rtf as mr
+    assert mr.world_name(os.path.join(REPO, 'sim', 'worlds',
+                                      'nova_marker.sdf')) == 'nova_marker'
+    # campul direct, cand exista
+    assert abs(mr.parse_rtf('real_time_factor: 0.5612') - 0.5612) < 1e-9
+    # altfel, din sim_time / real_time
+    msg = ('sim_time { sec: 56 nsec: 700000000 }\n'
+           'real_time { sec: 101 nsec: 250000000 }\niterations: 56700')
+    assert abs(mr.parse_rtf(msg) - 56.7 / 101.25) < 1e-6, mr.parse_rtf(msg)
+    # gunoi si impartire la zero
+    assert mr.parse_rtf('nimic') is None
+    assert mr.parse_rtf('sim_time { sec: 5 }\nreal_time { sec: 0 }') is None
+    return "camp direct, calcul din sim/real, si None pe intrari invalide"
+
+
 TESTS = [
     ('NEGATIV: refuza fara calibrare reala',
      test_NEGATIV_refuza_fara_calibrare_reala),
@@ -467,6 +485,7 @@ TESTS = [
      test_measure_rtf_refuza_daca_ruleaza_alt_gz),
     ('OpenCV vechi da mesaj, nu AttributeError',
      test_OpenCV_vechi_da_mesaj_nu_AttributeError),
+    ('parse_rtf din statistici', test_parse_rtf_din_statistici),
 ]
 
 
