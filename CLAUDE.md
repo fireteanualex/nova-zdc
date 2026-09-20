@@ -147,6 +147,8 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── preflight_check.py    # verificare de banc; cod 0 doar dacă toate trec
 │   ├── run_e2.py             # colectarea interactivă a datelor E2
 │   ├── start_flight.sh       # pornire completa pe Pi: venv, port, E0, race_mode
+│   ├── sim_handover.py       # declanseaza poarta in SITL, fara gamepad (§5.32)
+│   ├── make_marker_model.py  # modelul Gazebo al markerului (§5.31)
 │   ├── race_mode.py          # ziua cursei: preflight + un singur ecran
 │   ├── collect_session.py    # evidența 6.2.1.30: .bin, loguri, cadre, manifest
 │   ├── fake_detector.py      # detector sintetic + aplicația de SIM (ocolește E0)
@@ -157,7 +159,11 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── gamepad_rc.py         # punte gamepad → RC_CHANNELS_OVERRIDE
 │   └── test_*.py             # suite offline: state_machine, safety, handover,
 │                             #   detector_pi, calibrate_camera, link, ops,
-│                             #   pi_tooling, make_calib_target
+│                             #   pi_tooling, make_calib_target,
+│                             #   authority, sim_handover, marker_model
+├── sim/
+│   ├── models/aruco_26/      # marker ArUco 26, generat (nu edita de mână)
+│   └── worlds/nova_marker.sdf  # derivată din iris_runway.sdf
 ├── docs/
 │   └── CHECKLIST_TEREN.md    # checklist + tabel simptom → cauză → fix
 ├── systemd/
@@ -1286,6 +1292,102 @@ supervizorul tratează înclinarea ca defecțiune.
 **Vitezele de coborâre sunt plafonate la 0.5 m/s** (`DESCENT_VALIDATED_MS`)
 până la măsurătoarea de distanță de frânare pe fiecare treaptă, cerută de
 §6/15.2.9. `PROFIL_RAPID` există, dar cere `allow_fast_descent=True`.
+
+### 5.31 Gazebo e ENU, noi suntem NED — și markerul are două laturi
+
+Detectorul și mașina de stări lucrează în **NED** (`--north`, `--east`).
+Gazebo lucrează în **ENU**. Maparea, o singură dată, aici:
+
+```
+pose_gazebo_x = east
+pose_gazebo_y = north
+pose_gazebo_z = sus
+```
+
+**De ce merită un paragraf.** Un marker plasat cu N și E inversate produce
+exact simptomul unui bug de convenție în detector: vehiculul coboară *lângă*
+marker, iar eroarea apare transpusă pe axe. Ore pierdute căutând în `solvePnP`
+ceva ce e de fapt în fișierul de lume. `tools/make_marker_model.py` face
+maparea într-un singur loc, iar testul o verifică pe fișierul **generat**, cu
+valori asimetrice (`north=7, east=-3`) — cu `north == east`, o inversiune ar
+trece testul.
+
+**Markerul are două laturi și doar una intră în calcule.** Coala e 600 mm;
+zona **codată** (inclusiv bordura neagră) e 480 mm, centrată, deci 80% din
+latură și 60 mm de zonă liniștită de jur împrejur. `marker_size_m = 0.48` din
+`config/nova.json` e latura **codată** — aceeași pe care o măsoară `solvePnP`.
+Generat din greșeală la dimensiunea colii, markerul s-ar detecta la fel de
+bine, iar toate distanțele ar ieși cu **25% eroare** — și ar arăta ca o
+calibrare proastă. Testul măsoară latura detectată și cere 480 mm.
+
+Rezoluția nu e rotunjită: 2400 px pe 480 mm = **5 px/mm** exact, coala iese
+3000 px, iar `DICT_4X4_50` are 6 module → 400 px pe modul, fără rest. O
+rezoluție care nu se împarte exact e **refuzată**, nu rotunjită.
+
+**`gz sdf --check` nu rezolvă `model://`.** Raportează `Unable to find uri`
+pentru *toate* includerile, inclusiv cele stock din lumea de bază — deci nu e
+un semn că lumea ta e greșită. Verificarea care chiar contează e serverul
+headless, care rezolvă URI-urile și spawnează entitățile:
+
+```bash
+export GZ_SIM_RESOURCE_PATH="$PWD/sim/models:$GZ_SIM_RESOURCE_PATH"
+gz sim -s -r sim/worlds/nova_marker.sdf &
+gz model --list                      # aruco_26 trebuie să apară
+gz model -m aruco_26 --pose          # și la poziția corectă
+```
+
+Măsurat: `[1.500000 2.000000 0.010000]` pentru `N=2.0 E=1.5`. `z = 0.01`
+evită z-fighting cu solul.
+
+**Lumea e derivată, nu rescrisă.** `nova_marker.sdf` pornește din
+`iris_runway.sdf` al lui ardupilot_gazebo și înlocuiește doar lumina și
+adaugă markerul. Plugin-urile și coordonatele sferice trebuie să rămână exact
+ce folosește ardupilot_gazebo; o lume scrisă de la zero ar diverge tăcut la
+prima lor actualizare. Un test compară lista de plugin-uri și coordonatele cu
+originalul.
+
+**Ce NU e verificat aici:** că textura chiar se *vede* pe plan. `<plane>` cu
+`albedo_map` depinde de cum generează ogre2 coordonatele UV, iar asta se vede
+doar cu randare. Serverul headless nu randează (`libEGL: failed to create
+dri2 screen`). De confirmat vizual la prima rulare cu GUI; dacă textura apare
+întinsă sau repetată, alternativa e un `<box>` subțire.
+
+### 5.32 `RC_CHANNELS_OVERRIDE` are două capcane tăcute
+
+Din runda 3, poarta de handover e singura cale către segmentul autonom, deci
+orice test automat trebuie să comute AUX 7. `tools/sim_handover.py` o face,
+și două lucruri l-ar fi făcut să pară că merge fără să meargă:
+
+**1. `MAV_GCS_SYSID`.** `GCS_MAVLINK::handle_rc_channels_override` respinge
+**tăcut** orice `RC_CHANNELS_OVERRIDE` venit de la alt sysid decât cel din
+`MAV_GCS_SYSID`. Fără potrivire: scriptul trimite fără eroare, poarta nu vede
+niciodată AUX-ul, iar testul eșuează fără niciun indiciu. Se verifică la
+pornire și se refuză cu comanda de reparare — același tipar ca §5.10.
+
+**2. Throttle-ul nu se trimite la `RC3_TRIM`.** Roll, pitch și yaw se
+auto-centrează, deci „liber" înseamnă „la trim". Throttle-ul nu: pe un
+emițător real e la **mijlocul cursei** pentru hover, iar `RC3_TRIM` e la
+capătul de jos (1100 la noi). Poarta ar accepta oricum — ea măsoară
+*amplitudinea* throttle-ului, nu distanța față de trim (§8) — dar injectat
+într-un vehicul care planează în LOITER, 1100 comandă **coborâre rapidă**.
+Unealta de test ar face vehiculul să cadă. Se trimite mijlocul lui
+`RC3_MIN..RC3_MAX`.
+
+Trei detalii mai mici, fiecare cu test:
+
+- **`UINT16_MAX` ≠ `0`.** 65535 pe un canal înseamnă „nu schimba starea de
+  override"; 0 înseamnă „**eliberează**". Pe canalul de mod vrem primul,
+  altfel `mode guided` / `takeoff` din MAVProxy devin inutilizabile.
+- **Frontul, nu starea.** Poarta cere frontul crescător, deci AUX trebuie să
+  fi fost văzut jos înainte de ridicare. Scriptul ține ~1 s jos întâi.
+- **Manșele stau nemișcate, amplitudine zero.** Orice tremur ar fi fie un
+  refuz, fie un override fals imediat după ACCEPT — încercarea anulată dintr-un
+  artefact al uneltei de test.
+
+Testul care contează trece canalele injectate prin **poarta reală** și cere
+ACCEPT după fereastra de așezare, apoi verifică că 5 s de semnal identic nu
+declanșează override. Un script care „pare că trimite ce trebuie" dar pe care
+poarta îl refuză nu ajută la nimic.
 
 ---
 

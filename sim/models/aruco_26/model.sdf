@@ -1,0 +1,30 @@
+<?xml version="1.0" ?>
+<!-- Generat de tools/make_marker_model.py. Nu edita de mana: regenereaza. -->
+<sdf version="1.9">
+  <model name="aruco_26">
+    <static>true</static>
+    <link name="link">
+      <visual name="visual">
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>0.6 0.6</size>
+          </plane>
+        </geometry>
+        <material>
+          <diffuse>1 1 1 1</diffuse>
+          <pbr>
+            <metal>
+              <albedo_map>materials/textures/aruco_26.png</albedo_map>
+              <!-- 0.9 = hartie mata; 0.3 face markerul lucios si scoate la
+                   iveala stralucirea semnalata de 15.4.7 -->
+              <roughness>0.9</roughness>
+              <metalness>0.0</metalness>
+            </metal>
+          </pbr>
+        </material>
+        <cast_shadows>false</cast_shadows>
+      </visual>
+    </link>
+  </model>
+</sdf>
