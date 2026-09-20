@@ -1472,7 +1472,39 @@ curată: `lock_step=1` face plugin-ul ArduPilot să aștepte un FDM care nu
 există. RTF-ul care contează se măsoară cu SITL pornit, și cu randarea
 funcțională — niciuna dintre cele două condiții nu e îndeplinită headless.
 
-### 5.34 `open(f,'w').write(open(f).read())` golește fișierul
+### 5.34 Calibrarea de simulare e un fișier separat, nu un prag ridicat
+
+Prima calibrare reală a camerei a dat **RMS 0.85 px**, peste
+`MAX_REPROJ_ERR_PX = 0.5`. Reacția evidentă — ridică pragul — ar fi greșită:
+constanta e citită de `CameraCalibration.load(require_real=True)`, adică de
+**detectorul de bord**. Ridicată global, ar slăbi tăcut exact garda care
+decide dacă se zboară.
+
+Separarea e aceeași ca la E0 în runda 3, și din același motiv: garda există ca
+să protejeze un vehicul real; în simulare vehiculul e Gazebo.
+
+| | zbor | simulare |
+|---|---|---|
+| fișier | `config/camera_pi.yaml` | `config/camera_sim.yaml` |
+| citit de | `nova/config.py` → detector | doar `--calib` explicit |
+| prag RMS | 0.5, neatins | ocolit cu `--provisional` |
+| `is_real()` | trebuie `True` | `False`, deliberat |
+
+Calibrarea provizorie are `n_images = 0` **intenționat**: așa `is_real()` e
+fals și orice unealtă o refuză până cineva cere ocolirea din linia de
+comandă, unde se vede. Pusă în `config/camera_pi.yaml` cu un `n_images`
+inventat, ar trece toate gărzile și ar fi acceptată ca reală pentru zbor.
+
+Când chiar trebuie un prag mai permisiv pentru o rulare anume, există
+`--max-rms` — ridică pragul pentru *acea* rulare, nu pentru tot codul.
+
+**Despre 0.85 px ca atare.** §5.22 spune că RMS-ul nu e criteriu de
+valabilitate, dar rămâne indicator de calitate: sintetic, ChArUco dă 0.105 px,
+iar o cameră reală bine calibrată stă tipic la 0.2–0.5. 0.85 sugerează ținta
+neplană, poze mișcate, sau colțuri neacoperite — nu un obiectiv prost. De
+refăcut înainte de zbor; pentru simulare, intrinsecii sunt destul de buni.
+
+### 5.35 `open(f,'w').write(open(f).read())` golește fișierul
 
 Python evaluează întâi obiectul pe care se apelează metoda, deci `open(f,'w')`
 **trunchiază fișierul** înainte ca argumentul `open(f).read()` să fie

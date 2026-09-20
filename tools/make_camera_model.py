@@ -173,10 +173,19 @@ MODEL_CONFIG = """<?xml version="1.0"?>
 
 # --- intrinseci -------------------------------------------------------------
 
-def load_intrinsics(path, scale=1.0):
-    """Intrinsecii din calibrare, optional scalati. Refuza o calibrare care
-    nu e reala (E1.2), la fel ca detectorul de bord."""
-    cal = CameraCalibration.load(path, require_real=True)
+def load_intrinsics(path, scale=1.0, provisional=False, max_rms=None):
+    """Intrinsecii din calibrare, optional scalati.
+
+    Implicit refuza o calibrare care nu e reala (E1.2), la fel ca detectorul
+    de bord. `provisional=True` ocoleste verificarea - EXPLICIT, ca la E0 in
+    `fake_detector.py`: garda exista ca sa protejeze un vehicul real, iar
+    aici vehiculul e Gazebo. Ocolirea se cere din linia de comanda si se
+    anunta, nu se strecoara prin editarea unui fisier de config."""
+    if provisional:
+        cal = CameraCalibration.load(path, require_real=False)
+    else:
+        kw = {} if max_rms is None else {'max_rms': max_rms}
+        cal = CameraCalibration.load(path, require_real=True, **kw)
     dist = list(cal.dist.reshape(-1)) + [0.0] * 5
     w = int(round(cal.width * scale))
     h = int(round(cal.height * scale))
@@ -308,18 +317,38 @@ def main(argv=None):
     p.add_argument('--world', default=None,
                    help='implicit sim/worlds/nova_marker.sdf')
     p.add_argument('--no-patch-world', action='store_true')
+    p.add_argument('--provisional', action='store_true',
+                   help='accepta o calibrare care NU e reala (config/'
+                        'camera_sim.yaml). Doar pentru simulare: garda E1.2 '
+                        'protejeaza un vehicul real, iar aici e Gazebo.')
+    p.add_argument('--max-rms', type=float, default=None,
+                   help='prag de reproiectie; implicit cel din '
+                        'nova/detector_pi.py (0.5 px)')
     a = p.parse_args(argv)
 
     cfg = nova_config.load()
     calib = a.calib or nova_config.resolve(cfg, 'camera_calibration')
     try:
-        intr, cal = load_intrinsics(calib, a.scale)
+        intr, cal = load_intrinsics(calib, a.scale, provisional=a.provisional,
+                                    max_rms=a.max_rms)
     except (FileNotFoundError, ValueError) as e:
         print(f"\n  NU GENEREZ: {e}\n"
               f"  Intrinsecii senzorului trebuie sa vina din calibrarea "
               f"REALA (E1.2).\n"
-              f"  Fara ea, simularea ar masura alta camera decat vehiculul.\n")
+              f"  Fara ea, simularea ar masura alta camera decat vehiculul.\n"
+              f"  Pentru simulare, cu o calibrare provizorie:\n"
+              f"    python3 tools/make_camera_model.py "
+              f"--calib config/camera_sim.yaml --provisional\n")
         return 2
+
+    if a.provisional:
+        print(f"\n  ATENTIE: calibrare PROVIZORIE, acceptata explicit.\n"
+              f"    sursa: {cal.source}\n"
+              f"    rms {cal.rms} px, n_images {cal.n_images}\n"
+              f"  Simularea va folosi intrinsecii astia; ZBORUL nu ii vede - "
+              f"detectorul\n"
+              f"  de bord citeste config/camera_pi.yaml si refuza orice nu e "
+              f"real (E1.2).")
 
     base = find_base_model(a.base_model)
     model_dir = os.path.join(a.out, 'models', MODEL_NAME)

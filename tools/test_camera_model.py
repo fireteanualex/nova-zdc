@@ -326,6 +326,70 @@ def test_nu_e_commit_uit_cu_intrinseci_provizorii():
     return "ignorat de git pana cand exista config/camera_pi.yaml"
 
 
+
+def test_calibrarea_provizorie_e_sim_only():
+    """Ocolirea gardii E1.2 trebuie ceruta EXPLICIT si sa nu atinga zborul.
+
+    Acelasi tipar ca E0 in fake_detector.py: garda exista ca sa protejeze un
+    vehicul real; in simulare vehiculul e Gazebo, deci se ocoleste - dar din
+    linia de comanda, anuntat, nu prin editarea unui config."""
+    cale = os.path.join(REPO, 'config', 'camera_sim.yaml')
+    if not os.path.exists(cale):
+        return 'config/camera_sim.yaml nu exista (optional)'
+
+    # fara --provisional: refuzata
+    try:
+        mc.load_intrinsics(cale)
+        raise AssertionError('calibrarea provizorie a trecut fara --provisional')
+    except ValueError:
+        pass
+    # cu --provisional: merge
+    intr, cal = mc.load_intrinsics(cale, provisional=True)
+    assert intr['w'] == 2304 and intr['h'] == 1296, intr
+    assert not cal.is_real(), (
+        'calibrarea provizorie se declara reala; pusa in config/camera_pi.yaml '
+        'ar fi acceptata pentru ZBOR')
+    assert 'PROVIZORIE' in (cal.source or '').upper(), cal.source
+
+    # si NU e fisierul pe care il citeste zborul
+    from nova import config as nova_config
+    cfg = nova_config.load()
+    zbor = nova_config.resolve(cfg, 'camera_calibration')
+    assert os.path.basename(zbor) != 'camera_sim.yaml', (
+        f"config/nova.json arata spre {zbor}: calea de ZBOR foloseste "
+        f"calibrarea provizorie")
+
+    # CLI: fara flag, cod 2 si indicatie
+    import subprocess
+    r = subprocess.run(
+        [sys.executable, os.path.join(REPO, 'tools', 'make_camera_model.py'),
+         '--calib', cale, '--no-patch-world'],
+        capture_output=True, text=True, timeout=60)
+    assert r.returncode == 2, r.returncode
+    assert '--provisional' in r.stdout, 'refuzul nu spune cum se continua'
+    return "refuzata fara flag; cu flag merge; zborul citeste alt fisier"
+
+
+def test_pragul_de_rms_nu_se_schimba_pentru_zbor():
+    """0.85 px depaseste pragul. Ridicat global, ar slabi si calea de zbor."""
+    from nova.detector_pi import MAX_REPROJ_ERR_PX
+    assert MAX_REPROJ_ERR_PX == 0.5, (
+        f"pragul global e {MAX_REPROJ_ERR_PX}; ridicat, detectorul de bord ar "
+        f"accepta calibrari mai proaste fara ca cineva sa decida asta")
+
+    tmp = tempfile.mkdtemp()
+    slaba = calib_file(tmp, rms=0.85)
+    try:
+        mc.load_intrinsics(slaba)
+        raise AssertionError('rms 0.85 acceptat la pragul implicit')
+    except ValueError:
+        pass
+    # ridicat DOAR pentru aceasta rulare
+    intr, _c = mc.load_intrinsics(slaba, max_rms=0.9)
+    assert intr['w'] == 2304
+    return "prag global 0.5 neatins; --max-rms 0.9 ridica doar rularea curenta"
+
+
 TESTS = [
     ('NEGATIV: refuza fara calibrare reala',
      test_NEGATIV_refuza_fara_calibrare_reala),
@@ -341,6 +405,10 @@ TESTS = [
     ('patch_world e idempotent', test_patch_world_e_idempotent),
     ('nu e commit-uit cu intrinseci provizorii',
      test_nu_e_commit_uit_cu_intrinseci_provizorii),
+    ('calibrarea provizorie e sim-only',
+     test_calibrarea_provizorie_e_sim_only),
+    ('pragul de rms nu se schimba pentru zbor',
+     test_pragul_de_rms_nu_se_schimba_pentru_zbor),
 ]
 
 

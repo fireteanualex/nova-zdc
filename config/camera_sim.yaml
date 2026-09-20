@@ -1,0 +1,26 @@
+%YAML 1.2
+---
+camera_matrix: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+   data: [ 937., 0., 1139.4000000000001, 0., 933.70000000000005, 649.,
+       0., 0., 1. ]
+dist_coeffs: !!opencv-matrix
+   rows: 1
+   cols: 5
+   dt: d
+   data: [ -0.052900000000000003, 0.069599999999999995, 0., 0.,
+       -0.029499999999999998 ]
+image_width: 2304
+image_height: 1296
+rms_reprojection_px: 0.84999999999999998
+n_images: 0
+source: PROVIZORIE pentru SIMULARE - NU pentru zbor
+hfov_deg: 101.75239052213901
+vfov_deg: 69.522306562898279
+meta_de_ce_nu_e_camera_pi_yaml: "rms 0.85 > MAX_REPROJ_ERR_PX 0.5, deci detectorul de bord ar refuza-o oricum; iar pusa acolo ar trece gardurile si ar fi acceptata ca reala pentru ZBOR (E1.2)"
+meta_folosita_de: "tools/make_camera_model.py --provisional"
+meta_n_images: NECUNOSCUT - de completat din iesirea calibrarii
+meta_provenienta: "intrinseci transcrisi din SARCINI_RUNDA7.md"
+meta_rms_raportat_px: 0.84999999999999998

@@ -121,7 +121,8 @@
     </include>
 
     <include>
-      <uri>model://iris_with_gimbal</uri>
+      <uri>/home/fireteanualex/nova-zdc/sim/models/iris_nova</uri>
+      <name>iris_with_gimbal</name>
       <pose degrees="true">0 0 0.195 0 0 90</pose>
     </include>
 
