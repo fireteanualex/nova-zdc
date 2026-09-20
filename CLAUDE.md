@@ -1375,11 +1375,29 @@ ce folosește ardupilot_gazebo; o lume scrisă de la zero ar diverge tăcut la
 prima lor actualizare. Un test compară lista de plugin-uri și coordonatele cu
 originalul.
 
-**Ce NU e verificat aici:** că textura chiar se *vede* pe plan. `<plane>` cu
-`albedo_map` depinde de cum generează ogre2 coordonatele UV, iar asta se vede
-doar cu randare. Serverul headless nu randează (`libEGL: failed to create
-dri2 screen`). De confirmat vizual la prima rulare cu GUI; dacă textura apare
-întinsă sau repetată, alternativa e un `<box>` subțire.
+**Randarea: confirmată vizual.** `<plane>` cu `albedo_map` produce textura
+**pătrată, nerepetată, plană pe sol** — deci UV-urile generate de ogre2 sunt
+corecte și nu e nevoie de un `<box>` subțire ca alternativă. Serverul headless
+nu randează (`libEGL: failed to create dri2 screen`), deci asta se putea
+verifica doar cu GUI.
+
+**Consecință de care depinde I4: planul e la `z = 0.01`, nu la 0.** Adevărul
+pentru eroarea de range e `altitudine_vehicul − 0.01`, nu altitudinea brută.
+Ignorat, offsetul de 1 cm apare ca **bias sistematic**, cu atât mai mare cu
+cât vehiculul e mai jos:
+
+| altitudine | eroare dacă se ignoră |
+|---|---|
+| 12 m | 0.08% |
+| 5 m | 0.20% |
+| 1 m | 1.00% |
+| 0.5 m | **2.00%** |
+| 0.38 m (limita de detecție, §5.2) | **2.63%** |
+
+Pragul I4 pentru eroarea de range e 3%, deci la capătul de jos offsetul
+singur ar consuma aproape tot bugetul — și ar arăta ca o eroare de calibrare
+sau de `solvePnP`, nu ca o constantă din fișierul de lume. Cei 1 cm nu se
+elimină (fără ei apare z-fighting cu solul); se **scad din adevăr**.
 
 ### 5.32 `RC_CHANNELS_OVERRIDE` are două capcane tăcute
 
