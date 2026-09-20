@@ -1446,33 +1446,35 @@ distorsiunea în **ordinea OpenCV** (`k1 k2 p1 p2 k3`), adică exact cum o
 consumă `nova/detector_pi.py`. Lanțul `camera_pi.yaml` → SDF → Gazebo →
 `camera_info` e verificat dus-întors, nu presupus.
 
-**Factorul de timp real, măsurat:**
+**Factorul de timp real: trei măsurători, niciuna curată.**
 
-| | RTF |
-|---|---|
-| fără randare (headless, camera inertă) | 0.53 |
-| cu randare 2304×1296 @ 30 Hz | **0.50** |
+| | RTF | condiții |
+|---|---|---|
+| headless, camera inertă | 0.53 | randarea nu se întâmpla deloc |
+| cu `--check-topic` | 0.50 | **un server GUI + unul pornit de unealtă, în paralel** |
+| fără `--check-topic` | 0.96 | **un server GUI în paralel** |
 
-Camera costă deci ~6% din RTF; **restul e fizica** — pas de 1 ms și
-lift-drag pe patru rotoare. Consecința practică e contraintuitivă: chiar dacă
-`--scale 0.5` ar elimina trei sferturi din costul camerei, RTF-ul ar urca de
-la 0.50 la ~0.52. Rezoluția redusă nu e pârghia, iar prețul ei e mare —
-`marker_px` se înjumătățește, deci toate pragurile în pixeli corespund altor
-altitudini (`SCORING_CAPTURE` se mută de la 0.46 m la 0.23 m).
+Aceeași lume, aceeași comandă, **factor de doi** între ultimele două. Cauza:
+un `gz sim` concurent — mai ales unul cu GUI, care randează continuu — fură
+CPU. Iar unul dintre serverele concurente era pornit de **propria mea
+unealtă**: `--check-topic` lansa un server, iar `terminate()` pe lansator
+lăsa în viață procesele `gz sim server` și `gz sim gui` pe care acesta le
+forkează. Se omoară **grupul** de procese, nu lansatorul.
 
-Pârghiile reale, dacă RTF-ul devine o problemă, sunt `max_step_size` și
-numărul de plugin-uri de fizică — dar amândouă schimbă fidelitatea, deci nu
-se ating fără motiv.
+Concluzia pe care o trăsesem din 0.53 vs 0.50 — „camera costă 6% din RTF,
+deci `--scale` nu ajută" — **era clădită pe date contaminate și se retrage**.
+Direcția ei rămâne plauzibilă (fizica la pas de 1 ms cu lift-drag pe patru
+rotoare nu e ieftină), dar nu e măsurată.
 
-**Cifra care contează încă nu e măsurată.** Ambele valori de mai sus sunt
-fără ArduPilot conectat, iar `lock_step=1` leagă Gazebo de SITL: RTF-ul
-buclei complete se măsoară cu `start_sim.sh` pornit, și el decide cât
-durează o campanie de batch (I4).
+`tools/measure_rtf.py` **refuză acum să măsoare** dacă rulează alt `gz sim`,
+și verifică din nou imediat înainte de cronometru — pentru că
+`--check-topic` tocmai a pornit și oprit unul. `--force` există doar pentru
+depanare.
 
-**Cum se măsoară corect.** Măsurătoarea naivă — `time gz sim --iterations N`
-— include pornirea procesului, care e de ordinul secundelor și domină la N
-mic: a dat 0.33 pentru ceva ce rulează la 0.53. `tools/measure_rtf.py`
-rulează două durate și elimină pornirea algebric (`t = pornire + N·dt/RTF`).
+**Regula generală:** o măsurătoare de performanță făcută pe o mașină pe care
+rulează și altceva nu e o măsurătoare. Harness-ul trebuie să verifice asta,
+nu operatorul să își amintească — e aceeași lecție ca §5.11, mutată din teste
+în cronometrare.
 
 **Și verifică întâi că randarea chiar se întâmplă.** Headless, fără EGL
 funcțional, topicurile `/down_cam/image` și `/down_cam/camera_info` sunt

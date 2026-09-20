@@ -31,6 +31,7 @@ identic. Foloseste `--check-topic` inainte de a crede orice cifra.
 
 import argparse
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -39,6 +40,44 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 #: max_step_size din lumile noastre. Se citeste din SDF daca se poate.
 DEFAULT_STEP_S = 0.001
+
+
+def gz_processes(exclude_pids=()):
+    """PID-urile serverelor gz care ruleaza ACUM, in afara celor date.
+
+    Un `gz sim` concurent - mai ales unul cu GUI, care randeaza continuu -
+    fura CPU si falsifica masuratoarea. Masurat: aceeasi lume a dat 0.50 cu
+    un server GUI pornit alaturi si 0.96 fara. Un factor de doi, adica exact
+    ordinul de marime al concluziilor pe care le-am trage din cifra."""
+    try:
+        out = subprocess.run(['pgrep', '-f', 'gz sim'],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    pids = []
+    for linie in (out.stdout or '').split():
+        try:
+            pid = int(linie)
+        except ValueError:
+            continue
+        if pid in exclude_pids or pid == os.getpid():
+            continue
+        pids.append(pid)
+    return pids
+
+
+def refuse_if_busy(printer=print, exclude=()):
+    """True daca se poate masura. Refuza daca ruleaza alt gz sim."""
+    pids = gz_processes(exclude)
+    if not pids:
+        return True
+    printer(f"\n  NU MASOR: ruleaza deja {len(pids)} proces(e) gz sim "
+            f"({', '.join(str(p) for p in pids[:5])}).")
+    printer("  Un server concurent - mai ales cu GUI, care randeaza - fura")
+    printer("  CPU si falsifica rezultatul cu un factor de pana la doi.")
+    printer("  Opreste-le si reia:")
+    printer("    pkill -f 'gz sim'\n")
+    return False
 
 
 def step_size(world, implicit=DEFAULT_STEP_S):
@@ -113,12 +152,30 @@ def check_topic(topic, world=None, wait=25.0, printer=print):
         ok = False
     finally:
         if pornit is not None:
-            pornit.terminate()
-            try:
-                pornit.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                pornit.kill()
+            # `gz sim` isi porneste propriile procese (server, gui). Un
+            # terminate() pe lansator le lasa in viata, iar ele raman sa
+            # randeze in timpul masuratorii care urmeaza. Omoram GRUPUL.
+            _kill_group(pornit)
     return ok
+
+
+def _kill_group(proc, timeout=10.0):
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        proc.terminate()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.kill()
+    # asteptam sa dispara si copiii
+    for _ in range(20):
+        if not gz_processes():
+            return
+        time.sleep(0.5)
 
 
 def main(argv=None):
@@ -128,10 +185,16 @@ def main(argv=None):
     p.add_argument('worlds', nargs='+')
     p.add_argument('--short', type=int, default=3000)
     p.add_argument('--long', type=int, default=30000)
+    p.add_argument('--force', action='store_true',
+                   help='masoara chiar daca ruleaza alt gz sim (cifra va fi '
+                        'falsa; exista doar pentru depanare)')
     p.add_argument('--check-topic', default=None,
                    help='verifica intai ca soseste macar un mesaj, '
                         'ex. /down_cam/image')
     a = p.parse_args(argv)
+
+    if not a.force and not refuse_if_busy():
+        return 2
 
     if a.check_topic:
         print(f"\n  verific {a.check_topic} ...")
@@ -148,6 +211,10 @@ def main(argv=None):
             print(f"\n  {w}: nu exista")
             continue
         print(f"\n  {os.path.relpath(w, REPO)}")
+        # inca o data, chiar inainte de cronometru: --check-topic a pornit si
+        # a oprit un server, iar daca a ramas ceva in viata cifra e gunoi
+        if not a.force and not refuse_if_busy():
+            return 2
         rtf, pornire, d = measure(w, a.short, a.long)
         if rtf is None:
             continue
@@ -155,11 +222,15 @@ def main(argv=None):
         print(f"    pornire {pornire:.2f} s (exclusa din RTF)")
         print(f"    RTF in regim stabil: {rtf:.2f}")
         if rtf < 0.5:
-            print("    SUB 0.5: ia in calcul --scale in "
-                  "tools/make_camera_model.py.\n"
-                  "    ATENTIE: marker_px se injumatateste, deci pragurile "
-                  "in pixeli\n"
-                  "    corespund altor altitudini - unealta le retipareste.")
+            # NU recomanda --scale automat: costul camerei trebuie masurat
+            # intai (o lume fara camera, in acelasi mediu). Daca fizica
+            # domina - si domina, la pas de 1 ms cu lift-drag pe patru
+            # rotoare - rezolutia redusa nu cumpara nimic si muta toate
+            # pragurile exprimate in pixeli.
+            print("    SUB 0.5. Inainte de a schimba ceva, masoara pe ce se\n"
+                  "    duce timpul: ruleaza si o lume FARA camera, in acelasi\n"
+                  "    mediu, si compara. Rezolutia redusa ajuta doar daca\n"
+                  "    randarea domina.")
 
     if len(rezultate) == 2:
         (w1, r1), (w2, r2) = rezultate

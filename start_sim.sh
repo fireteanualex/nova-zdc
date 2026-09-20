@@ -23,7 +23,7 @@ NOVA_DIR="$HOME/nova-zdc"
 VENV="$HOME/nova-venv"
 PARAM_FILE="$NOVA_DIR/config/nova_sitl.parm"
 DETECTOR="$NOVA_DIR/tools/fake_detector.py"
-WORLD="iris_runway.sdf"
+WORLD="sim/worlds/nova_marker.sdf"
 
 # --- Pozitia markerului fata de originea EKF, metri ---------------------
 MARKER_N="2.0"

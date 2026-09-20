@@ -92,6 +92,34 @@ BASE_WORLD_CANDIDATES = (
 
 # --- textura ----------------------------------------------------------------
 
+#: Versiunea minima de OpenCV pentru TOATA unealta. `generateImageMarker` si
+#: `ArucoDetector` au aparut in 4.7.0; inainte, API-ul era altul (§5.24).
+MIN_CV2 = (4, 7)
+
+
+def _cv2_version():
+    return tuple(int(x) for x in cv2.__version__.split('.')[:2])
+
+
+def _generate_marker(dictionary, marker_id, side_px):
+    """Imaginea markerului, cu mesaj util pe OpenCV vechi.
+
+    Fara garda asta, `python3` de sistem (Ubuntu 22.04: cv2 4.5.4) pica cu
+    `AttributeError: module 'cv2.aruco' has no attribute
+    'generateImageMarker'` - un mesaj care nu spune nici ca e o problema de
+    versiune, nici ca exista un venv in care merge. §3: doua medii Python
+    separate, nu le amesteca."""
+    if hasattr(cv2.aruco, 'generateImageMarker'):
+        return cv2.aruco.generateImageMarker(dictionary, marker_id, side_px)
+    raise RuntimeError(
+        f"cv2 {cv2.__version__} nu are cv2.aruco.generateImageMarker "
+        f"(introdus in {MIN_CV2[0]}.{MIN_CV2[1]}).\n"
+        f"  Python-ul folosit: {sys.executable}\n"
+        f"  Codul NOVA ruleaza in venv (§3). Incearca:\n"
+        f"    ~/nova-venv/bin/python tools/make_marker_model.py ...\n"
+        f"  Restul uneltelor au oricum nevoie de ArucoDetector, tot din 4.7.")
+
+
 def make_texture(marker_px=MARKER_PX, sheet_mm=SHEET_MM, coded_mm=CODED_MM,
                  marker_id=MARKER_ID, dictionary=ARUCO_DICT):
     """Coala alba cu markerul centrat. Intoarce (imagine, metadate).
@@ -108,7 +136,7 @@ def make_texture(marker_px=MARKER_PX, sheet_mm=SHEET_MM, coded_mm=CODED_MM,
             f"px, care nu e intreg; alege alt marker_px")
 
     d = cv2.aruco.getPredefinedDictionary(dictionary)
-    marker = cv2.aruco.generateImageMarker(d, marker_id, marker_px)
+    marker = _generate_marker(d, marker_id, marker_px)
 
     sheet = np.full((sheet_px, sheet_px), 255, np.uint8)
     off = (sheet_px - marker_px) // 2

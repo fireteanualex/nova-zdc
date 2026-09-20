@@ -390,6 +390,60 @@ def test_pragul_de_rms_nu_se_schimba_pentru_zbor():
     return "prag global 0.5 neatins; --max-rms 0.9 ridica doar rularea curenta"
 
 
+
+def test_measure_rtf_refuza_daca_ruleaza_alt_gz():
+    """O masuratoare facuta peste un alt gz sim nu e o masuratoare.
+
+    Masurat: aceeasi lume a dat 0.50 cu doua servere concurente si 0.96 cu
+    unul. Harness-ul trebuie sa verifice, nu operatorul sa isi aminteasca."""
+    import measure_rtf as mr
+
+    mesaje = []
+    ok = mr.refuse_if_busy(printer=mesaje.append,
+                           exclude=())
+    text = '\n'.join(mesaje)
+    if ok:
+        assert not mesaje, mesaje
+        rezultat = 'nicio instanta gz -> accepta'
+    else:
+        assert 'NU MASOR' in text and "pkill -f 'gz sim'" in text, text
+        assert 'factor de pana la doi' in text
+        rezultat = 'gz activ -> refuza cu comanda de oprire'
+
+    # si functia de numarare nu se raporteaza pe sine
+    assert os.getpid() not in mr.gz_processes()
+    return rezultat
+
+
+def test_OpenCV_vechi_da_mesaj_nu_AttributeError():
+    """`python3` de sistem are cv2 4.5.4: fara generateImageMarker si fara
+    ArucoDetector. Mesajul trebuie sa spuna versiunea, Python-ul folosit si
+    unde e cel bun - nu `AttributeError`."""
+    import make_marker_model as mmm
+
+    class FaraApi:
+        """Doar ce foloseste generatorul, minus generateImageMarker."""
+        @staticmethod
+        def getPredefinedDictionary(_d):
+            raise AssertionError('nu ar trebui sa ajunga aici')
+
+    vechi = mmm.cv2.aruco
+    try:
+        mmm.cv2.aruco = FaraApi
+        try:
+            mmm._generate_marker(None, 26, 2400)
+            raise AssertionError('nu a semnalat lipsa API-ului')
+        except RuntimeError as e:
+            text = str(e)
+    finally:
+        mmm.cv2.aruco = vechi
+
+    assert 'generateImageMarker' in text and '4.7' in text, text
+    assert 'nova-venv' in text, 'mesajul nu spune unde e Python-ul bun'
+    assert sys.executable in text or 'Python-ul folosit' in text, text
+    return "mesaj cu versiunea, executabilul si venv-ul, nu AttributeError"
+
+
 TESTS = [
     ('NEGATIV: refuza fara calibrare reala',
      test_NEGATIV_refuza_fara_calibrare_reala),
@@ -409,6 +463,10 @@ TESTS = [
      test_calibrarea_provizorie_e_sim_only),
     ('pragul de rms nu se schimba pentru zbor',
      test_pragul_de_rms_nu_se_schimba_pentru_zbor),
+    ('measure_rtf refuza daca ruleaza alt gz',
+     test_measure_rtf_refuza_daca_ruleaza_alt_gz),
+    ('OpenCV vechi da mesaj, nu AttributeError',
+     test_OpenCV_vechi_da_mesaj_nu_AttributeError),
 ]
 
 
