@@ -1438,39 +1438,56 @@ ACCEPT după fereastra de așezare, apoi verifică că 5 s de semnal identic nu
 declanșează override. Un script care „pare că trimite ce trebuie" dar pe care
 poarta îl refuză nu ajută la nimic.
 
-### 5.33 Un senzor de cameră care nu randează nu costă nimic
+### 5.33 Costul randării, măsurat — și de ce `--scale` nu e pârghia
 
-Măsurat, headless pe mașina de dezvoltare: lumea **cu** cameră
-2304×1296@30 Hz și lumea **fără** durează identic — 9.067 s vs 9.069 s
-pentru 3000 de pași. Concluzia tentantă („randarea e gratis") e falsă.
+**Intrinsecii ajung intacți în Gazebo.** `/down_cam/camera_info` raportează
+înapoi exact ce scrie generatorul: `fx=937, fy=933.7, cx=1139.4, cy=649`, iar
+distorsiunea în **ordinea OpenCV** (`k1 k2 p1 p2 k3`), adică exact cum o
+consumă `nova/detector_pi.py`. Lanțul `camera_pi.yaml` → SDF → Gazebo →
+`camera_info` e verificat dus-întors, nu presupus.
 
-Ce se întâmplă de fapt: topicurile `/down_cam/image` și
-`/down_cam/camera_info` sunt **anunțate**, dar nu sosește niciun mesaj pe
-ele. `libEGL: failed to create dri2 screen` — ogre2 nu poate randa fără un
-context grafic, deci senzorul e creat și nu se actualizează niciodată.
+**Factorul de timp real, măsurat:**
 
-**Un topic anunțat nu înseamnă date.** Verificarea corectă e să ceri un
-mesaj, nu să listezi topicuri:
+| | RTF |
+|---|---|
+| fără randare (headless, camera inertă) | 0.53 |
+| cu randare 2304×1296 @ 30 Hz | **0.50** |
+
+Camera costă deci ~6% din RTF; **restul e fizica** — pas de 1 ms și
+lift-drag pe patru rotoare. Consecința practică e contraintuitivă: chiar dacă
+`--scale 0.5` ar elimina trei sferturi din costul camerei, RTF-ul ar urca de
+la 0.50 la ~0.52. Rezoluția redusă nu e pârghia, iar prețul ei e mare —
+`marker_px` se înjumătățește, deci toate pragurile în pixeli corespund altor
+altitudini (`SCORING_CAPTURE` se mută de la 0.46 m la 0.23 m).
+
+Pârghiile reale, dacă RTF-ul devine o problemă, sunt `max_step_size` și
+numărul de plugin-uri de fizică — dar amândouă schimbă fidelitatea, deci nu
+se ating fără motiv.
+
+**Cifra care contează încă nu e măsurată.** Ambele valori de mai sus sunt
+fără ArduPilot conectat, iar `lock_step=1` leagă Gazebo de SITL: RTF-ul
+buclei complete se măsoară cu `start_sim.sh` pornit, și el decide cât
+durează o campanie de batch (I4).
+
+**Cum se măsoară corect.** Măsurătoarea naivă — `time gz sim --iterations N`
+— include pornirea procesului, care e de ordinul secundelor și domină la N
+mic: a dat 0.33 pentru ceva ce rulează la 0.53. `tools/measure_rtf.py`
+rulează două durate și elimină pornirea algebric (`t = pornire + N·dt/RTF`).
+
+**Și verifică întâi că randarea chiar se întâmplă.** Headless, fără EGL
+funcțional, topicurile `/down_cam/image` și `/down_cam/camera_info` sunt
+**anunțate** dar nu sosește niciun mesaj — iar timpul cu și fără cameră iese
+identic (9.067 vs 9.069 s), ceea ce citit greșit înseamnă „randarea e
+gratis". Un topic anunțat nu înseamnă date:
 
 ```bash
-gz topic -l | grep down_cam          # apare si cand nu randeaza NIMIC
-gz topic -e -t /down_cam/camera_info -n 1    # asta chiar masoara ceva
+gz topic -l | grep down_cam                   # apare si cand nu randeaza nimic
+gz topic -e -t /down_cam/camera_info -n 1     # asta chiar masoara ceva
 ```
 
-`camera_info` e mesajul de verificat, nu `image`: se publică la aceeași rată
-și are câțiva octeți, deci elimină transportul a 3 MB ca explicație
-alternativă.
-
-**Măsurătoarea naivă de RTF include pornirea procesului.** `time gz sim
---iterations 3000` a dat 0.33 pentru ceva ce rulează la 0.53 — diferența era
-doar cei ~3.4 s de pornire. `tools/measure_rtf.py` rulează două durate și
-elimină pornirea algebric (`t = pornire + N·dt/RTF`, două ecuații).
-
-**Cifra pe care o avem, cu rezervele ei:** RTF **0.53** în regim stabil,
-pentru lumea fără cameră, **fără ArduPilot conectat**. Nu e o linie de bază
-curată: `lock_step=1` face plugin-ul ArduPilot să aștepte un FDM care nu
-există. RTF-ul care contează se măsoară cu SITL pornit, și cu randarea
-funcțională — niciuna dintre cele două condiții nu e îndeplinită headless.
+`camera_info` e mesajul de verificat, nu `image`: aceeași rată, câțiva
+octeți, deci elimină transportul a 3 MB ca explicație alternativă.
+`measure_rtf.py --check-topic` o face singur.
 
 ### 5.34 Calibrarea de simulare e un fișier separat, nu un prag ridicat
 
