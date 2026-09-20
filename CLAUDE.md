@@ -129,7 +129,7 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 ├── nova/                     # cod companion, identic sim ↔ Raspberry Pi
 │   ├── config.py             # config/nova.json + garda E0
 │   ├── detection.py          # Detection + modelul de cameră (contractul)
-│   ├── detector_pi.py        # detectorul real: picamera2 → ArUco → solvePnP
+│   ├── detector_pi.py        # detectorul real + GazeboFrameSource (§5.36)
 │   ├── vehicle.py            # legătura MAVLink: telemetrie + comenzi + parametri
 │   ├── handover.py           # poarta de intrare (singura) + E0
 │   ├── safety.py             # Safety Supervisor
@@ -151,6 +151,8 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── make_marker_model.py  # modelul Gazebo al markerului (§5.31)
 │   ├── make_camera_model.py  # senzorul de camera, din calibrare (§5.33)
 │   ├── measure_rtf.py        # factorul de timp real, fara pornire (§5.33)
+│   ├── setup_sim_venv.sh     # mediul cu gz-transport + OpenCV 4.10 (§5.36)
+│   ├── gz_frames.py          # verifica sursa de cadre din Gazebo (I3)
 │   ├── race_mode.py          # ziua cursei: preflight + un singur ecran
 │   ├── collect_session.py    # evidența 6.2.1.30: .bin, loguri, cadre, manifest
 │   ├── fake_detector.py      # detector sintetic + aplicația de SIM (ocolește E0)
@@ -162,7 +164,8 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   └── test_*.py             # suite offline: state_machine, safety, handover,
 │                             #   detector_pi, calibrate_camera, link, ops,
 │                             #   pi_tooling, make_calib_target,
-│                             #   authority, sim_handover, marker_model
+│                             #   authority, sim_handover, marker_model,
+│                             #   camera_model, gz_source
 ├── sim/
 │   ├── models/aruco_26/      # marker ArUco 26, generat (nu edita de mână)
 │   └── worlds/nova_marker.sdf  # derivată din iris_runway.sdf
@@ -1553,6 +1556,64 @@ substituția pe text înainte de a scrie vreodată.
 
 Un test verifică acum că modelul generat are peste 5000 de octeți și că
 niciun șablon `{...}` nu a rămas neînlocuit.
+
+### 5.36 Trei medii Python, și de ce simularea îl rulează pe cel de pe vehicul
+
+Sursa de cadre din Gazebo are nevoie de `gz.transport13` + `gz.msgs10`, care
+vin din **apt** și există doar în `python3` de sistem. Detectorul are nevoie
+de OpenCV ≥ 4.7, pentru `cv2.aruco.ArucoDetector`. Pe Ubuntu 22.04 cele două
+nu se întâlnesc nicăieri:
+
+| | `gz.transport` | OpenCV |
+|---|---|---|
+| `python3` de sistem | ✓ | **4.5.4** — fără `ArucoDetector` |
+| `~/nova-venv` | ✗ | 5.0.0 |
+
+**`PYTHONPATH=/usr/lib/python3/dist-packages` NU rezolvă.** Măsurat: acea
+cale ajunge **înaintea** lui `site-packages` din venv, deci `cv2` de sistem
+(4.5.4) îl umbrește pe cel bun. Soluția aparent evidentă face exact opusul a
+ce vrei.
+
+Soluția e un al treilea venv, cu `--system-site-packages` și OpenCV **4.10**
+(`tools/setup_sim_venv.sh`):
+
+| componentă | versiune | de unde |
+|---|---|---|
+| `cv2` | 4.10.0 | venv (pip) |
+| `numpy` | 1.21.5 | **sistem (apt)** |
+| `gz.transport13` + `gz.msgs10` | — | **sistem (apt)** |
+
+De ce 4.10 și nu 5.x: 4.10 cere `numpy>=1.21`, deci se mulțumește cu cel din
+apt și nu instalează unul propriu peste el. 5.x ar cere `numpy>=2`, l-ar pune
+în venv peste cel de sistem, iar legăturile gz — compilate împotriva celui de
+sistem — s-ar rupe. Aceeași regulă ca §5.24 pe Pi, aplicată pe desktop.
+
+**Efectul secundar e un câștig, nu un compromis:** 4.10 e **exact versiunea
+de pe vehicul**. Simularea rulează același detector ca zborul, iar
+diferențele dintre 4.10 și 5.0 sunt reale (§5.24). `~/nova-venv` rămâne
+neatins, pentru restul uneltelor de desktop.
+
+**Calea 1 din două, și a mers.** Alternativa era `GstCameraPlugin` cu flux
+UDP citit prin `cv2.VideoCapture`; H.264 ar fi introdus artefacte de
+compresie care degradează exact localizarea colțurilor pe care vrem să o
+măsurăm. Prin `gz-transport` cadrele vin **necomprimate**, iar timestamp-ul e
+cel din simulare.
+
+**Ceasul e cel de simulare, și asta obligă bucla.** `GazeboFrameSource`
+întoarce implicit timpul din antetul mesajului. Consecința pentru I4: bucla
+care consumă sursa trebuie să folosească **același** ceas, altfel
+`now - det.t` compară două lumi. `nova/state_machine.run_loop` folosește
+`time.monotonic()`, deci `nova_sim.py` are nevoie de propria buclă pe timp de
+simulare — nu de o modificare în `run_loop`, care e validat.
+
+**Sursa e abonatul.** Un senzor Gazebo nu randează fără abonat (§5.33), deci
+randarea pornește când instanțiezi `GazeboFrameSource` și se oprește când o
+închizi. Asta face și măsurătoarea de RTF cu abonat posibilă.
+
+**Coada e de un cadru, deliberat.** Când detecția nu ține pasul, se pierde
+cadrul **vechi**, nu cel nou: pe un vehicul care coboară, un cadru vechi e mai
+rău decât niciunul.
+
 
 ---
 
