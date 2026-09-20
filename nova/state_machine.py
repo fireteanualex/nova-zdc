@@ -551,7 +551,7 @@ class LandingStateMachine:
 
 
 def run_loop(vehicle, detector, sm, supervisor=None, on_status=None,
-             status_s=2.0, sleep_s=0.002):
+             status_s=2.0, sleep_s=0.002, authority=None):
     """Bucla comuna sim / Raspberry Pi.
 
     detector.poll(now) intoarce zero sau mai multe Detection. Restul e
@@ -584,6 +584,22 @@ def run_loop(vehicle, detector, sm, supervisor=None, on_status=None,
         if supervisor is not None:
             age = None if last_det_t is None else (now - last_det_t)
             supervisor.update(now, age, sm.state)
+
+        # Modularea de autoritate ruleaza DUPA supervizor si INAINTEA masinii
+        # de stari, ca si el, si se armeaza/elibereaza tot din faza (§5.14).
+        # E deliberat sub supervizor in ordine: daca supervizorul tocmai a
+        # comandat BRAKE, faza se schimba si modularea incepe restaurarea in
+        # acelasi ciclu, nu in urmatorul.
+        if authority is not None:
+            lat = None
+            st = getattr(detector, 'stats', None)
+            if st is not None:
+                try:
+                    p50 = st().get('latency_p50_ms')
+                    lat = None if p50 is None else p50 / 1000.0
+                except Exception:                            # noqa: BLE001
+                    lat = None
+            authority.update(now, vehicle.alt, sm.state, latency_s=lat)
 
         for det in dets:
             sm.on_detection(det, now)

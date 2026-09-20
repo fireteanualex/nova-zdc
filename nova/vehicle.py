@@ -89,6 +89,12 @@ class Vehicle:
 
         # parametri: cache din PARAM_VALUE + cereri neconfirmate inca
         self.params = {}
+        #: Cand am vazut ultima data fiecare parametru (time.monotonic()).
+        #: Fara asta, un consumator nu poate deosebi o valoare citita ACUM de
+        #: una ramasa in cache de acum zece minute - iar intre timp cineva
+        #: poate sa fi schimbat-o din GCS. Conteaza pentru oricine salveaza
+        #: valori ca sa le restaureze (nova/authority.py).
+        self.params_t = {}
         self._param_pending = {}     # nume -> [valoare, tries, last_send]
 
         # statistici de emisie
@@ -340,6 +346,7 @@ class Vehicle:
             name = name.decode('ascii', 'ignore')
         name = name.rstrip('\x00')
         self.params[name] = msg.param_value
+        self.params_t[name] = time.monotonic()
         want = self._param_pending.get(name)
         if want is not None and abs(msg.param_value - want[0]) < 1e-6:
             del self._param_pending[name]

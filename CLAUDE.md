@@ -138,6 +138,7 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── serial_guard.py       # cine ocupă /dev/serial0 (§5.27)
 │   ├── preview.py            # previzualizare: banc / VNC / bord (§5.28)
 │   ├── race_screen.py        # ecranul de concurs (§5.29)
+│   ├── authority.py          # modulare de autoritate pe praguri (§5.30)
 │   └── state_machine.py      # mașina de stări a segmentului autonom
 ├── tools/
 │   ├── nova_pi.py            # aplicația de BORD (detector real, fără ocolire E0)
@@ -1218,6 +1219,73 @@ deliberat: al doilea punct de intrare care și-ar construi singur piesele ar
 reintroduce exact clasa de bug din §5.14. Un test citește sursa lui
 `race_mode.py` și pică dacă apare `SafetySupervisor(`, `HandoverGate(`,
 `LandingStateMachine(` sau `run_loop(`.
+
+### 5.30 Modularea autorității: ce se restaurează nu e ce ai trimis
+
+`nova/authority.py` schimbă în zbor șase parametri pe praguri de altitudine
+și îi pune la loc la handback sau abort. Feature-ul în sine e simplu; tot ce
+l-a făcut greu e **garanția de restaurare**.
+
+**Trei nume din cinci nu existau.** Cerute inițial ca `WPNAV_ACCEL`,
+`PSC_POSXY_P`, `PSC_VELXY_D`. Reale pe 4.8:
+
+| cerut | real | de ce |
+|---|---|---|
+| `WPNAV_ACCEL` | **`WP_ACC`** | prefixul e `WP_` (§5.4), numele scurt e `ACC` |
+| `PSC_POSXY_P` | **`PSC_NE_POS_P`** | subgrupul s-a redenumit XY → NE |
+| `PSC_VELXY_D` | **`PSC_NE_VEL_D`** | idem |
+
+Verificate în sursă, nu din memorie:
+
+```bash
+grep -oP 'AP_GROUPINFO\("\K[A-Z_0-9]+' libraries/AC_WPNav/AC_WPNav.cpp
+grep -n 'AP_SUBGROUPINFO' libraries/AC_AttitudeControl/AC_PosControl.cpp
+```
+
+Modulul își prinde singur greșeala asta: dacă FC-ul nu răspunde la citirea
+inițială, parametrul intră în `unavailable` și **nu e scris niciodată**.
+
+**Patru reguli, fiecare plătită de un test.**
+
+1. **Nu modifica ce nu ai citit.** Fără originalul citit înapoi, modificarea
+   nu se poate anula. Deci salvarea e completă înainte de prima scriere.
+2. **Cache-ul nu e o citire.** Prima variantă lua originalele din
+   `Vehicle.params`, care e un cache — putea conține o valoare de acum zece
+   minute, schimbată între timp din GCS, iar restaurarea ar fi dus vehiculul
+   la o valoare care nu a fost niciodată cea de la handover. `Vehicle` are
+   acum `params_t` (când a fost văzut fiecare), iar salvarea acceptă doar
+   valori sosite **după** armare.
+3. **Restaurarea nu are voie să renunțe.** `Vehicle.set_param` abandonează
+   după `PARAM_TRIES` și scrie un avertisment — potrivit pentru o comandă
+   normală, nu pentru restaurarea autorității. Modulul compară valoarea
+   citită înapoi cu ținta și reemite; cu legătura căzută nu consumă
+   încercări (același tipar ca `safety._drive_mode`, H1).
+4. **`restored` e o măsurătoare, nu o intenție.** Rămâne `False` până când
+   fiecare parametru atins e confirmat înapoi. „Am trimis comenzile" nu e
+   același lucru cu „vehiculul e la autoritate nominală".
+
+**Se armează din fază, nu din tranziții** (§5.14). Orice ieșire din segment
+— `HANDBACK`, `ABORT`, dezarmare, **o fază pe care nimeni nu a prevăzut-o** —
+declanșează restaurarea. Un test folosește o fază inventată ca să verifice
+tocmai asta.
+
+**Histereză obligatorie pe praguri.** Fără ea, zgomotul de ±0.3 m în jurul
+unui prag produce un `PARAM_SET` pe ciclu. Măsurat cu histereza de 0.5 m:
+2 treceri și 0.08 scrieri/ciclu.
+
+**Santinela „niciodată" nu e 0.0.** `_read_t = 0.0` cu o buclă care pornește
+la `now = 0.0` blochează *prima* cerere prin propriul ei timeout — bug prins
+de teste, mascat inițial de bug-ul de cache. `float('-inf')`.
+
+**Ce nu atinge, deliberat.** `ANGLE_MAX` și `PSC_ANGLE_MAX` sunt în
+`FORBIDDEN`, verificat pe tot ce s-a trimis, nu pe intenție. Unghiul maxim de
+înclinare e plafonul de autoritate al vehiculului, nu reglaj fin — și
+interacționează cu `MAX_TILT_DEG` din supervizor: l-am putea ridica până unde
+supervizorul tratează înclinarea ca defecțiune.
+
+**Vitezele de coborâre sunt plafonate la 0.5 m/s** (`DESCENT_VALIDATED_MS`)
+până la măsurătoarea de distanță de frânare pe fiecare treaptă, cerută de
+§6/15.2.9. `PROFIL_RAPID` există, dar cere `allow_fast_descent=True`.
 
 ---
 

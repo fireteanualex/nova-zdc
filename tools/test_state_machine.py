@@ -25,6 +25,7 @@ Ce acopera, si de ce:
 
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -57,7 +58,13 @@ class StubVehicle:
         self.landed_state = LANDED_IN_AIR
         self.time_boot_ms = 1000
         self.params = {'RC1_TRIM': 1500, 'RC2_TRIM': 1500,
-                       'RC3_TRIM': 1100, 'RC4_TRIM': 1500}
+                       'RC3_TRIM': 1100, 'RC4_TRIM': 1500,
+                       # valori nominale, pentru nova/authority.py
+                       'PSC_NE_POS_P': 1.0, 'PSC_NE_VEL_D': 0.25,
+                       'WP_ACC': 2.5, 'WP_SPD_DN': 0.5,
+                       'LAND_SPD_MS': 0.5, 'PLND_LAG': 0.02}
+        #: Cand a fost vazut fiecare parametru - vezi Vehicle.params_t.
+        self.params_t = {}
         # canalul 7 (AUX) sus = cerere de handover
         self.rc = (1500, 1500, 1100, 1500, 1000, 1000, AUX_HIGH_PWM, 1000)
         self.rc_t = 0.0
@@ -83,7 +90,15 @@ class StubVehicle:
         self.sent_ranges.append(r)
 
     def request_param(self, name):
-        pass
+        # Raspunde ca un FC: valoarea ajunge in params CU un timestamp.
+        # Fara params_t, nova/authority.py nu poate deosebi o valoare
+        # proaspata de una ramasa in cache.
+        if name in self.params:
+            self.params_t[name] = time.monotonic()
+        return True
+
+    def param_pending(self, name=None):
+        return False
 
     def set_aux(self, pwm):
         self.set_rc(7, pwm)
@@ -96,7 +111,9 @@ class StubVehicle:
 
     def set_param(self, name, value, now=None):
         self.params[name] = float(value)
+        self.params_t[name] = time.monotonic()
         self.param_sets.append((name, float(value)))
+        return True
 
     def update_params(self, now):
         pass
@@ -162,8 +179,12 @@ def build_app(alt=6.0):
 
 
 def run_app(v, det, sm, sup, args, seconds=40.0, dt=0.002, stop_states=(),
-            on_step=None):
-    """Aceeasi ordine ca nova.state_machine.run_loop."""
+            on_step=None, authority=None):
+    """Aceeasi ordine ca nova.state_machine.run_loop.
+
+    `authority` e aici pentru ca altfel harness-ul ar diverge de aplicatie -
+    exact greseala din §5.14, unde testele exersau un cablaj si aplicatia
+    altul."""
     t = 0.0
     last_det_t = None
     states = []
@@ -175,6 +196,8 @@ def run_app(v, det, sm, sup, args, seconds=40.0, dt=0.002, stop_states=(),
             last_det_t = d.t if last_det_t is None else max(last_det_t, d.t)
         age = None if last_det_t is None else (now - last_det_t)
         sup.update(now, age, sm.state)
+        if authority is not None:
+            authority.update(now, v.alt, sm.state, latency_s=0.05)
         for d in dets:
             sm.on_detection(d, now)
         sm.update(now)
@@ -403,6 +426,83 @@ def test_mansa_opreste_coborarea_autonoma():
     return f"OVERRIDE -> LOITER, secventa oprita in {sm.state}"
 
 
+
+def _authority_originals(v):
+    from nova.authority import MANAGED
+    return {sp.name: v.params[sp.name] for sp in MANAGED}
+
+
+def test_autoritate_restaurata_in_cablajul_real():
+    """§5.14 pe modularea de autoritate: piesa are suita ei (test_authority),
+    dar asta nu spune nimic despre cum e legata in bucla.
+
+    Aici ruleaza secventa reala, cu poarta si supervizorul, si verifica pe
+    vehicul ca la final parametrii sunt inapoi la valorile de la handover."""
+    from nova.authority import AuthorityScheduler
+    v, det, sm, sup, events, args = build_app()
+    originale = _authority_originals(v)
+    sched = AuthorityScheduler(v, verbose=False)
+
+    vazute = {'benzi': set(), 'modulat': False}
+
+    def on_step(t, vv, ssm, ssup):
+        if sched.band is not None:
+            vazute['benzi'].add(sched.band.nume)
+        if sched.state == sched.ACTIVE and sched.modified:
+            vazute['modulat'] = True
+
+    stari = run_app(v, det, sm, sup, args, seconds=60.0, on_step=on_step,
+                    authority=sched, stop_states=(State.HANDBACK,))
+
+    assert State.DESCEND_TRACK in stari, stari
+    assert vazute['modulat'], "autoritatea nu a fost modificata niciodata"
+    assert len(vazute['benzi']) >= 2, (
+        f"o singura banda in toata coborarea: {vazute['benzi']}")
+
+    # dupa HANDBACK: bucla mai ruleaza cateva cicluri, ca restaurarea sa se
+    # termine (e o secventa de PARAM_SET, nu o atribuire)
+    run_app(v, det, sm, sup, args, seconds=5.0, authority=sched)
+    for nume, orig in originale.items():
+        assert abs(v.params[nume] - orig) < 1e-6, (
+            f"dupa handback, {nume} = {v.params[nume]:g}, original {orig:g}")
+    assert sched.restored is True
+    return (f"benzi vazute: {sorted(vazute['benzi'])}; "
+            f"{len(originale)} parametri inapoi la original dupa HANDBACK")
+
+
+def test_autoritate_restaurata_dupa_override_in_cablajul_real():
+    """Calea de abort cea mai realista: pilotul pune mana pe manse in
+    mijlocul coborarii. Supervizorul comuta modul, secventa se incheie, iar
+    vehiculul trebuie predat cu autoritate NOMINALA."""
+    from nova.authority import AuthorityScheduler
+    v, det, sm, sup, events, args = build_app()
+    originale = _authority_originals(v)
+    sched = AuthorityScheduler(v, verbose=False)
+    moved = {'done': False}
+
+    def on_step(t, vv, ssm, ssup):
+        if not moved['done'] and ssm.state == State.DESCEND_TRACK and vv.alt < 3.0:
+            moved['done'] = True
+        if moved['done']:
+            vv.set_rc(4, 1900)          # mansa la maxim
+
+    run_app(v, det, sm, sup, args, seconds=60.0, on_step=on_step,
+            authority=sched, stop_states=(State.IDLE, State.ABORT))
+    assert moved['done'], "scenariul nu s-a produs: mansa nu a fost miscata"
+    assert sup.passive, "override-ul nu s-a declansat"
+
+    run_app(v, det, sm, sup, args, seconds=5.0, authority=sched)
+    for nume, orig in originale.items():
+        assert abs(v.params[nume] - orig) < 1e-6, (
+            f"dupa override, {nume} = {v.params[nume]:g}, original {orig:g}")
+    assert sched.restored is True, sched.status()
+    # si ANGLE_MAX nu a fost atins in tot ciclul
+    atinse = {n for n, _ in v.param_sets}
+    assert 'ANGLE_MAX' not in atinse and 'PSC_ANGLE_MAX' not in atinse, atinse
+    return ("override la 3 m -> secventa oprita, toti parametrii inapoi la "
+            "original, ANGLE_MAX neatins")
+
+
 TESTS = [
     ('secventa completa ajunge la HANDBACK', test_secventa_completa),
     ('SCORING_CAPTURE exact o data', test_scoring_capture_exact_o_data),
@@ -417,6 +517,10 @@ TESTS = [
     ('neutru memorat la ACCEPT', test_neutrul_se_memoreaza_la_accept),
     ('REGRESIE: supervizor armat in cablajul real',
      test_supervizorul_se_armeaza_in_cablajul_real),
+    ('REGRESIE: autoritate restaurata in cablajul real',
+     test_autoritate_restaurata_in_cablajul_real),
+    ('REGRESIE: autoritate restaurata dupa override',
+     test_autoritate_restaurata_dupa_override_in_cablajul_real),
     ('mansa opreste coborarea autonoma', test_mansa_opreste_coborarea_autonoma),
 ]
 

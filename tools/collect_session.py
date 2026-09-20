@@ -63,6 +63,15 @@ PARAMS_OF_RECORD = (
     'DISARM_DELAY', 'FS_THR_ENABLE',
     'FENCE_ENABLE', 'FENCE_TYPE', 'FENCE_RADIUS', 'FENCE_ALT_MAX',
     'FENCE_ACTION',
+    # Parametrii modulati in zbor de nova/authority.py. Sunt inregistrati
+    # DUPA zbor, cand modularea a restaurat deja originalele - deci valorile
+    # din manifest trebuie sa fie cele nominale. Daca nu sunt, restaurarea a
+    # esuat si se vede aici, negru pe alb.
+    'PSC_NE_POS_P', 'PSC_NE_VEL_D', 'WP_ACC', 'WP_SPD_DN', 'LAND_SPD_MS',
+    'PLND_LAG',
+    # Neatins de noi, deliberat (nova/authority.py: FORBIDDEN). Inregistrat
+    # tocmai ca sa se poata dovedi ca nu l-am schimbat.
+    'PSC_ANGLE_MAX',
 )
 
 #: Descarcarea logului pe serial la 921600 e lenta: un log de 10 MB ia

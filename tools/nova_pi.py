@@ -39,6 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pymavlink import mavutil                              # noqa: E402
 
 from nova import config as nova_config                     # noqa: E402
+from nova.authority import AuthorityScheduler              # noqa: E402
 from nova import preview as preview_mod                    # noqa: E402
 from nova import race_screen                              # noqa: E402
 from nova import serial_guard                             # noqa: E402
@@ -199,6 +200,11 @@ def main():
                    help='preflight fara FC (banc); NU trece in --race')
     p.add_argument('--screen-hz', type=float, default=4.0,
                    help='cat de des se redeseneaza ecranul de concurs')
+    p.add_argument('--no-authority', action='store_true',
+                   help='fara modulare de autoritate (reglaj nominal)')
+    p.add_argument('--fast-descent', action='store_true',
+                   help='permite viteze peste 0.5 m/s; cere intai '
+                        'masuratoarea de distanta de franare (§6/15.2.9)')
     p.add_argument('--preview-scale', type=float, default=0.5,
                    help='scara ferestrei; detectia ruleaza pe cadrul plin')
     a = p.parse_args()
@@ -260,6 +266,12 @@ def main():
 
     override = OverrideMonitor(vehicle)
     sup = SafetySupervisor(vehicle, override=override)
+    # Modularea de autoritate pe praguri de altitudine. `None` o dezactiveaza
+    # complet: fara ea, vehiculul zboara cu reglajul lui nominal, ceea ce e
+    # exact comportamentul de dinainte.
+    autoritate = (None if a.no_authority
+                  else AuthorityScheduler(
+                      vehicle, allow_fast_descent=a.fast_descent))
 
     def signal_reject(reason):
         if ecran is not None:
@@ -286,7 +298,8 @@ def main():
     def status(now):
         if ecran is None:
             print(f"{sm.status_line()} | {detector.status_line()} | "
-                  f"{sup.status()}")
+                  f"{sup.status()}"
+                  + ('' if autoritate is None else f" | {autoritate.status()}"))
             return
         # Verdictul de handover se CITESTE din poarta la fiecare redesenare,
         # nu se tine intr-o variabila proprie actualizata prin callback. Un
@@ -307,7 +320,8 @@ def main():
         print("[bord] ATENTIE: fereastra pornita - vezi avertismentul de mai sus")
     print("[bord] rulez. Ctrl-C pentru oprire.")
     try:
-        run_loop(vehicle, detector, sm, supervisor=sup, on_status=status)
+        run_loop(vehicle, detector, sm, supervisor=sup, on_status=status,
+                 authority=autoritate)
     except KeyboardInterrupt:
         print("\n[bord] oprire.")
     finally:
