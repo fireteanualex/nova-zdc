@@ -182,9 +182,21 @@ MARKER_INCLUDE = """
              y = north = {north:g}
          Inversate, vehiculul coboara langa marker si eroarea arata exact ca
          un bug de conventie in detector (§5.31). z = {z:g} evita
-         z-fighting cu solul. -->
+         z-fighting cu solul.
+
+         URI: masurat, `<include><uri>` accepta `model://nume` (si atunci
+         cere GZ_SIM_RESOURCE_PATH) sau o CALE ABSOLUTA. O cale relativa la
+         fisierul lumii NU se rezolva. Implicit scriem calea absoluta, ca
+         `gz sim <lume>` sa mearga fara nicio variabila de mediu; fisierul e
+         oricum generat, deci calea locala nu e o problema - dar pe alta
+         masina TREBUIE regenerat. Vezi optiunea uri-mode a generatorului.
+
+         (Fara liniuta dubla in comentariile XML: standardul o interzice.
+         libsdformat o accepta tacut, expat/ElementTree nu - deci un fisier
+         pe care Gazebo il incarca fara reclamatii poate fi totusi XML
+         invalid.) -->
     <include>
-      <uri>model://{name}</uri>
+      <uri>{uri}</uri>
       <name>{name}</name>
       <pose>{east:g} {north:g} {z:g} 0 0 {yaw:g}</pose>
     </include>
@@ -227,8 +239,22 @@ def find_base_world(explicit=None):
         "  Cautat in: " + ', '.join(BASE_WORLD_CANDIDATES))
 
 
+def model_uri(uri_mode, models_dir, name=MODEL_NAME):
+    """URI-ul de pus in `<include>`.
+
+    `absolute` merge fara GZ_SIM_RESOURCE_PATH, deci `gz sim <lume>` tastat
+    direct functioneaza - cazul in care se pierde cel mai mult timp, pentru
+    ca eroarea (`Unable to find uri`) apare in mijlocul unei sesiuni si nu
+    spune ce variabila lipseste."""
+    if uri_mode == 'model':
+        return f"model://{name}"
+    if uri_mode == 'absolute':
+        return os.path.abspath(os.path.join(models_dir, name))
+    raise ValueError(f"uri-mode necunoscut: {uri_mode}")
+
+
 def build_world(base_text, north, east, az, el, z=MARKER_Z, yaw=0.0,
-                name=MODEL_NAME, world_name=WORLD_NAME):
+                name=MODEL_NAME, world_name=WORLD_NAME, uri=None):
     """Lumea derivata: acelasi continut, cu lumina inlocuita si markerul
     adaugat inainte de `</world>`.
 
@@ -254,7 +280,8 @@ def build_world(base_text, north, east, az, el, z=MARKER_Z, yaw=0.0,
             + text[j + len('</light>'):].lstrip('\n'))
 
     inc = MARKER_INCLUDE.format(name=name, north=north, east=east, z=z,
-                                yaw=yaw)
+                                yaw=yaw,
+                                uri=uri or f"model://{name}")
     text = text.replace('  </world>', inc + '\n  </world>', 1)
 
     antet = ("<!-- Generat de tools/make_marker_model.py din\n"
@@ -305,6 +332,11 @@ def main(argv=None):
     p.add_argument('--marker-px', type=int, default=MARKER_PX)
     p.add_argument('--out', default=os.path.join(REPO, 'sim'))
     p.add_argument('--base-world', default=None)
+    p.add_argument('--uri-mode', choices=('absolute', 'model'),
+                   default='absolute',
+                   help='absolute: lumea merge cu `gz sim` simplu, dar e '
+                        'legata de masina asta (regenereaza dupa clonare). '
+                        'model: portabil, dar cere GZ_SIM_RESOURCE_PATH.')
     a = p.parse_args(argv)
 
     model_dir = os.path.join(a.out, 'models', MODEL_NAME)
@@ -315,8 +347,9 @@ def main(argv=None):
     base = find_base_world(a.base_world)
     with open(base) as f:
         base_text = f.read()
+    uri = model_uri(a.uri_mode, os.path.join(a.out, 'models'))
     world = build_world(base_text, a.north, a.east, a.sun_az, a.sun_el,
-                        z=a.z, yaw=a.yaw)
+                        z=a.z, yaw=a.yaw, uri=uri)
     world = world.replace('{sursa}', base)
     worlds_dir = os.path.join(a.out, 'worlds')
     os.makedirs(worlds_dir, exist_ok=True)
@@ -340,10 +373,16 @@ def main(argv=None):
           f"Gazebo x={a.east:g} y={a.north:g} z={a.z:g}")
     print(f"           soare az {a.sun_az:g} deg el {a.sun_el:g} deg  ->  "
           f"direction {dx:.3f} {dy:.3f} {dz:.3f}")
-    print(f"\n  Ca Gazebo sa gaseasca modelul:\n"
-          f"    export GZ_SIM_RESOURCE_PATH=\"{os.path.join(a.out, 'models')}"
-          f":$GZ_SIM_RESOURCE_PATH\"\n"
-          f"    gz sim -v4 -r {world_path}\n")
+    print(f"           uri marker: {uri}")
+    if a.uri_mode == 'absolute':
+        print(f"\n  Ruleaza direct, fara variabile de mediu:\n"
+              f"    gz sim -v4 -r {world_path}\n"
+              f"  (calea e absoluta: pe alta masina REGENEREAZA)\n")
+    else:
+        print(f"\n  Ca Gazebo sa gaseasca modelul:\n"
+              f"    export GZ_SIM_RESOURCE_PATH=\"{os.path.join(a.out, 'models')}"
+              f":$GZ_SIM_RESOURCE_PATH\"\n"
+              f"    gz sim -v4 -r {world_path}\n")
     return 0
 
 

@@ -1324,6 +1324,35 @@ Rezoluția nu e rotunjită: 2400 px pe 480 mm = **5 px/mm** exact, coala iese
 3000 px, iar `DICT_4X4_50` are 6 module → 400 px pe modul, fără rest. O
 rezoluție care nu se împarte exact e **refuzată**, nu rotunjită.
 
+**`<include><uri>` acceptă `model://` sau o cale ABSOLUTĂ — nu una
+relativă.** Măsurat, cu `GZ_SIM_RESOURCE_PATH` conținând doar modelele
+ardupilot_gazebo:
+
+| uri | rezultat |
+|---|---|
+| `model://aruco_26` | **eșec** — cere calea în `GZ_SIM_RESOURCE_PATH` |
+| `../models/aruco_26` | **eșec** — relativul la fișierul lumii nu se rezolvă |
+| `/abs/path/sim/models/aruco_26` | **merge**, fără nicio variabilă de mediu |
+
+De aceea generatorul scrie implicit calea absolută: `gz sim <lume>` tastat
+direct funcționează, iar eroarea `Unable to find uri` — care apare în mijlocul
+unei sesiuni și nu spune ce variabilă lipsește — dispare. Fișierul e generat
+oricum; pe altă mașină se **regenerează**, iar un test verifică pe lumea din
+repo că URI-ul chiar duce la un director cu `model.config`.
+
+**`--` e ilegal într-un comentariu XML, și libsdformat îl acceptă tăcut.**
+Un comentariu care conținea `--uri-mode` făcea fișierul XML invalid;
+`gz sim` îl încărca fără o vorbă, iar `ElementTree` refuza să-l parseze.
+Deci „Gazebo îl încarcă" nu înseamnă „e XML valid" — încă o variantă de
+§5.10.
+
+**Un test care eșuează din alt motiv decât cel testat** (§5.11, a patra
+oară): prima verificare a URI-urilor rula cu `env -u GZ_SIM_RESOURCE_PATH
+bash -c 'source ~/.bashrc; ...'`, dar `.bashrc` iese devreme într-un shell
+neinteractiv. Deci eșuau modelele **stock**, nu al nostru, iar toate cele
+trei variante păreau la fel de rele. Mediul unui test se fixează explicit,
+nu se moștenește.
+
 **`gz sdf --check` nu rezolvă `model://`.** Raportează `Unable to find uri`
 pentru *toate* includerile, inclusiv cele stock din lumea de bază — deci nu e
 un semn că lumea ta e greșită. Verificarea care chiar contează e serverul

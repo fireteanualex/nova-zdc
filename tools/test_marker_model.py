@@ -181,8 +181,10 @@ def test_NED_la_ENU_in_lumea_generata():
     open(tmp, 'w').write(text.replace('{sursa}', 'test'))
 
     world = ET.parse(tmp).getroot().find('world')
+    # cautam dupa <name>, nu dupa uri: uri-ul depinde de --uri-mode
     inc = [i for i in world.findall('include')
-           if i.find('uri').text.strip() == 'model://aruco_26']
+           if i.find('name') is not None
+           and i.find('name').text.strip() == 'aruco_26']
     assert len(inc) == 1, f"{len(inc)} includeri de marker"
     poza = [float(x) for x in inc[0].find('pose').text.split()]
     x, y, z = poza[0], poza[1], poza[2]
@@ -193,7 +195,8 @@ def test_NED_la_ENU_in_lumea_generata():
     # si in lumea din repo, cu valorile implicite din start_sim.sh
     w = _world_root()
     inc0 = [i for i in w.findall('include')
-            if i.find('uri').text.strip() == 'model://aruco_26'][0]
+            if i.find('name') is not None
+            and i.find('name').text.strip() == 'aruco_26'][0]
     p0 = [float(v) for v in inc0.find('pose').text.split()]
     assert (p0[0], p0[1]) == (1.5, 2.0), (
         f"lumea din repo: x={p0[0]} y={p0[1]}; start_sim.sh are N=2.0 E=1.5")
@@ -243,10 +246,23 @@ def test_lumea_e_DERIVATA_nu_rescrisa():
         b = w.find(f'spherical_coordinates/{camp}').text.strip()
         assert a == b, f"{camp}: {a} vs {b}"
 
-    uri_baza = {i.find('uri').text.strip() for i in baza.findall('include')}
-    uri_nou = {i.find('uri').text.strip() for i in w.findall('include')}
-    assert uri_baza < uri_nou, f"lipsesc modele din baza: {uri_baza - uri_nou}"
-    assert uri_nou - uri_baza == {'model://aruco_26'}, uri_nou - uri_baza
+    # Comparam pe NUMELE modelului, nu pe uri: uri-ul markerului depinde de
+    # --uri-mode, iar testul trebuie sa masoare "ce modele sunt in lume", nu
+    # "cum sunt scrise caile".
+    def nume_modele(world):
+        out = set()
+        for i in world.findall('include'):
+            n = i.find('name')
+            if n is not None:
+                out.add(n.text.strip())
+            else:
+                out.add(os.path.basename(
+                    i.find('uri').text.strip().rstrip('/')))
+        return out
+
+    n_baza, n_nou = nume_modele(baza), nume_modele(w)
+    assert n_baza < n_nou, f"lipsesc modele din baza: {n_baza - n_nou}"
+    assert n_nou - n_baza == {'aruco_26'}, n_nou - n_baza
 
     assert w.get('name') == 'nova_marker', w.get('name')
     return (f"{len(p_nou)} plugin-uri identice, coordonate sferice identice, "
@@ -264,6 +280,56 @@ def test_o_singura_lumina_si_e_parametrizabila():
     return "o lumina directionala 'sun', cu umbre si directie parametrizata"
 
 
+
+def test_uri_ul_din_lume_chiar_se_rezolva():
+    """Cazul raportat: `gz sim <lume>` a dat `Unable to find uri`.
+
+    `model://nume` se rezolva DOAR prin GZ_SIM_RESOURCE_PATH, iar o cale
+    relativa la fisierul lumii nu se rezolva deloc (masurat). Implicit
+    scriem calea absoluta, deci testul verifica pe lumea DIN REPO ca uri-ul
+    chiar duce la un director de model - adica si ca nu a fost clonata de pe
+    alta masina fara regenerare."""
+    w = _world_root()
+    inc = [i for i in w.findall('include')
+           if i.find('name') is not None
+           and i.find('name').text.strip() == 'aruco_26'][0]
+    uri = inc.find('uri').text.strip()
+
+    if uri.startswith('model://'):
+        cale = os.environ.get('GZ_SIM_RESOURCE_PATH', '')
+        assert any(os.path.isdir(os.path.join(d, uri[len('model://'):]))
+                   for d in cale.split(':') if d), (
+            f"uri {uri} cere GZ_SIM_RESOURCE_PATH, care nu contine modelul; "
+            f"regenereaza cu --uri-mode absolute, sau exporta calea")
+        return "model:// + GZ_SIM_RESOURCE_PATH rezolva"
+
+    assert os.path.isabs(uri), f"uri nici model://, nici absolut: {uri}"
+    assert os.path.isdir(uri), (
+        f"uri-ul din lume arata spre {uri}, care nu exista pe masina asta.\n"
+        f"        Lumea a fost generata altundeva: ruleaza\n"
+        f"        python3 tools/make_marker_model.py")
+    assert os.path.exists(os.path.join(uri, 'model.config')), (
+        f"{uri} nu contine model.config, deci Gazebo nu il vede ca model")
+    assert os.path.samefile(uri, MODEL_DIR), (
+        f"uri {uri} nu e modelul din repo ({MODEL_DIR})")
+    return f"cale absoluta, rezolva la {os.path.relpath(uri, REPO)}"
+
+
+def test_uri_mode():
+    """Ambele moduri produc ce promit."""
+    models = os.path.join(REPO, 'sim', 'models')
+    a = mm.model_uri('absolute', models)
+    assert os.path.isabs(a) and os.path.isdir(a), a
+    m = mm.model_uri('model', models)
+    assert m == 'model://aruco_26', m
+    try:
+        mm.model_uri('altceva', models)
+        raise AssertionError('a acceptat un uri-mode necunoscut')
+    except ValueError:
+        pass
+    return f"absolute -> {os.path.relpath(a, REPO)}; model -> {m}"
+
+
 TESTS = [
     ('geometria texturii', test_geometria_texturii),
     ('doar alb si negru', test_doar_alb_si_negru),
@@ -277,6 +343,9 @@ TESTS = [
     ('lumea e DERIVATA, nu rescrisa', test_lumea_e_DERIVATA_nu_rescrisa),
     ('o singura lumina, parametrizabila',
      test_o_singura_lumina_si_e_parametrizabila),
+    ('uri-ul din lume chiar se rezolva',
+     test_uri_ul_din_lume_chiar_se_rezolva),
+    ('uri-mode', test_uri_mode),
 ]
 
 

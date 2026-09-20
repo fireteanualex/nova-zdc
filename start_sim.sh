@@ -55,6 +55,13 @@ die() { echo "EROARE: $*" >&2; exit 1; }
 # terminal cu venv-ul activat, gnome-terminal mosteneste mediul si duce
 # problema mai departe. Il scoatem explicit, ca regula sa nu mai depinda de
 # cine tine minte sa dea "deactivate".
+# Modelele noastre de simulare (sim/models) trebuie sa fie vizibile pentru
+# Gazebo daca lumea foloseste `model://`. Lumea generata de
+# tools/make_marker_model.py scrie implicit calea ABSOLUTA, deci merge si
+# fara asta - dar cu `--uri-mode model`, sau pentru orice model adaugat
+# ulterior, variabila e necesara. O punem inaintea celor existente.
+export GZ_SIM_RESOURCE_PATH="$NOVA_DIR/sim/models:${GZ_SIM_RESOURCE_PATH:-}"
+
 CLEAN_PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -v "^${VENV}/bin$" \
     | paste -sd: -)"
 NOVENV="unset VIRTUAL_ENV PYTHONHOME PYTHONPATH; export PATH='$CLEAN_PATH';"

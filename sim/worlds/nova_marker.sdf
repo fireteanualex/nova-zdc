@@ -132,9 +132,21 @@
              y = north = 2
          Inversate, vehiculul coboara langa marker si eroarea arata exact ca
          un bug de conventie in detector (§5.31). z = 0.01 evita
-         z-fighting cu solul. -->
+         z-fighting cu solul.
+
+         URI: masurat, `<include><uri>` accepta `model://nume` (si atunci
+         cere GZ_SIM_RESOURCE_PATH) sau o CALE ABSOLUTA. O cale relativa la
+         fisierul lumii NU se rezolva. Implicit scriem calea absoluta, ca
+         `gz sim <lume>` sa mearga fara nicio variabila de mediu; fisierul e
+         oricum generat, deci calea locala nu e o problema - dar pe alta
+         masina TREBUIE regenerat. Vezi optiunea uri-mode a generatorului.
+
+         (Fara liniuta dubla in comentariile XML: standardul o interzice.
+         libsdformat o accepta tacut, expat/ElementTree nu - deci un fisier
+         pe care Gazebo il incarca fara reclamatii poate fi totusi XML
+         invalid.) -->
     <include>
-      <uri>model://aruco_26</uri>
+      <uri>/home/fireteanualex/nova-zdc/sim/models/aruco_26</uri>
       <name>aruco_26</name>
       <pose>1.5 2 0.01 0 0 0</pose>
     </include>
