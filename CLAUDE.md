@@ -149,6 +149,8 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── start_flight.sh       # pornire completa pe Pi: venv, port, E0, race_mode
 │   ├── sim_handover.py       # declanseaza poarta in SITL, fara gamepad (§5.32)
 │   ├── make_marker_model.py  # modelul Gazebo al markerului (§5.31)
+│   ├── make_camera_model.py  # senzorul de camera, din calibrare (§5.33)
+│   ├── measure_rtf.py        # factorul de timp real, fara pornire (§5.33)
 │   ├── race_mode.py          # ziua cursei: preflight + un singur ecran
 │   ├── collect_session.py    # evidența 6.2.1.30: .bin, loguri, cadre, manifest
 │   ├── fake_detector.py      # detector sintetic + aplicația de SIM (ocolește E0)
@@ -1435,6 +1437,54 @@ Testul care contează trece canalele injectate prin **poarta reală** și cere
 ACCEPT după fereastra de așezare, apoi verifică că 5 s de semnal identic nu
 declanșează override. Un script care „pare că trimite ce trebuie" dar pe care
 poarta îl refuză nu ajută la nimic.
+
+### 5.33 Un senzor de cameră care nu randează nu costă nimic
+
+Măsurat, headless pe mașina de dezvoltare: lumea **cu** cameră
+2304×1296@30 Hz și lumea **fără** durează identic — 9.067 s vs 9.069 s
+pentru 3000 de pași. Concluzia tentantă („randarea e gratis") e falsă.
+
+Ce se întâmplă de fapt: topicurile `/down_cam/image` și
+`/down_cam/camera_info` sunt **anunțate**, dar nu sosește niciun mesaj pe
+ele. `libEGL: failed to create dri2 screen` — ogre2 nu poate randa fără un
+context grafic, deci senzorul e creat și nu se actualizează niciodată.
+
+**Un topic anunțat nu înseamnă date.** Verificarea corectă e să ceri un
+mesaj, nu să listezi topicuri:
+
+```bash
+gz topic -l | grep down_cam          # apare si cand nu randeaza NIMIC
+gz topic -e -t /down_cam/camera_info -n 1    # asta chiar masoara ceva
+```
+
+`camera_info` e mesajul de verificat, nu `image`: se publică la aceeași rată
+și are câțiva octeți, deci elimină transportul a 3 MB ca explicație
+alternativă.
+
+**Măsurătoarea naivă de RTF include pornirea procesului.** `time gz sim
+--iterations 3000` a dat 0.33 pentru ceva ce rulează la 0.53 — diferența era
+doar cei ~3.4 s de pornire. `tools/measure_rtf.py` rulează două durate și
+elimină pornirea algebric (`t = pornire + N·dt/RTF`, două ecuații).
+
+**Cifra pe care o avem, cu rezervele ei:** RTF **0.53** în regim stabil,
+pentru lumea fără cameră, **fără ArduPilot conectat**. Nu e o linie de bază
+curată: `lock_step=1` face plugin-ul ArduPilot să aștepte un FDM care nu
+există. RTF-ul care contează se măsoară cu SITL pornit, și cu randarea
+funcțională — niciuna dintre cele două condiții nu e îndeplinită headless.
+
+### 5.34 `open(f,'w').write(open(f).read())` golește fișierul
+
+Python evaluează întâi obiectul pe care se apelează metoda, deci `open(f,'w')`
+**trunchiază fișierul** înainte ca argumentul `open(f).read()` să fie
+evaluat. Se citește un fișier deja gol și se scrie nimic.
+
+Modelul de vehicul ieșea de **zero octeți**, iar simptomul apărea abia la
+încărcare în Gazebo, ca o eroare de SDF. Corect e să citești în altă
+instrucțiune, înainte de a deschide pentru scriere — sau, mai bine, să faci
+substituția pe text înainte de a scrie vreodată.
+
+Un test verifică acum că modelul generat are peste 5000 de octeți și că
+niciun șablon `{...}` nu a rămas neînlocuit.
 
 ---
 

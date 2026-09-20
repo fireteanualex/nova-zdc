@@ -1,2 +1,8 @@
 __pycache__/
 *.pyc
+
+# Modelul de vehicul cu camera depinde de config/camera_pi.yaml, care nu
+# exista pana la calibrarea reala. Commit-uit, ar contine intrinseci
+# inventati si nimeni nu ar observa. Se genereaza cu
+# tools/make_camera_model.py dupa calibrare.
+sim/models/iris_nova/
