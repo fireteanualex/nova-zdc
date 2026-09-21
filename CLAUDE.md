@@ -1813,6 +1813,50 @@ A patra formă a aceleiași lecții din §5.11: un test care nu poate eșua nu e
 test, iar o constantă duplicată în test e felul cel mai ieftin de a ajunge
 acolo.
 
+### 5.41 Prima rulare cap-coadă: blocată pe o tastă pe care nu o apasă nimeni
+
+Campania a pornit Gazebo, a pornit SITL, a armat după 5 încercări, a urcat
+la 10.58 m și a intrat în LOITER — apoi s-a oprit acolo, la infinit.
+
+Cauza, din `handover.log`:
+
+```
+  Enter = ridic AUX 7 (Ctrl-C = iesire)
+```
+
+`tools/sim_handover.py` cere Enter când nu primește `--after`, ceea ce e
+potrivit când îl rulezi de mână și fatal într-o campanie. `batch_sim` nu îi
+dădea `--after`.
+
+**Forma eșecului contează mai mult decât cauza.** Procesul nu a murit, nu a
+scris nicio eroare și nu a expirat: pur și simplu nu s-a mai întâmplat
+nimic. Într-o campanie de 20 de rulări lăsată peste noapte, asta nu e o
+rulare picată — e una care nu se termină niciodată, iar celelalte 19 nu
+pornesc.
+
+Trei reparații, nu una:
+
+- **`--after` e obligatoriu** în comanda din campanie, cu un test care îl
+  cere și verifică să depășească fereastra de așezare de 1 s a porții.
+- **`stdin` se închide pentru toți copiii** (`subprocess.DEVNULL`). Un
+  `input()` dă atunci `EOFError` — eșec vizibil — în loc de așteptare
+  tăcută. Garda prinde și pasul următor care ar cere o tastă, nu doar ăsta.
+- **`PYTHONUNBUFFERED=1`**, fiindcă `nova_sim.log` era de **zero octeți** în
+  tot acest timp. Python tamponează pe blocuri când scrie într-un fișier,
+  deci logul rămâne gol până la ieșirea procesului — exact în minutele în
+  care vrei să vezi unde a ajuns.
+
+Ultima e cea care a costat cel mai mult timp de diagnostic: cu logul gol,
+singurul indiciu era că procesul trăiește.
+
+**Și o gardă pentru clasa de eșec, nu doar pentru cazul ăsta.** Abonarea
+gz-transport la un topic inexistent **reușește** (§5.33). Cu `--world`
+greșit, `SimTruth` ar tăcea la nesfârșit, `error_vs` ar întoarce `None` la
+fiecare cadru, iar raportul ar ieși cu zero comparații fără să spună de ce.
+`nova_sim.py` verifică o dată, după 5 s de simulare, dacă au sosit mesaje de
+poziție, și numește cauza probabilă.
+
+
 ---
 
 ## 6. Cerințe care constrâng software-ul

@@ -444,6 +444,22 @@ def test_eroarea_si_deriva_se_masoara_din_adevar():
     return f"eroare {er * 100:.1f} cm, deriva {dv * 100:.1f} cm"
 
 
+def test_adevarul_tacut_e_semnalat_nu_ignorat():
+    """§5.33 aplicat pozelor: abonarea la un topic inexistent REUSESTE.
+
+    Cu `--world` gresit, SimTruth tace la nesfarsit si raportul iese cu zero
+    comparatii, fara sa spuna de ce. Bucla verifica o data, dupa 5 s de
+    simulare, si numeste cauza probabila."""
+    src = open(os.path.join(REPO, 'tools', 'nova_sim.py')).read()
+    assert 'n_msgs == 0' in src, "nimeni nu verifica daca adevarul soseste"
+    assert 'pose/info' in src, "avertismentul nu spune ce sa verifice"
+    assert '--world gresit' in src, "avertismentul nu numeste cauza probabila"
+    # si contorul pe care se sprijina exista chiar in SimTruth
+    t = sim_truth.StaticTruth()
+    assert t.n_msgs == 0, t.n_msgs
+    return "verificat o data, cu cauza numita"
+
+
 def test_fara_adevar_nu_se_inventeaza_cifre():
     app = _app_gol()
     app.truth = None
@@ -736,6 +752,44 @@ def test_schimbarea_de_mod_cere_CUSTOM_MODE():
     return "DO_SET_MODE cu CUSTOM_MODE_ENABLED"
 
 
+def test_niciun_pas_din_campanie_nu_asteapta_o_tasta():
+    """Prima rulare cap-coada a ramas blocata aici.
+
+    `sim_handover.py` cere Enter cand nu i se da `--after`. Gazebo, SITL si
+    decolarea trecusera; procesul traia, nu tiparea nimic si astepta la
+    infinit. Intr-o campanie nesupravegheata asta nu e un esec - e o rulare
+    care nu se termina niciodata, ceea ce e mai rau."""
+    c = batch_sim.handover_cmd()
+    assert '--after' in c, (
+        "handover-ul din campanie trebuie sa ridice AUX singur: " + ' '.join(c))
+    i = c.index('--after')
+    assert float(c[i + 1]) > 0, c
+    # fereastra de asezare a portii e 1.0 s (§8); ridicarea trebuie sa o
+    # depaseasca, altfel poarta nu apuca sa masoare amplitudinea manselor
+    assert float(c[i + 1]) >= 1.0, (
+        f"--after {c[i + 1]} e sub fereastra de asezare de 1 s a portii")
+    return f"--after {c[i + 1]} s, fara tastatura"
+
+
+def test_copiii_nu_mostenesc_tastatura_si_nu_tamponeaza():
+    """Doua gărzi in `spawn`, amandoua invizibile pana cand doare.
+
+    `stdin` inchis: un `input()` da EOFError - esec vizibil - in loc de
+    asteptare tacuta. `PYTHONUNBUFFERED`: fara el, logul unui proces care
+    scrie intr-un fisier ramane GOL pana iese, adica exact cand ai nevoie
+    de el."""
+    src = open(os.path.join(REPO, 'tools', 'batch_sim.py')).read()
+    fn = None
+    for nod in ast.parse(src).body:
+        if isinstance(nod, ast.FunctionDef) and nod.name == 'spawn':
+            fn = nod
+    assert fn is not None
+    text = ast.unparse(fn)
+    assert 'stdin=subprocess.DEVNULL' in text, "spawn lasa stdin deschis"
+    assert 'PYTHONUNBUFFERED' in text, "spawn nu opreste tamponarea"
+    return "stdin inchis, iesire netamponata"
+
+
 def test_codurile_de_iesire_ale_decolarii_sunt_distincte():
     """Un singur 'a esuat' amesteca un SITL care inca compileaza cu un
     prearm respins. Distributia motivelor e ea insasi un rezultat."""
@@ -796,6 +850,8 @@ TESTS = [
     ('timpul per stare se aduna', test_timpul_per_stare_se_aduna),
     ('eroarea si deriva se masoara din adevar',
      test_eroarea_si_deriva_se_masoara_din_adevar),
+    ('adevarul tacut e semnalat, nu ignorat',
+     test_adevarul_tacut_e_semnalat_nu_ignorat),
     ('fara adevar nu se inventeaza cifre',
      test_fara_adevar_nu_se_inventeaza_cifre),
     ('rata de detectie poate scadea sub 100%',
@@ -830,6 +886,10 @@ TESTS = [
      test_takeoff_pune_altitudinea_pe_param7),
     ('schimbarea de mod cere CUSTOM_MODE',
      test_schimbarea_de_mod_cere_CUSTOM_MODE),
+    ('niciun pas din campanie nu asteapta o tasta',
+     test_niciun_pas_din_campanie_nu_asteapta_o_tasta),
+    ('copiii nu mostenesc tastatura si nu tamponeaza',
+     test_copiii_nu_mostenesc_tastatura_si_nu_tamponeaza),
     ('codurile de iesire ale decolarii sunt distincte',
      test_codurile_de_iesire_ale_decolarii_sunt_distincte),
     ('partea manuala nu e a doua cale spre autonom',

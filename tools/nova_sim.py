@@ -475,6 +475,11 @@ def main(argv=None):
     # "timeout" in loc de cauza reala.
     rabdare_s = max(30.0, a.frame_timeout * 3.0)
     fara_ceas = False
+    # Abonarea la un topic care nu exista REUSESTE (§5.33: un topic anuntat
+    # nu inseamna date). Cu `--world` gresit, `SimTruth` tace la nesfarsit,
+    # `error_vs` intoarce None la fiecare cadru, iar raportul iese cu zero
+    # comparatii - fara ca nimic sa spuna de ce. Se verifica o data.
+    truth_verificat = app.truth is None
     try:
         while True:
             now = app.step()
@@ -489,6 +494,21 @@ def main(argv=None):
                 print(f"\n[sim] --seconds {a.seconds:g} atins "
                       f"(timp de simulare)")
                 break
+            if (not truth_verificat and t0 is not None
+                    and now - t0 > 5.0):
+                truth_verificat = True
+                if app.truth.n_msgs == 0:
+                    print(f"\n[sim] ATENTIE: niciun mesaj de pozitie pe "
+                          f"{app.truth.topic} dupa 5 s de simulare.")
+                    print(f"  Abonarea a reusit, dar nu publica nimeni - cel "
+                          f"mai probabil --world gresit.")
+                    print(f"  Verifica:  gz topic -l | grep pose/info")
+                    print(f"  Fara adevar, rularea continua dar NU produce "
+                          f"erori de range sau unghi.")
+                else:
+                    print(f"[sim] adevar din simulare: {app.truth.n_msgs} "
+                          f"mesaje, {len(app.truth.names())} entitati")
+
             if now - last_status > a.status_s:
                 last_status = now
                 print(f"  t={now:8.2f}  {app.sm.status_line()} | "

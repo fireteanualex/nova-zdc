@@ -208,9 +208,21 @@ def fly_cmd(alt_m, python=sys.executable):
             '--conn', f'udpin:127.0.0.1:{PORT_FLY}', '--alt', str(alt_m)]
 
 
-def handover_cmd(python=sys.executable):
+#: Secunde de la pornirea injectorului pana la ridicarea AUX. Acopera
+#: fereastra de asezare de 1 s a portii plus doua cicluri de detectie.
+HANDOVER_AFTER_S = 3.0
+
+
+def handover_cmd(python=sys.executable, after=HANDOVER_AFTER_S):
+    """`--after` NU e optional aici.
+
+    Fara el, `sim_handover.py` cere Enter - potrivit cand il rulezi de mana,
+    fatal intr-o campanie: procesul traieste, nu tipareste nimic si asteapta
+    la infinit o tasta pe care nu o apasa nimeni. Prima rulare cap-coada a
+    ramas blocata exact aici, dupa ce Gazebo, SITL si decolarea trecusera."""
     return [python, os.path.join(REPO, 'tools', 'sim_handover.py'),
-            '--conn', f'udpin:127.0.0.1:{PORT_HANDOVER}']
+            '--conn', f'udpin:127.0.0.1:{PORT_HANDOVER}',
+            '--after', str(after)]
 
 
 def nova_sim_cmd(run_dir, calib, seconds, python=sys.executable):
@@ -256,10 +268,23 @@ def spawn(cmd, log_path, cwd=None, env=None):
     """Proces in propriul grup, ca sa se poata omori cu tot cu copii.
 
     §5.33: `terminate()` pe lansator lasa in viata `gz sim server` si
-    `gz sim gui`, care sunt forkate de el."""
+    `gz sim gui`, care sunt forkate de el.
+
+    Doua detalii care par cosmetice si nu sunt:
+
+    - **`stdin` inchis.** Niciun copil nu are voie sa astepte o tasta: intr-o
+      campanie nu e nimeni la tastatura. Inchis, un `input()` da EOFError -
+      adica esec vizibil - in loc de asteptare tacuta la infinit.
+    - **`PYTHONUNBUFFERED`.** Cu iesirea redirectata intr-un fisier, Python
+      tamponeaza pe blocuri: logul ramane GOL pana la iesirea procesului.
+      Tocmai in timpul unei rulari care pare blocata ai nevoie sa vezi unde
+      a ajuns."""
     f = open(log_path, 'w')
+    mediu = dict(env if env is not None else os.environ)
+    mediu['PYTHONUNBUFFERED'] = '1'
     p = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, cwd=cwd,
-                         env=env, start_new_session=True)
+                         env=mediu, stdin=subprocess.DEVNULL,
+                         start_new_session=True)
     p._nova_log = f
     return p
 
@@ -371,6 +396,7 @@ def run_one(cond, run_dir, lume, calib, seconds, python=sys.executable,
         # foloseste oricum cai absolute (§5.31); intrarea de aici e doar
         # pentru cine ar scrie `model://`.
         env = dict(os.environ)
+        env['PYTHONUNBUFFERED'] = '1'
         env['GZ_SIM_RESOURCE_PATH'] = (
             os.path.join(run_dir, 'models') + os.pathsep
             + os.environ.get('GZ_SIM_RESOURCE_PATH', ''))
@@ -388,7 +414,8 @@ def run_one(cond, run_dir, lume, calib, seconds, python=sys.executable,
             print("    SITL pornit, decolez...")
 
         r = subprocess.run(fly_cmd(cond['alt_handover'], python),
-                           capture_output=True, text=True, timeout=300)
+                           capture_output=True, text=True, timeout=300,
+                           stdin=subprocess.DEVNULL, env=env)
         with open(os.path.join(run_dir, 'fly.log'), 'w') as f:
             f.write(r.stdout + r.stderr)
         if r.returncode != 0:
