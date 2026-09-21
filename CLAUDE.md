@@ -285,6 +285,48 @@ limitată de ultimii 50 cm, nu de calitatea detecției la altitudine.
 detecții false, variații de expunere, marker ocluzat. Cifrele sunt
 validare de arhitectură software, nu predicție de performanță reală.
 
+## 4b. Faza 3 — bucla închisă în Gazebo (prima secvență completă)
+
+**21 septembrie 2026: segmentul autonom parcurs cap-coadă, cu pixeli reali.**
+
+```
+IDLE → HANDOVER_CHECK (10.91 m) → ACQUIRE → DESCEND_TRACK
+  → SCORING_CAPTURE     alt 0.570 m, 982 px
+  → FINAL_DESCENT       alt 0.51 m
+  → TOUCHDOWN_CONFIRM   alt 0.190 m
+  → ASCENT              pauză 1.52 s pe sol
+  → HANDBACK            5.05 m deasupra markerului
+```
+
+Fiecare condiție de regulament, îndeplinită: captura de scoring peste pragul
+de 980 px (8.3.3), pauza de 1.52 s ≥ 1.0 s și urcarea la 5.05 m ≥ 5 m
+deasupra markerului (15.2.7).
+
+Diferența față de Faza 1 e ce contează: acolo detecțiile veneau din
+geometrie, corecte prin construcție. Aici trec prin randare, distorsiune,
+cuantizare și `detectMarkers` → `solvePnP` real. Lanțul complet —
+randare → detecție → `LANDING_TARGET` → controler → mișcare → randare — e
+închis.
+
+**Ce a mers, măsurat pe parcurs:** `det 95–100%` de la 10.9 m până sub 1 m;
+`marker_px` 41 → 982; `range` în acord cu altitudinea pe tot parcursul
+(la 5.07 m range → 88.4 px, geometria dă 88.7).
+
+> **Atenție la citirea pragului de scoring.** Mesajul de tranziție tipărește
+> `alt` (a vehiculului), iar pragul de 980 px corespunde lui `range`
+> (cameră → planul markerului). Diferența e montajul camerei plus planul
+> markerului: 0.570 − 0.0745 − 0.01 ≈ 0.46 m, adică exact fereastra de
+> 0.42–0.45 m din §6/8.3.3. Nu sunt două cifre în contradicție.
+
+**Ce NU spune rularea asta.** O singură rulare, o singură condiție
+(vânt 2.4 m/s, soare la 43.6°, marker mat), pe vehiculul iris, nu NOVA. Nu
+există încă distribuții — p50 și p95 cer campania. Și nu există **nicio**
+cifră de eroare finală sau derivă: rularea a fost oprită din afară înainte
+să-și scrie raportul, iar acela se scrie la ieșire (reparat: §5.47).
+
+Elementele deschise 22 și 23 din §7 rămân, cu domeniul redus: bucla merge,
+cifrele lipsesc.
+
 ---
 
 ## 5. Capcane descoperite empiric — NU le redescoperi
@@ -2233,6 +2275,34 @@ nici murdărie, nici o piesă care intră puțin în cadru. De verificat la E2,
 cu markerul tipărit și camera montată — element deschis 27.
 
 
+### 5.47 Un raport care se scrie la ieșire se pierde la prima oprire din afară
+
+Prima secvență completă reușită nu a lăsat nici CSV, nici JSON.
+
+`nova_sim.py` scria raportul **după** buclă. `KeyboardInterrupt` era tratat,
+deci un Ctrl-C mergea. Dar `SIGTERM` — de la `kill_group` al campaniei, sau
+de la operatorul care închide Gazebo — omoară procesul pe loc: bucla nu mai
+iese, codul de după ea nu rulează, iar tot ce s-a măsurat dispare.
+
+Ce rămâne în urmă e doar logul: stările se văd, cifrele nu. Adică exact
+inversul a ce vrei de la o rulare reușită.
+
+Două reparații:
+
+- **`SIGTERM` și `SIGINT` se ridică drept `KeyboardInterrupt`**, deci bucla
+  iese normal și raportul se scrie. Cine oprește rularea nu pierde
+  măsurătoarea.
+- **Rularea se termină singură la 5 s după `HANDBACK`.** Campania rulează o
+  singură secvență per rulare; odată în `HANDBACK` nu mai e nimic de
+  măsurat, iar la RTF 0.25 restul bugetului de `--seconds` înseamnă minute
+  de așteptare reală. Fără asta, fiecare rulare din campanie ar fi trebuit
+  oprită de temporizator — adică exact pe calea care pierde raportul.
+
+**Regula:** dacă un proces produce evidență, evidența trebuie să
+supraviețuiască felului obișnuit în care procesul e oprit. Un raport scris
+doar pe calea fericită nu e evidență, e noroc.
+
+
 ---
 
 ## 6. Cerințe care constrâng software-ul
@@ -2549,8 +2619,9 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 19 | `check_params.py` pe FC-ul real, cu `config/nova_flight.parm` (fișier neverificat pe hardware) | scrutineering |
 | 20 | `FLTMODE_CH` + `FLTMODE1..6` pe emițătorul de concurs; lipsesc deliberat din `nova_flight.parm` | 16.2.3, 15.3.1 |
 | 21 | Paritatea OpenCV 4.10 verificată pe x86-64; Pi-ul e aarch64 (§5.24) | E2 |
-| 22 | **Bucla închisă în Gazebo nu a rulat niciodată cap-coadă.** `nova_sim.py`, `sim_fly_to.py` și `batch_sim.py` sunt scrise și testate pe piese; secvența de procese e netestată (mediul de dezvoltare nu poate ține un server Gazebo: `libEGL: failed to create dri2 screen`) | I4, toate cifrele de mai jos |
-| 23 | Cifrele I4 (eroare de range, unghi, rată de detecție, latență, oscilație) — **nicio măsurătoare încă**, doar harness | 8.4.2, Safety Case |
+| 22 | ~~Bucla închisă în Gazebo nu a rulat niciodată cap-coadă~~ — secvență completă la 21.09.2026 (§4b). Rămâne: campanie de rulări, nu o singură condiție | I4 |
+| 22b | **Campania nu a rulat niciodată.** O secvență a mers; `batch_sim.py` cu N rulări și condiții variate nu a fost pornit, deci nu există distribuții. Mediul de dezvoltare nu poate rula Gazebo (`libEGL: failed to create dri2 screen`), deci rulează operatorul | I4, 8.4.2 |
+| 23 | Cifrele I4 (eroare finală, derivă, eroare de range și unghi, latență) — **nicio măsurătoare încă**: prima secvență reușită a fost oprită înainte să-și scrie raportul (§5.47, reparat) | 8.4.2, Safety Case |
 | 24 | Distanța de frânare la 0.8 și 1.5 m/s, pentru `PROFIL_RAPID` (blocat până atunci) | 15.2.9, I5 |
 | 27 | Nimic nu trebuie să atârne în conul camerei de pe vehiculul real; zona liniștită de 60 mm e sub un modul ArUco și nu iartă umbre sau ocluzii parțiale (§5.46) | 8.3.3, E2 |
 | 26 | Fereastra de încadrare se închide la ~1 m cu erori realiste, nu la 0.38 m (§5.45). De decis: `FINAL_DESCENT` mai sus, limitare de înclinare, sau criteriu care include eroarea laterală | 8.3.3, 15.2.9 |

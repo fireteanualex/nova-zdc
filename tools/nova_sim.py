@@ -41,6 +41,7 @@ import csv
 import json
 import math
 import os
+import signal
 import sys
 import time
 
@@ -529,6 +530,9 @@ def main(argv=None):
                    help='0 = pana la Ctrl-C; altfel secunde de SIMULARE')
     p.add_argument('--frame-timeout', type=float, default=10.0)
     p.add_argument('--status-s', type=float, default=2.0)
+    p.add_argument('--stop-after-handback', type=float, default=5.0,
+                   help='iesi la N secunde de simulare dupa HANDBACK. 0 = '
+                        'ruleaza pana la --seconds')
     p.add_argument('--dump-dir', default=None,
                    help='salveaza cadrul in care s-a pierdut detectia')
     p.add_argument('--csv', default=None)
@@ -553,6 +557,20 @@ def main(argv=None):
     except RuntimeError as e:
         print(f"\n[sim] NU PORNESC: {e}\n")
         return 3
+
+    # SIGTERM trebuie sa se termine ca un Ctrl-C, nu sa omoare procesul:
+    # raportul si CSV-ul se scriu DUPA bucla. Fara asta, o rulare oprita din
+    # afara - campania care face cleanup, Gazebo inchis de operator - pierde
+    # tot ce a masurat. S-a intamplat exact la prima secventa completa
+    # reusita: starile erau in log, dar cifrele nu s-au scris niciodata.
+    def _la_semnal(semnal, cadru):
+        raise KeyboardInterrupt(f"semnal {semnal}")
+
+    for _sem in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(_sem, _la_semnal)
+        except (ValueError, OSError):            # nu suntem pe firul principal
+            pass
 
     print("[sim] rulez. Ctrl-C pentru oprire.")
     t0 = None
@@ -617,6 +635,17 @@ def main(argv=None):
                       f"{app.detector.status_line()}")
             if getattr(app.detector, 'exhausted', False):
                 print("\n[sim] sursa de cadre s-a terminat")
+                break
+            # Campania ruleaza o singura secventa per rulare. Odata ajunsi
+            # in HANDBACK nu mai e nimic de masurat, iar la RTF 0.25 restul
+            # bugetului de `--seconds` inseamna minute de asteptare reala.
+            if (a.stop_after_handback and app.sm.state == 'HANDBACK'
+                    and app.prev_t is not None
+                    and now - app.t_state.get('HANDBACK', 0.0) >= 0
+                    and app.t_state.get('HANDBACK', 0.0)
+                    >= a.stop_after_handback):
+                print(f"\n[sim] secventa incheiata; {a.stop_after_handback:g} s "
+                      f"in HANDBACK")
                 break
             time.sleep(0.001)
     except KeyboardInterrupt:

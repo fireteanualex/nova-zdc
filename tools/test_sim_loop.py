@@ -574,6 +574,46 @@ def test_pragul_de_coborare_verticala_e_reglabil_fara_cod():
     return "reglabil din SequenceConfig si din linia de comanda"
 
 
+def test_raportul_se_scrie_si_la_oprire_din_afara():
+    """Prima secventa completa reusita s-a pierdut exact asa: rularea a fost
+    oprita din afara, iar raportul si CSV-ul se scriu DUPA bucla.
+
+    SIGTERM omoara procesul pe loc; ridicat ca KeyboardInterrupt, bucla iese
+    normal si masuratorile ajung pe disc. Cine opreste - campania la
+    cleanup, operatorul care inchide Gazebo - nu trebuie sa piarda ce s-a
+    masurat."""
+    src = open(os.path.join(REPO, 'tools', 'nova_sim.py')).read()
+    assert 'signal.SIGTERM' in src, "SIGTERM nu e tratat"
+    arbore = ast.parse(src)
+    fn = {n.name: n for n in ast.walk(arbore)
+          if isinstance(n, ast.FunctionDef)}
+    corp = ast.unparse(fn['main'])
+    i_bucla = corp.index('while True')
+    i_json = corp.index("a.json")
+    assert i_json > i_bucla, "raportul se scrie inainte de bucla?"
+    # si ridicarea trebuie sa fie o exceptie prinsa de bucla, nu un exit
+    assert 'raise KeyboardInterrupt' in src, (
+        "semnalul trebuie ridicat ca exceptie, ca bucla sa iasa normal")
+    return "SIGTERM si SIGINT -> iesire normala, raportul se scrie"
+
+
+def test_rularea_se_opreste_dupa_handback():
+    """Campania ruleaza o SINGURA secventa per rulare. Odata in HANDBACK nu
+    mai e nimic de masurat, iar la RTF 0.25 restul bugetului de --seconds
+    inseamna minute de asteptare reala."""
+    src = open(os.path.join(REPO, 'tools', 'nova_sim.py')).read()
+    assert '--stop-after-handback' in src
+    assert "'HANDBACK'" in src
+    # implicit pornit: o rulare care nu se opreste singura blocheaza
+    # campania pe prima conditie
+    import re
+    m = re.search(r"--stop-after-handback'[^)]*default=([0-9.]+)", src,
+                  re.S)
+    assert m and float(m.group(1)) > 0, (
+        "oprirea dupa HANDBACK trebuie sa fie pornita implicit")
+    return f"implicit {m.group(1)} s dupa HANDBACK"
+
+
 def test_adevarul_tacut_e_semnalat_nu_ignorat():
     """§5.33 aplicat pozelor: abonarea la un topic inexistent REUSESTE.
 
@@ -1069,6 +1109,10 @@ TESTS = [
      test_optiunile_de_experiment_ajung_din_campanie_in_aplicatie),
     ('pragul de coborare verticala e reglabil fara cod',
      test_pragul_de_coborare_verticala_e_reglabil_fara_cod),
+    ('raportul se scrie si la oprire din afara',
+     test_raportul_se_scrie_si_la_oprire_din_afara),
+    ('rularea se opreste dupa handback',
+     test_rularea_se_opreste_dupa_handback),
     ('adevarul tacut e semnalat, nu ignorat',
      test_adevarul_tacut_e_semnalat_nu_ignorat),
     ('fara adevar nu se inventeaza cifre',
