@@ -19,13 +19,30 @@ Scrie un CSV cu o linie pe rulare si raporteaza **p50 si p95**, nu media.
 O medie ascunde exact coada care decide daca o incercare pica, iar evidenta
 de tip `A - Analysis` se puncteaza pe verificabilitate (8.4.2).
 
-VEHICULUL NU SE MISCA LATERAL INAINTE DE HANDOVER, MARKERUL DA
+VEHICULUL AJUNGE ZBURAND, NU DE SUS
 
-E acelasi lucru geometric si costa o unealta in minus: `sim_fly_to.py`
-decoleaza vertical, iar distanta pana la marker e chiar raza din plan. Asa
-raman doua variabile independente (raza, altitudine) in loc de patru
-corelate, si nu exista un zbor lateral care sa introduca propria lui
-tranzitorie in conditiile initiale.
+Prima varianta il lasa sa decoleze vertical si sa planeze: markerul era
+deplasat, vehiculul stationar. Geometric identic, si gresit - "nu exista un
+zbor lateral care sa introduca propria lui tranzitorie" era motivul scris
+atunci, iar tranzitoria aia e exact ce trebuie testat. In cursa pilotul
+ajunge la punctul de handover ZBURAND; viteza laterala reziduala din acel
+moment e conditia initiala pe care segmentul autonom trebuie sa o anuleze,
+si e cea mai probabila sursa de oscilatie de pendul (vezi
+docs/DIAGNOSTIC_OSCILATIE.md).
+
+Deci doua pozitii independente, nu una:
+
+    markerul       la `raza_marker` de punctul de decolare - unde sta in lume
+    handover-ul    la `raza_m` de MARKER, pe un azimut propriu
+
+Vehiculul decoleaza de acasa si zboara la punctul de handover, deci directia
+de apropiere nu e aliniata cu offsetul final - nu vine "perfect drept" peste
+marker. `--no-approach` reproduce comportamentul vechi, pentru comparatie.
+
+Ce NU s-a schimbat: `raza_m` ramane plafonat de conul camerei (§5.37).
+Masurat pe randare sintetica, la 12 m si 6.5 m lateral markerul are 37 px si
+inca ~127 px de margine pana la marginea cadrului - deci plafonul e
+conservator, nu la limita.
 
 REPRODUCTIBILITATE
 
@@ -68,6 +85,13 @@ HALF_VFOV_DEG = 33.5
 MARKER_HALF_M = 0.24           # latura codata 480 mm / 2
 FRAME_USE = 0.9                # §5.2: markerul intreg, cu marja
 
+#: Cat de departe de punctul de decolare sta markerul. Nu e o limita de
+#: regulament - e lungimea piciorului de zbor dinainte de handover. Destul
+#: cat vehiculul sa aiba viteza reala cand ajunge, destul de scurt cat o
+#: campanie de 20 de rulari sa nu tina o zi.
+MARKER_PLACEMENT_MAX_M = 15.0
+MARKER_PLACEMENT_MIN_M = 4.0
+
 WIND_SPD_MAX = 6.0
 WIND_TURB_MAX = 15.0
 SUN_EL_MIN, SUN_EL_MAX = 15.0, 75.0
@@ -89,7 +113,8 @@ MOTIV_FLY = {
 }
 
 CSV_HEADER = [
-    'idx', 'seed', 'marker_n', 'marker_e', 'raza_m', 'alt_handover',
+    'idx', 'seed', 'marker_n', 'marker_e', 'raza_marker_m',
+    'ho_n', 'ho_e', 'dist_zbor_m', 'raza_m', 'alt_handover',
     'wind_spd', 'wind_turb', 'sun_az', 'sun_el', 'roughness',
     'succes', 'motiv', 'stare_finala',
     'eroare_finala_cm', 'deriva_cm', 'alt_scoring_m',
@@ -142,13 +167,28 @@ def plan(n, seed=0):
         # nu mai e consistenta cu ea insasi (raza trasa pentru 8.294 m,
         # raportata langa 8.29 m, poate depasi limita celei raportate).
         alt = round(rng.uniform(ALT_MIN_M, ALT_MAX_M), 2)
+
+        # 1. unde sta markerul in lume, fata de punctul de decolare
+        rm = rng.uniform(MARKER_PLACEMENT_MIN_M, MARKER_PLACEMENT_MAX_M)
+        thm = rng.uniform(0, 2 * math.pi)
+        m_n, m_e = rm * math.cos(thm), rm * math.sin(thm)
+
+        # 2. unde e vehiculul la handover, fata de MARKER. Azimut propriu,
+        #    deci directia de apropiere (acasa -> handover) nu e aliniata cu
+        #    offsetul final: vehiculul nu vine drept peste marker.
         r = raza_max(alt) * math.sqrt(rng.random())
         th = rng.uniform(0, 2 * math.pi)
+        ho_n, ho_e = m_n + r * math.cos(th), m_e + r * math.sin(th)
+
         out.append({
             'idx': i,
             'seed': seed,
-            'marker_n': round(r * math.cos(th), 3),
-            'marker_e': round(r * math.sin(th), 3),
+            'marker_n': round(m_n, 3),
+            'marker_e': round(m_e, 3),
+            'raza_marker_m': round(rm, 3),
+            'ho_n': round(ho_n, 3),
+            'ho_e': round(ho_e, 3),
+            'dist_zbor_m': round(math.hypot(ho_n, ho_e), 3),
             'raza_m': round(r, 3),
             'alt_handover': alt,
             'wind_spd': round(rng.uniform(0.0, WIND_SPD_MAX), 2),
@@ -170,9 +210,12 @@ def plan_summary(p):
         return min(v), max(v)
 
     razele = [x['raza_m'] for x in p]
+    zbor = [x['dist_zbor_m'] for x in p]
     return {
         'n': len(p),
         'raza_max': max(razele), 'raza_medie': sum(razele) / len(razele),
+        'zbor': (min(zbor), max(zbor)),
+        'marker': rng_of('raza_marker_m'),
         'alt': rng_of('alt_handover'),
         'vant': rng_of('wind_spd'), 'turb': rng_of('wind_turb'),
         'az': rng_of('sun_az'), 'el': rng_of('sun_el'),
@@ -203,9 +246,14 @@ def sitl_cmd(param_file, wipe=True):
     return c + out
 
 
-def fly_cmd(alt_m, python=sys.executable):
+def fly_cmd(alt_m, north_m=0.0, east_m=0.0, python=sys.executable):
+    """Decolare + zbor pana la punctul de handover.
+
+    `north/east` sunt fata de punctul de decolare, in NED - adica exact
+    sistemul in care lucreaza restul codului (§5.31)."""
     return [python, os.path.join(REPO, 'tools', 'sim_fly_to.py'),
-            '--conn', f'udpin:127.0.0.1:{PORT_FLY}', '--alt', str(alt_m)]
+            '--conn', f'udpin:127.0.0.1:{PORT_FLY}', '--alt', str(alt_m),
+            '--north', str(north_m), '--east', str(east_m)]
 
 
 #: Secunde de la pornirea injectorului pana la ridicarea AUX. Acopera
@@ -380,7 +428,7 @@ def _r(v, n):
 
 
 def run_one(cond, run_dir, lume, calib, seconds, python=sys.executable,
-            gz_timeout=90.0, verbose=True):
+            gz_timeout=90.0, verbose=True, approach=True):
     """O rulare completa. Intoarce randul de CSV.
 
     NETESTAT PE HARDWARE: secventa de mai jos nu a fost niciodata rulata
@@ -413,7 +461,10 @@ def run_one(cond, run_dir, lume, calib, seconds, python=sys.executable,
         if verbose:
             print("    SITL pornit, decolez...")
 
-        r = subprocess.run(fly_cmd(cond['alt_handover'], python),
+        r = subprocess.run(fly_cmd(cond['alt_handover'],
+                                   cond.get('ho_n', 0.0) if approach else 0.0,
+                                   cond.get('ho_e', 0.0) if approach else 0.0,
+                                   python),
                            capture_output=True, text=True, timeout=300,
                            stdin=subprocess.DEVNULL, env=env)
         with open(os.path.join(run_dir, 'fly.log'), 'w') as f:
@@ -550,6 +601,10 @@ def main(argv=None):
                    help='tipareste planul si iesi')
     p.add_argument('--dry-run', action='store_true',
                    help='genereaza lumile, nu porneste Gazebo')
+    p.add_argument('--no-approach', action='store_true',
+                   help='vehiculul planeaza deasupra punctului de decolare '
+                        'in loc sa zboare la handover (comportamentul vechi, '
+                        'pentru comparatie)')
     p.add_argument('--python', default=sys.executable)
     a = p.parse_args(argv)
 
@@ -562,9 +617,12 @@ def main(argv=None):
 
     s = plan_summary(plan(a.n, a.seed))
     print(f"\n  plan: {s['n']} rulari, samanta {a.seed}")
-    print(f"    marker: raza pana la {s['raza_max']:.2f} m "
-          f"(medie {s['raza_medie']:.2f}), uniform pe disc,")
-    print(f"            plafonata de cadrul camerei la altitudinea trasa")
+    print(f"    marker in lume: {s['marker'][0]:.1f}-{s['marker'][1]:.1f} m "
+          f"de punctul de decolare")
+    print(f"    zbor pana la handover: {s['zbor'][0]:.1f}-{s['zbor'][1]:.1f} m "
+          f"(vehiculul ajunge in miscare, nu planand)")
+    print(f"    offset la handover: pana la {s['raza_max']:.2f} m de marker "
+          f"(medie {s['raza_medie']:.2f}), plafonat de cadrul camerei")
     print(f"    handover: {s['alt'][0]:.1f}-{s['alt'][1]:.1f} m")
     print(f"    vant: {s['vant'][0]:.1f}-{s['vant'][1]:.1f} m/s, "
           f"turbulenta {s['turb'][0]:.0f}-{s['turb'][1]:.0f}")
@@ -599,7 +657,8 @@ def main(argv=None):
         if a.dry_run:
             randuri.append(row_from(c, 'dry-run'))
             continue
-        rand = run_one(c, run_dir, lume, a.calib, a.seconds, python=a.python)
+        rand = run_one(c, run_dir, lume, a.calib, a.seconds, python=a.python,
+                       approach=not a.no_approach)
         print(f"    -> {'REUSIT' if rand['succes'] else 'ESEC'}: "
               f"{rand['motiv']}")
         randuri.append(rand)

@@ -574,6 +574,64 @@ def test_raza_e_plafonata_de_cadrul_camerei():
             f"12 m -> {batch_sim.raza_max(12.0):.1f} m")
 
 
+def test_vehiculul_ajunge_zburand_nu_planand():
+    """Conditia initiala a segmentului autonom e viteza reziduala de la
+    handover, nu un hover perfect.
+
+    Prima varianta lasa vehiculul sa decoleze vertical si sa astepte, cu
+    markerul deplasat: geometric identic, dar fara piciorul de zbor. In
+    cursa pilotul AJUNGE zburand, iar tranzitoria aia e cea mai probabila
+    sursa de oscilatie de pendul."""
+    for c in batch_sim.plan(60, seed=13):
+        assert c['dist_zbor_m'] > 1.0, (
+            f"rularea {c['idx']}: zbor de {c['dist_zbor_m']} m - practic "
+            f"decolare verticala")
+    cmd = batch_sim.fly_cmd(8.0, 3.0, -2.0)
+    assert '--north' in cmd and '--east' in cmd, cmd
+    assert cmd[cmd.index('--north') + 1] == '3.0'
+    assert cmd[cmd.index('--east') + 1] == '-2.0'
+    return "toate rularile au un picior de zbor real"
+
+
+def test_apropierea_nu_e_dreapta_peste_marker():
+    """Directia de apropiere (acasa -> handover) si offsetul final
+    (handover -> marker) au azimuturi INDEPENDENTE.
+
+    Daca vehiculul ar veni mereu de-a lungul offsetului, ar ajunge cu viteza
+    indreptata exact spre marker - un singur caz, si cel mai favorabil.
+    Unghiul dintre ele trebuie sa acopere tot cercul."""
+    unghiuri = []
+    for c in batch_sim.plan(200, seed=17):
+        # directia de zbor, la sosire
+        zn, ze = c['ho_n'], c['ho_e']
+        # directia catre marker, din punctul de handover
+        mn, me = c['marker_n'] - c['ho_n'], c['marker_e'] - c['ho_e']
+        a = math.atan2(ze, zn) - math.atan2(me, mn)
+        unghiuri.append(abs(math.degrees((a + math.pi) % (2 * math.pi)
+                                         - math.pi)))
+    assert max(unghiuri) > 150.0, (
+        f"nicio apropiere dinspre partea opusa: max {max(unghiuri):.0f} deg")
+    assert min(unghiuri) < 30.0, (
+        f"nicio apropiere aliniata: min {min(unghiuri):.0f} deg")
+    medie = sum(unghiuri) / len(unghiuri)
+    assert 60.0 < medie < 120.0, (
+        f"unghiurile nu acopera cercul: medie {medie:.0f} deg")
+    return f"unghi zbor-vs-offset: {min(unghiuri):.0f}-{max(unghiuri):.0f} deg"
+
+
+def test_offsetul_de_handover_ramane_in_conul_camerei():
+    """Markerul poate sta oriunde in lume, dar offsetul de la handover
+    ramane plafonat de cadrul camerei (§5.37). Cele doua sunt variabile
+    diferite; doar a doua e constransa."""
+    for c in batch_sim.plan(100, seed=19):
+        lim = batch_sim.raza_max(c['alt_handover'])
+        assert c['raza_m'] <= lim + 1e-9, (c['idx'], c['raza_m'], lim)
+        d = math.hypot(c['ho_n'] - c['marker_n'], c['ho_e'] - c['marker_e'])
+        assert abs(d - c['raza_m']) < 1e-2, (
+            f"raza_m {c['raza_m']} nu e distanta reala handover-marker {d}")
+    return "offsetul plafonat; plasarea markerului, libera"
+
+
 def test_pozitia_e_uniforma_pe_disc_nu_pe_raza():
     """r = R*sqrt(U), nu r = R*U: altfel campania testeaza mai ales
     cazul usor, cu markerul aproape sub vehicul."""
@@ -863,6 +921,12 @@ TESTS = [
     ('planul e reproductibil', test_planul_e_reproductibil),
     ('raza e plafonata de cadrul camerei',
      test_raza_e_plafonata_de_cadrul_camerei),
+    ('vehiculul ajunge zburand, nu pland',
+     test_vehiculul_ajunge_zburand_nu_planand),
+    ('apropierea nu e dreapta peste marker',
+     test_apropierea_nu_e_dreapta_peste_marker),
+    ('offsetul de handover ramane in conul camerei',
+     test_offsetul_de_handover_ramane_in_conul_camerei),
     ('pozitia e uniforma pe disc', test_pozitia_e_uniforma_pe_disc_nu_pe_raza),
     ('roughness e echilibrat', test_roughness_e_echilibrat_nu_tras_la_intamplare),
     ('planul ramane in fereastra portii',

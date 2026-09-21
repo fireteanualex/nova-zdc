@@ -154,6 +154,7 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── measure_rtf.py        # factorul de timp real, fara pornire (§5.33)
 │   ├── setup_sim_venv.sh     # mediul cu gz-transport + OpenCV 4.10 (§5.36)
 │   ├── gz_frames.py          # verifica sursa de cadre din Gazebo (I3)
+│   ├── check_handover_fov.py # incape markerul in cadru la handover? (§5.42)
 │   ├── nova_sim.py           # aplicatia de SIM cu cadre din Gazebo (I4)
 │   ├── sim_fly_to.py         # partea "manuala": decolare + pozitionare (I4)
 │   ├── batch_sim.py          # campanie de rulari cu conditii variate (I4)
@@ -1855,6 +1856,65 @@ greșit, `SimTruth` ar tăcea la nesfârșit, `error_vs` ar întoarce `None` la
 fiecare cadru, iar raportul ar ieși cu zero comparații fără să spună de ce.
 `nova_sim.py` verifică o dată, după 5 s de simulare, dacă au sosit mesaje de
 poziție, și numește cauza probabilă.
+
+
+### 5.42 Markerul se vede de la handover — dar campania testa cazul ușor
+
+Două întrebări care par una singură: *e prea departe ca să vadă markerul?*
+și *ajunge acolo cum ar ajunge pilotul?*
+
+**Prima: nu.** Măsurat pe randare sintetică, cu calibrarea de simulare,
+cameră nadir, marker deplasat pe axa **scurtă** a cadrului (cazul cel mai
+strâns):
+
+| altitudine | lateral | unghi față de nadir | `marker_px` | marjă până la marginea cadrului | detectat | eroare range |
+|---|---|---|---|---|---|---|
+| 5 m | 2.74 m | 28.7° | 89 | 96 px | da | +0.10% |
+| 8 m | 4.53 m | 29.5° | 56 | 96 px | da | +0.15% |
+| 10.9 m | 6.25 m | 29.8° | 41 | 96 px | da | +0.88% |
+| 12 m | 6.50 m | 28.4° | 37 | 127 px | da | +0.40% |
+
+Reproductibil: `tools/check_handover_fov.py`.
+
+Plafonul din §5.37 e deci **conservator**: chiar la limita lui rămân ~100 px
+între marker și marginea cadrului, iar eroarea de range stă sub 1%. La
+handover-ul care a stârnit întrebarea — 10.9 m altitudine, 5.45 m lateral —
+markerul are 41 px și ~340 px de margine.
+
+Cifrele sunt sintetice: fără blur de mișcare, fără zgomot, iluminare
+perfectă (§5.20). Pentru **geometrie** răspunsul e ferm; pentru detecție în
+condiții reale, E2.
+
+**A doua: nu, și asta era scăpat.** Prima variantă a campaniei lăsa
+vehiculul să decoleze vertical și să planeze, cu markerul deplasat lateral.
+Geometric identic, și motivul scris atunci era *„nu există un zbor lateral
+care să introducă propria lui tranzitorie în condițiile inițiale"*.
+
+Exact invers față de ce trebuie. În cursă pilotul **ajunge zburând**, iar
+viteza laterală reziduală din momentul handover-ului e condiția inițială pe
+care segmentul autonom trebuie să o anuleze — și cea mai probabilă sursă de
+oscilație de pendul (`docs/DIAGNOSTIC_OSCILATIE.md`). Eliminând-o, campania
+valida cazul ușor și nu spunea nimic despre cel real.
+
+Acum sunt **două poziții independente**, nu una:
+
+| | ce e | constrângere |
+|---|---|---|
+| `raza_marker_m` | unde stă markerul în lume, față de punctul de decolare | 4–15 m: destul cât să existe un picior de zbor |
+| `raza_m` | unde e vehiculul la handover, față de **marker** | plafonat de conul camerei (§5.37) |
+
+Azimuturile sunt independente, deci direcția de apropiere nu e aliniată cu
+offsetul final: vehiculul **nu** vine drept peste marker. Un test verifică
+faptul că unghiul dintre ele acoperă tot cercul (măsurat: 0–180°, medie
+~90°) — altfel campania ar testa un singur caz, și cel mai favorabil.
+
+`--no-approach` reproduce comportamentul vechi, pentru comparație.
+
+**Lecția de proces:** motivul scris în comentariu — „ca să nu introducem o
+tranzitorie" — suna a rigoare experimentală și era de fapt eliminarea
+variabilei care conta. Când o simplificare scoate din test exact fenomenul
+pe care restul rundei încearcă să-l diagnosticheze, simplificarea e greșită,
+oricât de curat sună.
 
 
 ---
