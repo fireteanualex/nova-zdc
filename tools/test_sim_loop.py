@@ -730,10 +730,25 @@ def test_planul_e_reproductibil():
     return "--seed fixeaza campania"
 
 
-def test_raza_e_plafonata_de_cadrul_camerei():
-    """Limita efectiva nu e cea din poarta (6.5 m), ci a camerei."""
-    assert batch_sim.raza_max(5.0) < 3.0, batch_sim.raza_max(5.0)
-    assert batch_sim.raza_max(12.0) == batch_sim.MARKER_RADIUS_M
+def test_raza_lasa_buget_de_inclinare():
+    """Limita nu e "markerul incape stand drept", ci "secventa e
+    RECUPERABILA": vehiculul se inclina ca sa corecteze, iar inclinarea muta
+    amprenta camerei in directia gresita.
+
+    Masurat: la limita vechii formule bugetul ramas era ~4 grade, iar prima
+    corectie l-a depasit imediat - handover la 7.17 m cu 2.95 m lateral,
+    admis 14.0 grade, folosit 19.3 (§5.48)."""
+    import math as _m
+    k = _m.tan(_m.radians(batch_sim.HALF_VFOV_DEG))
+    for h in (5.0, 8.0, 12.0):
+        lat = batch_sim.raza_max(h)
+        ramas = _m.degrees(_m.atan(k - (lat + batch_sim.MARKER_HALF_M) / h))
+        assert ramas >= batch_sim.TILT_BUDGET_DEG - 0.1, (
+            f"la {h} m si {lat:.2f} m lateral raman doar {ramas:.1f} deg")
+    # si nu mai atinge limita portii la nicio altitudine din fereastra
+    assert batch_sim.raza_max(12.0) < batch_sim.MARKER_RADIUS_M, (
+        "6.5 m nu e recuperabil la nicio altitudine; vezi elementul 28")
+    assert batch_sim.raza_max(5.0) < 2.0, batch_sim.raza_max(5.0)
     assert batch_sim.raza_max(8.0) > batch_sim.raza_max(5.0)
     for c in batch_sim.plan(60, seed=11):
         lim = batch_sim.raza_max(c['alt_handover'])
@@ -741,7 +756,8 @@ def test_raza_e_plafonata_de_cadrul_camerei():
             f"raza {c['raza_m']} peste limita {lim} la "
             f"{c['alt_handover']} m")
     return (f"5 m -> {batch_sim.raza_max(5.0):.1f} m, "
-            f"12 m -> {batch_sim.raza_max(12.0):.1f} m")
+            f"12 m -> {batch_sim.raza_max(12.0):.1f} m, "
+            f"cu {batch_sim.TILT_BUDGET_DEG:.0f} deg de buget")
 
 
 def test_vehiculul_ajunge_zburand_nu_planand():
@@ -1124,8 +1140,7 @@ TESTS = [
     ('nicio suita nu uita sa inregistreze un test',
      test_nicio_suita_nu_uita_sa_inregistreze_un_test),
     ('planul e reproductibil', test_planul_e_reproductibil),
-    ('raza e plafonata de cadrul camerei',
-     test_raza_e_plafonata_de_cadrul_camerei),
+    ('raza lasa buget de inclinare', test_raza_lasa_buget_de_inclinare),
     ('vehiculul ajunge zburand, nu pland',
      test_vehiculul_ajunge_zburand_nu_planand),
     ('apropierea nu e dreapta peste marker',

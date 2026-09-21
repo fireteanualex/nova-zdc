@@ -83,7 +83,15 @@ ALT_MIN_M, ALT_MAX_M = 5.0, 12.0
 #: `raza_max`. Pentru detectia propriu-zisa conteaza calibrarea, nu asta.
 HALF_VFOV_DEG = 33.5
 MARKER_HALF_M = 0.24           # latura codata 480 mm / 2
-FRAME_USE = 0.9                # §5.2: markerul intreg, cu marja
+
+#: Cat unghi de inclinare lasam DISPONIBIL pentru corectia laterala.
+#:
+#: Nu e o marja de siguranta, e o resursa: vehiculul se inclina ca sa
+#: corecteze, iar inclinarea muta amprenta camerei in directia gresita. Un
+#: plan care pune markerul chiar la limita cadrului nu lasa niciun grad, si
+#: secventa pica din prima corectie - masurat: handover la 7.17 m cu 2.95 m
+#: lateral, admis 14.0 grade, folosit 19.3, marker iesit din cadru (§5.48).
+TILT_BUDGET_DEG = 15.0
 
 #: Cat de departe de punctul de decolare sta markerul. Nu e o limita de
 #: regulament - e lungimea piciorului de zbor dinainte de handover. Destul
@@ -125,25 +133,30 @@ CSV_HEADER = [
 
 # --- planul -----------------------------------------------------------------
 
-def raza_max(alt_m):
-    """Cat de departe poate fi markerul ca sa incapa in cadru la handover.
+def raza_max(alt_m, tilt_budget_deg=TILT_BUDGET_DEG):
+    """Cat de departe poate fi markerul la handover, ca secventa sa fie
+    RECUPERABILA - nu doar ca markerul sa incapa in cadru stand drept.
 
-    Poarta accepta pana la 6.5 m lateral la ORICE altitudine din fereastra,
-    dar camera nu: la 5 m si 6.5 m lateral markerul e la 52 deg de nadir,
-    peste jumatatea de VFOV (33.5 deg). Deci limita efectiva nu e cea din
-    poarta, ci a camerei - si e proportionala cu altitudinea:
+        d_max = h * (tan(VFOV/2) - tan(buget_inclinare)) - 0.24
 
-        d_max = 0.9 * h * tan(33.5 deg) - 0.24
+    Prima varianta folosea `0.9 * h * tan(VFOV/2) - 0.24`, adica "incape cu
+    10% marja, la NADIR". Masurat, e prea permisiv: la limita ei bugetul de
+    inclinare ramas e ~4 grade, iar prima corectie laterala il depaseste
+    imediat. Rularea care a scos asta la iveala: handover la 7.17 m cu
+    markerul la 2.95 m: cadrul admitea 14.0 grade, vehiculul a folosit 19.3,
+    markerul a iesit si supervizorul a comandat BRAKE (§5.48).
 
-    | altitudine | d_max | limita portii |
-    |---|---|---|
-    | 5 m  | 2.7 m | 6.5 m |
-    | 8 m  | 4.5 m | 6.5 m |
-    | 12 m | 6.5 m | 6.5 m |
+    | altitudine | d_max nou | vechi | limita portii |
+    |---|---|---|---|
+    | 5 m  | 1.9 m | 2.7 m | 6.5 m |
+    | 8 m  | 3.2 m | 4.5 m | 6.5 m |
+    | 12 m | 4.9 m | 6.5 m | 6.5 m |
 
-    Un plan care ignora asta ar produce rulari in care poarta refuza pe
-    "marker nedetectat" din geometrie, nu din vreo problema de detectie."""
-    d = FRAME_USE * alt_m * math.tan(math.radians(HALF_VFOV_DEG)) - MARKER_HALF_M
+    Coloana din dreapta e cea care ramane deschisa: poarta accepta 6.5 m la
+    orice altitudine din fereastra, dar nu exista altitudine la care 6.5 m
+    sa fie recuperabil. Element deschis 28."""
+    k = math.tan(math.radians(HALF_VFOV_DEG))
+    d = alt_m * (k - math.tan(math.radians(tilt_budget_deg))) - MARKER_HALF_M
     return max(0.0, min(MARKER_RADIUS_M, d))
 
 

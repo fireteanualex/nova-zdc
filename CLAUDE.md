@@ -2303,6 +2303,85 @@ supraviețuiască felului obișnuit în care procesul e oprit. Un raport scris
 doar pe calea fericită nu e evidență, e noroc.
 
 
+### 5.48 Corecția laterală își taie singură vederea — bugetul de înclinare
+
+A doua rulare a picat altfel decât prima, iar diagnosticul a dat cifrele
+direct:
+
+```
+[sim] DETECTIE PIERDUTA de 0.36 s in DESCEND_TRACK
+  altitudine 7.16 m
+  adevar: lateral 294.9 cm, inclinare 19.3 deg (roll +11.5, pitch +15.5)
+  deviere din inclinare 250.6 cm; semi-cadru la sol 496.9 cm
+  => markerul IESE din cadru cu 72.7 cm: e GEOMETRIE, nu imagine
+```
+
+Handover la 7.17 m cu markerul la 2.95 m lateral. Vehiculul se înclină 19.3°
+ca să corecteze — și **înclinarea mută amprenta camerei cu 2.5 m**, exact în
+direcția din care vine eroarea. Markerul iese din cadru, detecția se pierde,
+supervizorul comandă BRAKE. De data asta §5.45 se aplică, și e măsurat.
+
+**Bucla vicioasă, scrisă ca inegalitate:**
+
+```
+tan(înclinare)  ≤  tan(VFOV/2) − (lateral + 0.24) / h
+```
+
+Cu cât eroarea laterală e mai mare, cu atât ai voie să te înclini mai puțin
+— adică exact atunci când ai vrea să corectezi mai tare. Iar ce guvernează
+înclinarea e `WP_ACC`, prin `a = g·tan(înclinare)`:
+
+```cpp
+// ArduCopter/mode_land.cpp:68
+pos_control->NE_set_max_speed_accel_m(wp_nav->get_default_speed_NE_ms(),
+                                      wp_nav->get_wp_acceleration_mss());
+```
+
+Deci `WP_ACC` **este** plafonul de înclinare al coborârii autonome, nu un
+reglaj de navigație. Verificat în sursă, nu presupus.
+
+| | |
+|---|---|
+| `WP_ACC` implicit (iris) | 2.5 m/s² → **14.3°** în regim |
+| buget la cazul măsurat (h 7.17, lat 2.95) | **14.0°** |
+| marjă | **zero** — tranzitoriul a atins 19.3° |
+
+**Două schimbări, pentru că inegalitatea are doi termeni.**
+
+1. **`WP_ACC = 1.5`** în `config/nova_sitl.parm` *și* în
+   `config/nova_flight.parm` — 8.7° în regim, deci ~6° pentru tranzitoriu. E
+   o constrângere a **camerei**, nu a simulării: pe vehiculul real bugetul e
+   mai strâns, fiindcă erorile de poziție sunt mai mari. Costă câteva
+   secunde de corecție mai lentă; o încercare anulată costă 10 puncte.
+2. **Raza planificată de campanie lasă buget de înclinare**, nu doar
+   încadrare la nadir:
+   `d_max = h·(tan(VFOV/2) − tan(15°)) − 0.24`.
+
+| altitudine | nou | vechi | poarta |
+|---|---|---|---|
+| 5 m | **1.7 m** | 2.7 m | 6.5 m |
+| 8 m | **2.9 m** | 4.5 m | 6.5 m |
+| 12 m | **4.5 m** | 6.5 m | 6.5 m |
+
+Formula veche — „încape cu 10% marjă, la nadir" — lăsa ~4° de înclinare la
+limita ei. Prima corecție îi depășea imediat.
+
+#### Consecința care nu se rezolvă din parametri: poarta acceptă mai mult decât se poate recupera
+
+`nova/handover.py` acceptă **6.5 m** lateral la orice altitudine din
+fereastra 5–12 m. Din tabelul de mai sus, 6.5 m nu e recuperabil la **nicio**
+altitudine permisă: la 12 m limita e 4.5 m, iar la 5 m e 1.7 m.
+
+Un handover acceptat la 6 m și 6 m altitudine nu e o încercare grea, e una
+care **nu poate reuși** — și costă cele 10 puncte la fel ca un refuz, doar
+că mai târziu și cu vehiculul jos.
+
+Poarta nu se atinge aici (cod validat, regula rundei 7). Dar pragul ei ar
+trebui să fie o **funcție de altitudine**, nu o constantă, iar un refuz care
+spune „prea departe pentru altitudinea asta, urcă" trimite pilotul exact
+unde trebuie. Element deschis 28.
+
+
 ---
 
 ## 6. Cerințe care constrâng software-ul
@@ -2623,6 +2702,7 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 22b | **Campania nu a rulat niciodată.** O secvență a mers; `batch_sim.py` cu N rulări și condiții variate nu a fost pornit, deci nu există distribuții. Mediul de dezvoltare nu poate rula Gazebo (`libEGL: failed to create dri2 screen`), deci rulează operatorul | I4, 8.4.2 |
 | 23 | Cifrele I4 (eroare finală, derivă, eroare de range și unghi, latență) — **nicio măsurătoare încă**: prima secvență reușită a fost oprită înainte să-și scrie raportul (§5.47, reparat) | 8.4.2, Safety Case |
 | 24 | Distanța de frânare la 0.8 și 1.5 m/s, pentru `PROFIL_RAPID` (blocat până atunci) | 15.2.9, I5 |
+| 28 | Poarta acceptă 6.5 m lateral la orice altitudine, dar 6.5 m nu e recuperabil la niciuna: bugetul de înclinare dă 4.5 m la 12 m și 1.7 m la 5 m (§5.48). Pragul ar trebui să fie funcție de altitudine | 15.2.3, 8.3.2 |
 | 27 | Nimic nu trebuie să atârne în conul camerei de pe vehiculul real; zona liniștită de 60 mm e sub un modul ArUco și nu iartă umbre sau ocluzii parțiale (§5.46) | 8.3.3, E2 |
 | 26 | Fereastra de încadrare se închide la ~1 m cu erori realiste, nu la 0.38 m (§5.45). De decis: `FINAL_DESCENT` mai sus, limitare de înclinare, sau criteriu care include eroarea laterală | 8.3.3, 15.2.9 |
 | 25 | `on_detection()` emite `LANDING_TARGET` și `DISTANCE_SENSOR` în **toate** stările, inclusiv `IDLE`/`RACE_MONITOR`, contrar §8. Filtru pe listă pozitivă de faze; cere atingerea unui fișier validat (§5.43) | 15.2.3, Compliance Matrix |

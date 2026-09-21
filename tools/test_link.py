@@ -439,6 +439,28 @@ def test_prioritate_override_peste_link():
     return "override escaladeaza peste BRAKE de link"
 
 
+def test_WP_ACC_lasa_marja_pentru_tranzitoriu():
+    """WP_ACC guverneaza inclinarea in LAND: ModeLand::init o preia din
+    wp_nav pentru controlerul NE, iar a = g*tan(unghi).
+
+    Implicitul iris (2.5 m/s2) da 14.3 grade in regim, iar bugetul cadrului
+    la cazul masurat era 14.0 - marja zero. Valoarea din fisierul de
+    parametri trebuie sa lase loc tranzitoriului."""
+    import math as _m
+    for fisier in ('nova_sitl.parm', 'nova_flight.parm'):
+        radacina = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        text = open(os.path.join(radacina, 'config', fisier)).read()
+        linii = [l for l in text.splitlines()
+                 if l.strip().startswith('WP_ACC,')]
+        assert linii, f"WP_ACC lipseste din {fisier}"
+        val = float(linii[-1].split(',')[1])
+        unghi = _m.degrees(_m.atan(val / 9.81))
+        assert unghi <= 10.0, (
+            f"{fisier}: WP_ACC {val} -> {unghi:.1f} deg in regim, prea "
+            f"aproape de bugetul cadrului")
+    return f"WP_ACC {val} m/s2 -> {unghi:.1f} deg in regim, in ambele fisiere"
+
+
 def test_pragul_de_legatura_are_marja_fata_de_rata_ceruta():
     """H1 avea MARJA ZERO, si a oprit o secventa autonoma reala.
 
@@ -516,6 +538,8 @@ def test_intervalul_observat_e_masurat_nu_presupus():
 
 
 TESTS = [
+    ('WP_ACC lasa marja pentru tranzitoriu',
+     test_WP_ACC_lasa_marja_pentru_tranzitoriu),
     ('pragul de legatura are marja fata de rata ceruta',
      test_pragul_de_legatura_are_marja_fata_de_rata_ceruta),
     ('rata de heartbeat chiar se cere',

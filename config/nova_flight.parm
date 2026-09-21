@@ -111,3 +111,9 @@ FS_THR_ENABLE,1
 # 5. SERIALn_PROTOCOL / SERIALn_BAUD pentru legatura cu Pi-ul
 #    Depinde de portul fizic folosit pe X7+. MAVLink2, 921600, ca in
 #    tools/nova_pi.py. De adaugat cand se stie portul.
+
+# WP_ACC 1.5 - acelasi motiv ca in nova_sitl.parm si aceeasi derivare: e o
+# constrangere a CAMEREI (VFOV si dimensiunea markerului), nu a simularii.
+# Pe vehiculul real bugetul e mai strans, nu mai larg: erorile de pozitie
+# sunt mai mari. Vezi §5.48.
+WP_ACC,1.5

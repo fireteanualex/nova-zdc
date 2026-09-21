@@ -94,3 +94,26 @@ FLTMODE6,4
 # Acolo nu exista punte software: canalele vin de la un receptor adevarat, iar
 # pierderea emitatorului e exact evenimentul pentru care exista failsafe-ul.
 FS_THR_ENABLE,0
+
+# WP_ACC: acceleratia laterala maxima a controlerului de pozitie.
+#
+# ModeLand::init o preia din wp_nav pentru controlerul NE
+# (mode_land.cpp:68: NE_set_max_speed_accel_m(..., get_wp_acceleration_mss())),
+# deci ea guverneaza INCLINAREA in coborarea autonoma: a = g * tan(unghi).
+#
+# De ce nu implicitul. Camera trebuie sa vada markerul INTREG cat timp
+# corecteaza lateral, iar inclinarea muta amprenta camerei exact in directia
+# gresita. Bugetul, la altitudine h si eroare laterala lat:
+#
+#     tan(inclinare) <= tan(VFOV/2) - (lat + 0.24) / h
+#
+# Cu implicitul de 2.5 m/s2 inclinarea de regim e 14.3 grade. Masurat in
+# Gazebo: handover la 7.17 m cu markerul la 2.95 m lateral admite 14.0 grade
+# - marja zero - iar tranzitoriul a atins 19.3 grade si markerul a iesit din
+# cadru. Detectia pierduta, supervizorul a comandat BRAKE, incercarea
+# anulata (§5.48).
+#
+# 1.5 m/s2 da 8.7 grade in regim, deci ~6 grade de marja pentru tranzitoriu.
+# Costa cateva secunde de corectie mai lenta; o incercare anulata costa 10
+# puncte.
+WP_ACC,1.5
