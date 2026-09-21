@@ -31,6 +31,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np                                          # noqa: E402
 
 import make_camera_model as mc                              # noqa: E402
+
+CALIB_SIM = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), 'config', 'camera_sim.yaml')
 import make_marker_model as mm                              # noqa: E402
 from nova.detector_pi import CameraCalibration              # noqa: E402
 
@@ -216,16 +219,31 @@ def test_modelul_e_DERIVAT_nu_rescris():
     _d, root, _i = genereaza(tmp)
     baza = ET.parse(mc.find_base_model()).getroot()
 
-    p_baza = sorted(p.get('filename') or p.get('name')
-                    for p in baza.find('model').findall('plugin'))
+    # Singura divergenta permisa fata de upstream e gimbalul, scos
+    # deliberat (§5.46). Se declara aici EXPLICIT: un test slabit la
+    # fiecare schimbare nu mai prinde divergentele accidentale, care sunt
+    # tot ce apara.
+    def e_de_gimbal(e):
+        # NU pe subarbore: ArduPilotPlugin CONTINE canalele de gimbal, iar o
+        # regula pe subarbore l-ar exclude din comparatie - adica exact
+        # divergenta pe care testul trebuie sa o prinda ar deveni invizibila.
+        return any(c.tag == 'joint_name' and 'gimbal::' in (c.text or '')
+                   for c in e)
+
+    def fara_gimbal(elemente):
+        return sorted((e.get('filename') or e.get('name'))
+                      for e in elemente if not e_de_gimbal(e))
+
+    p_baza = fara_gimbal(baza.find('model').findall('plugin'))
     p_nou = sorted(p.get('filename') or p.get('name')
                    for p in root.find('model').findall('plugin'))
     assert p_baza == p_nou, f"plugin-uri diferite:\n  {p_baza}\n  {p_nou}"
     assert any('ArduPilot' in (x or '') for x in p_nou), p_nou
 
-    # includerile raman aceleasi
+    # includerile raman aceleasi, in afara de gimbal
     u_baza = {i.find('uri').text.strip()
-              for i in baza.find('model').findall('include')}
+              for i in baza.find('model').findall('include')
+              if 'gimbal' not in i.find('uri').text}
     u_nou = {i.find('uri').text.strip()
              for i in root.find('model').findall('include')}
     assert u_baza == u_nou, f"{u_baza} vs {u_nou}"
@@ -234,7 +252,8 @@ def test_modelul_e_DERIVAT_nu_rescris():
     l_baza = {l.get('name') for l in baza.find('model').findall('link')}
     l_nou = {l.get('name') for l in root.find('model').findall('link')}
     assert l_nou - l_baza == {mc.CAM_LINK}, l_nou - l_baza
-    j_baza = {j.get('name') for j in baza.find('model').findall('joint')}
+    j_baza = {j.get('name') for j in baza.find('model').findall('joint')
+              if j.get('name') != 'gimbal_joint'}
     j_nou = {j.get('name') for j in root.find('model').findall('joint')}
     assert j_nou - j_baza == {mc.CAM_LINK + '_joint'}, j_nou - j_baza
     return (f"{len(p_nou)} plugin-uri identice, aceleasi includeri, "
@@ -462,7 +481,52 @@ def test_parse_rtf_din_statistici():
     return "camp direct, calcul din sim/real, si None pe intrari invalide"
 
 
+def test_gimbalul_se_scoate_dar_motoarele_raman():
+    """Gimbalul atarna la -0.125 m sub base_link, camera noastra e la
+    -0.0745 m: e exact in campul ei si ocluzioneaza solul.
+
+    Masurat la 0.93 m, cu centrarea perfecta (0.8 cm lateral, 0.1 grade) si
+    39 cm de marja pana la marginea cadrului, detectia s-a pierdut oricum -
+    corpul gimbalului taia zona linistita a markerului (§5.46).
+
+    CAZUL NEGATIV al acestui test e cel care conteaza: prima varianta
+    stergea orice <plugin> al carui subarbore contine 'gimbal::', iar
+    ArduPilotPlugin CONTINE canalele de gimbal. Modelul iesea fara motoare.
+    A iesit la iveala doar pentru ca modelul generat a fost verificat."""
+    import xml.etree.ElementTree as ET
+    base = open(mc.find_base_model()).read()
+    intr, _cal = mc.load_intrinsics(CALIB_SIM, provisional=True)
+    text = mc.build_model(base, intr, 'test')
+    r = ET.fromstring(text)
+
+    brut = ET.tostring(r, encoding='unicode')
+    assert 'gimbal' not in brut, "au ramas referinte la gimbal"
+
+    ctrl = list(r.iter('control'))
+    assert len(ctrl) == 4, f"{len(ctrl)} controale, asteptat 4 (motoarele)"
+    assert any('ArduPilot' in (p.get('name') or '') for p in r.iter('plugin')), \
+        "ArduPilotPlugin a fost sters: vehiculul ar ramane fara motoare"
+    assert any(l.get('name') == mc.CAM_LINK for l in r.iter('link')), \
+        "linkul de camera lipseste"
+    return f"gimbal scos; {len(ctrl)} controale de motor si plugin-ul intacte"
+
+
+def test_gimbalul_se_poate_pastra():
+    """`--keep-gimbal` exista pentru comparatie cu modelul stock."""
+    import xml.etree.ElementTree as ET
+    base = open(mc.find_base_model()).read()
+    intr, _cal = mc.load_intrinsics(CALIB_SIM, provisional=True)
+    text = mc.build_model(base, intr, 'test', keep_gimbal=True)
+    assert 'gimbal' in text, "cu --keep-gimbal, gimbalul trebuie sa ramana"
+    r = ET.fromstring(text)
+    assert len(list(r.iter('control'))) == 7, "stock are 4 motoare + 3 gimbal"
+    return "stock pastrat: 7 controale"
+
+
 TESTS = [
+    ('gimbalul se scoate dar motoarele raman',
+     test_gimbalul_se_scoate_dar_motoarele_raman),
+    ('gimbalul se poate pastra', test_gimbalul_se_poate_pastra),
     ('NEGATIV: refuza fara calibrare reala',
      test_NEGATIV_refuza_fara_calibrare_reala),
     ('intrinsecii vin din calibrare', test_intrinsecii_vin_din_calibrare),

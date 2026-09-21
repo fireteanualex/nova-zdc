@@ -2116,9 +2116,19 @@ greșită. Altitudinea minimă la care markerul mai încape întreg:
 | 20 cm | 0.63 | 0.73 | 0.85 | **1.03** | 1.33 |
 | 30 cm | 0.78 | 0.89 | 1.04 | 1.27 | 1.64 |
 
-Cifra din §5.2 e colțul din stânga sus. Cazul măsurat — pierdere la 1.06 m —
-cade exact pe 20 cm lateral + ~15° înclinare. `tools/check_handover_fov.py`
+Cifra din §5.2 e colțul din stânga sus. `tools/check_handover_fov.py`
 tipărește tabelul pentru calibrarea curentă.
+
+> **Corecție: tabelul e corect, atribuirea a fost greșită.** Am pus
+> pierderea de la 1.06 m pe seama a 20 cm laterali și ~15° înclinare,
+> pentru că cifrele se potriveau. Rularea următoare, cu diagnostic, a
+> măsurat de fapt **0.8 cm lateral și 0.1° înclinare** — centrare
+> practic perfectă, cu 39 cm de marjă. Cauza reală e în §5.46.
+>
+> Bugetul de mai sus rămâne valabil ca fizică și e relevant pentru
+> hardware, unde erorile sunt mai mari. Dar o potrivire numerică nu e o
+> măsurătoare: aceeași lecție ca §5.11, de data asta în interpretare, nu
+> în test.
 
 Explică și de ce detecția **nu revine**: după BRAKE vehiculul rămâne unde
 s-a oprit, cu eroarea laterală de atunci, la 0.51 m. Acolo marja e
@@ -2162,6 +2172,65 @@ deviere, marjă — și spune explicit *„e GEOMETRIE, nu imagine"* sau invers,
 plus salvează cadrul care a picat (`--dump-dir`). Diagnosticul se declanșează
 la 0.35 s, sub pragul de 0.5 s al supervizorului, ca raportul să fie scris
 **înainte** ca BRAKE să schimbe geometria.
+
+
+### 5.46 Gimbalul modelului stătea în câmpul camerei — și tăia zona liniștită
+
+Diagnosticul de la §5.45 a răspuns din prima rulare, și a infirmat ipoteza
+pe care o construisem:
+
+```
+[sim] DETECTIE PIERDUTA de 0.36 s in DESCEND_TRACK
+  altitudine 0.93 m
+  adevar: lateral 0.8 cm, inclinare 0.1 deg (roll +0.1, pitch +0.0)
+  => markerul incape, cu 38.9 cm de marja: cauza e in IMAGINE
+```
+
+Centrare practic perfectă. Cadrul salvat arată de ce a picat totuși:
+**corpul gimbalului**, atârnat sub vehicul, taie colțul din stânga-sus al
+markerului. Nu umbra — umbra corpului cade la 46° de nadir, iar markerul
+ocupă ±14.5°; obstacolul e la ~19°, adică ceva prins de vehicul.
+
+`iris_with_gimbal` include `gimbal_small_3d` la **z = −0.125 m** față de
+`base_link`, iar camera noastră stă la **−0.0745 m**. Gimbalul e deci exact
+sub ea, în câmp.
+
+**De ce rupe detecția, deși acoperă doar un colț.** Zona liniștită a
+markerului e îngustă prin construcție: coala 600 mm, zona codată 480 mm,
+deci `(600−480)/2 = 60 mm` — **0.75 dintr-un modul** ArUco (480/6 = 80 mm),
+sub minimul uzual de un modul. Orice o atinge unește bordura neagră cu
+fundalul întunecat și conturul nu se mai închide. E chiar mecanismul din
+§5.18, produs aici fizic în loc de sintetic.
+
+Și explică de ce efectul apare **jos**: obstacolul stă la unghi fix, iar
+markerul crește în cadru pe măsură ce vehiculul coboară. Sub ~1 m se ating.
+
+**Reparat:** `make_camera_model.py` scoate gimbalul din modelul derivat —
+includerea, joint-ul, cele trei canale de control și cele trei
+`JointPositionController`. NOVA nu are gimbal, deci modelul e și mai
+fidel. `--keep-gimbal` păstrează varianta stock, pentru comparație.
+
+**Două greșeli făcute în timpul reparației, ambele prinse de verificare, nu
+de raționament:**
+
+1. Prima regulă de ștergere era „orice `<plugin>` al cărui subarbore conține
+   `gimbal::`". `ArduPilotPlugin` **conține** canalele de gimbal, deci a
+   fost șters cu totul: modelul ieșea **fără motoare**. A ieșit la iveală
+   pentru că modelul generat a fost verificat, nu presupus (§5.10).
+2. Aceeași regulă, copiată în testul de derivare, excludea `ArduPilotPlugin`
+   din comparație — adică fix divergența pe care testul trebuie să o
+   prindă devenea invizibilă. Corect: se uită la `<joint_name>`-ul **propriu**
+   al plugin-ului, nu la tot subarborele.
+
+Testul de derivare (§5.31) **nu** a fost slăbit: declară explicit că singura
+divergență permisă față de upstream e gimbalul, și verifică separat că au
+rămas 4 controale de motor și `ArduPilotPlugin`. Un test slăbit la fiecare
+schimbare nu mai prinde divergențele accidentale, care sunt tot ce apără.
+
+**Pentru vehiculul real, întrebarea rămâne deschisă:** nimic nu trebuie să
+atârne în conul camerei, iar zona liniștită de 60 mm nu iartă nici umbre,
+nici murdărie, nici o piesă care intră puțin în cadru. De verificat la E2,
+cu markerul tipărit și camera montată — element deschis 27.
 
 
 ---
@@ -2483,6 +2552,7 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 22 | **Bucla închisă în Gazebo nu a rulat niciodată cap-coadă.** `nova_sim.py`, `sim_fly_to.py` și `batch_sim.py` sunt scrise și testate pe piese; secvența de procese e netestată (mediul de dezvoltare nu poate ține un server Gazebo: `libEGL: failed to create dri2 screen`) | I4, toate cifrele de mai jos |
 | 23 | Cifrele I4 (eroare de range, unghi, rată de detecție, latență, oscilație) — **nicio măsurătoare încă**, doar harness | 8.4.2, Safety Case |
 | 24 | Distanța de frânare la 0.8 și 1.5 m/s, pentru `PROFIL_RAPID` (blocat până atunci) | 15.2.9, I5 |
+| 27 | Nimic nu trebuie să atârne în conul camerei de pe vehiculul real; zona liniștită de 60 mm e sub un modul ArUco și nu iartă umbre sau ocluzii parțiale (§5.46) | 8.3.3, E2 |
 | 26 | Fereastra de încadrare se închide la ~1 m cu erori realiste, nu la 0.38 m (§5.45). De decis: `FINAL_DESCENT` mai sus, limitare de înclinare, sau criteriu care include eroarea laterală | 8.3.3, 15.2.9 |
 | 25 | `on_detection()` emite `LANDING_TARGET` și `DISTANCE_SENSOR` în **toate** stările, inclusiv `IDLE`/`RACE_MONITOR`, contrar §8. Filtru pe listă pozitivă de faze; cere atingerea unui fișier validat (§5.43) | 15.2.3, Compliance Matrix |
 | 7 | ~~Măsurare latență override~~ 150 ms în SITL; deadband de măsurat pe emițătorul de concurs | 15.3.1 |

@@ -236,8 +236,69 @@ def find_base_model(explicit=None):
         "  Cautat in: " + ', '.join(BASE_MODEL_CANDIDATES))
 
 
+def scoate_gimbalul(text):
+    """Scoate `gimbal_small_3d` din modelul derivat. (text, mesaj).
+
+    DE CE. `iris_with_gimbal` atarna un gimbal la **-0.125 m** sub
+    `base_link`, iar camera noastra sta la -0.0745 m - deci gimbalul e
+    exact in campul ei, si ocluzioneaza solul.
+
+    Masurat: la 0.93 m, cu centrarea perfecta (0.8 cm lateral, 0.1 grade
+    inclinare) si 39 cm de marja pana la marginea cadrului, detectia s-a
+    pierdut oricum. Cadrul salvat arata de ce: corpul gimbalului taie
+    **zona linistita** a markerului, iar bordura neagra fuzioneaza cu
+    fundalul intunecat. Exact mecanismul din §5.18, produs fizic.
+
+    Zona linistita e ingusta prin constructie: (600-480)/2 = 60 mm, adica
+    0.75 dintr-un modul ArUco (480/6 = 80 mm). Orice o atinge rupe conturul.
+
+    NOVA nu are gimbal. Il pastram doar cu `--keep-gimbal`, pentru
+    comparatie cu modelul stock."""
+    import xml.etree.ElementTree as ET
+    parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+    parser.feed(text)
+    radacina = parser.close()
+
+    scoase = []
+
+    def curata(parinte):
+        for copil in list(parinte):
+            brut = ET.tostring(copil, encoding='unicode')
+            eticheta = copil.tag
+            nume = copil.get('name', '')
+            sters = False
+            if eticheta == 'include' and 'gimbal' in brut:
+                sters = True
+            elif eticheta == 'joint' and nume == 'gimbal_joint':
+                sters = True
+            elif eticheta == 'control' and 'gimbal::' in brut:
+                # Un bloc <control> e mic si se poate judeca pe tot subarborele.
+                sters = True
+            elif eticheta == 'plugin':
+                # NU pe subarbore: ArduPilotPlugin CONTINE canalele de gimbal,
+                # iar o regula pe subarbore l-ar sterge cu totul - adica
+                # vehiculul ar ramane fara motoare. Prima varianta a facut
+                # exact asta, si a iesit la iveala doar pentru ca modelul
+                # generat a fost verificat, nu presupus (§5.10).
+                sters = any(copil2.tag == 'joint_name'
+                            and 'gimbal::' in (copil2.text or '')
+                            for copil2 in copil)
+            if sters:
+                scoase.append(f"{eticheta}{'/' + nume if nume else ''}")
+                parinte.remove(copil)
+            else:
+                curata(copil)
+
+    curata(radacina)
+    if not scoase:
+        return text, 'gimbal: nu era in model'
+    iesire = ET.tostring(radacina, encoding='unicode')
+    return iesire, f"gimbal scos: {len(scoase)} elemente ({', '.join(scoase)})"
+
+
 def build_model(base_text, intr, calib_src, mount_z=MOUNT_Z_M,
-                rate=UPDATE_RATE_HZ, name=MODEL_NAME, topic=None):
+                rate=UPDATE_RATE_HZ, name=MODEL_NAME, topic=None,
+                keep_gimbal=False, on_note=None):
     """Modelul derivat: acelasi continut, cu un link de camera in plus.
 
     Derivat, nu rescris (§5.31): plugin-ul ArduPilot, lift-drag pe fiecare
@@ -260,6 +321,11 @@ def build_model(base_text, intr, calib_src, mount_z=MOUNT_Z_M,
         text = text.replace(ancora, bloc + '\n' + ancora, 1)
     else:
         text = text.replace('  </model>', bloc + '\n  </model>', 1)
+
+    if not keep_gimbal:
+        text, mesaj = scoate_gimbalul(text)
+        if on_note:
+            on_note(f"  {mesaj}")
 
     antet = ("<!-- Generat de tools/make_camera_model.py din\n"
              "     {sursa}\n"
@@ -324,6 +390,10 @@ def main(argv=None):
     p.add_argument('--max-rms', type=float, default=None,
                    help='prag de reproiectie; implicit cel din '
                         'nova/detector_pi.py (0.5 px)')
+    p.add_argument('--keep-gimbal', action='store_true',
+                   help='pastreaza gimbalul din modelul stock. Implicit e '
+                        'scos: atarna la -0.125 m si ocluzioneaza camera '
+                        'orientata in jos (§5.46)')
     a = p.parse_args(argv)
 
     cfg = nova_config.load()
@@ -359,7 +429,8 @@ def main(argv=None):
     # zero octeti, iar Gazebo se plangea abia la incarcare.
     write_model(model_dir, open(base).read().replace('{sursa}', base), intr,
                 os.path.relpath(calib, REPO), mount_z=a.mount_z, rate=a.rate,
-                sursa=base)
+                sursa=base, keep_gimbal=a.keep_gimbal,
+                on_note=print)
 
     print(f"\n  calibrare: {calib}")
     print(f"             {cal}")
