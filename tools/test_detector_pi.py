@@ -402,7 +402,40 @@ def test_regresie_last_corners_nu_schimba_Detection():
     return f"colturi la {e:.3f} px de adevar; Detection neschimbat; None la ratare"
 
 
+def test_incadrarea_tine_cont_de_rotatia_markerului():
+    """§5.49: criteriul masura LATURA, dar ce trebuie sa incapa e CUTIA DE
+    INCADRARE a unui patrat rotit - mai mare cu |cos|+|sin|, pana la 41% la
+    45 grade.
+
+    Masurat in Gazebo pe 18 rulari: 11 esecuri, toate intre 0.46 si 0.56 m,
+    toate cu centrarea perfecta. Randat sintetic, la range 0.42 m detectia
+    merge la 10 grade si pica la 20 - iar criteriul pe latura spunea "incape"
+    la ambele."""
+    import math as _m
+    from nova.detection import CameraModel
+    cam = CameraModel(focal_px=933.7, vfov_deg=69.52, marker_size_m=0.48)
+    h = cam.frame_h_px
+    # o latura care incape lejer stand drept
+    px = h * 0.90
+    assert cam.fits_in_frame(px, 0.0), "drept trebuie sa incapa"
+    assert not cam.fits_in_frame(px, 45.0), (
+        "rotit la 45 grade, cutia e cu 41% mai mare: NU incape")
+    # monotonie: cu cat mai rotit, cu atat mai putin permisiv
+    limite = [max(p for p in range(100, 2000)
+                  if cam.fits_in_frame(p, yaw)) for yaw in (0, 15, 30, 45)]
+    assert limite == sorted(limite, reverse=True), limite
+    assert limite[0] / limite[-1] > 1.35, (
+        f"raportul dintre limita dreapta si cea la 45 deg e {limite[0]/limite[-1]:.2f}, "
+        f"asteptat ~1.41")
+    # implicitul pastreaza comportamentul vechi
+    assert cam.fits_in_frame(px) == cam.fits_in_frame(px, 0.0)
+    return (f"limita {limite[0]} px drept -> {limite[-1]} px la 45 deg "
+            f"(x{limite[0]/limite[-1]:.2f})")
+
+
 TESTS = [
+    ('incadrarea tine cont de rotatia markerului',
+     test_incadrarea_tine_cont_de_rotatia_markerului),
     ('direct dedesubt, 8 m', test_direct_dedesubt_8m),
     ('offset lateral, conventia de montaj', test_offset_lateral_conventia_de_montaj),
     ('12 m, ~37 px', test_departe_12m_37px),

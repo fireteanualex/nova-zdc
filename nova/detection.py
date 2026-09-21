@@ -77,9 +77,19 @@ class CameraModel:
         return (abs(angle_x) <= math.radians(self.vfov_deg / 2.0) and
                 abs(angle_y) <= math.radians(self.hfov_deg / 2.0))
 
-    def fits_in_frame(self, marker_px):
+    def fits_in_frame(self, marker_px, yaw_deg=0.0):
         """5.2: markerul trebuie sa incapa INTREG in cadru, nu doar centrul
-        lui. Cu focal 933 si VFOV 67 grade limita e ~1173 px, adica 0.38 m.
-        Fara verificarea asta, SCORING_CAPTURE se declansa la 0.19 m cu
-        2344 px (fizic imposibil) si takeoff-ul ramanea blocat."""
-        return marker_px <= self.frame_h_px * 0.95
+        lui. Fara verificarea asta, SCORING_CAPTURE se declansa la 0.19 m cu
+        2344 px (fizic imposibil) si takeoff-ul ramanea blocat.
+
+        `yaw_deg` e rotatia markerului IN CADRU. Ce trebuie sa incapa nu e
+        latura, ci **cutia de incadrare** a unui patrat rotit, mai mare cu
+        `|cos| + |sin|` - pana la 41% la 45 grade (§5.49).
+
+        Masurat: la range 0.42 m si 1057 px, criteriul pe latura spune "DA"
+        la orice rotatie, dar detectia merge la 10 grade si pica la 20.
+        Implicitul 0 pastreaza comportamentul vechi pentru apelantii care nu
+        stiu rotatia; cine o stie trebuie sa o dea."""
+        factor = abs(math.cos(math.radians(yaw_deg))) + \
+            abs(math.sin(math.radians(yaw_deg)))
+        return marker_px * factor <= self.frame_h_px * 0.95

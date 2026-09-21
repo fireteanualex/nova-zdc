@@ -36,6 +36,13 @@ import time
 #: Inaltimea planului markerului deasupra solului (§5.31).
 MARKER_PLANE_Z = 0.01
 
+#: Cat de jos e camera fata de originea vehiculului (§2: 74.5 mm deasupra
+#: solului la contact). Adevarul se calculeaza pentru CAMERA, nu pentru
+#: centrul vehiculului: detectorul masoara de la ea. Ignorat, apare ca bias
+#: pe range - 0.7% la 10 m, dar **15% la 0.5 m**, adica exact acolo unde se
+#: decide aterizarea.
+CAM_MOUNT_M = 0.0745
+
 
 def _gz_imports():
     """(Node, Pose_V). Acelasi tipar ca in detector_pi._gz_imports."""
@@ -69,6 +76,18 @@ class Pose:
         return -self.down
 
     @property
+    def yaw_deg(self):
+        """Capul vehiculului, in grade.
+
+        Obligatoriu pentru comparatie: detectorul raporteaza unghiuri in
+        cadrul CORPULUI (inainte / dreapta), iar adevarul le are in NED
+        (nord / est). Cele doua coincid doar cand capul e la zero. Fara
+        rotatie, eroarea unghiulara raportata e practic chiar yaw-ul."""
+        w, x, y, z = self.qw, self.qx, self.qy, self.qz
+        return math.degrees(math.atan2(2 * (w * z + x * y),
+                                       1 - 2 * (y * y + z * z)))
+
+    @property
     def roll_pitch_deg(self):
         """(roll, pitch) in grade, din cuaternion.
 
@@ -100,11 +119,13 @@ class SimTruth:
     adevar."""
 
     def __init__(self, world='nova_marker', vehicle='iris_with_gimbal',
-                 marker='aruco_26', topic=None, verbose=True):
+                 marker='aruco_26', topic=None, verbose=True,
+                 cam_mount_m=CAM_MOUNT_M):
         self.world = world
         self.vehicle_name = vehicle
         self.marker_name = marker
         self.verbose = verbose
+        self.cam_mount_m = cam_mount_m
         self.topic = topic or f"/world/{world}/pose/info"
 
         self._lock = threading.Lock()
@@ -162,18 +183,28 @@ class SimTruth:
         n_m, e_m, z_m = (0.0, 0.0, MARKER_PLANE_Z)
         if m is not None:
             n_m, e_m, z_m = m.north, m.east, m.alt
-        dz = v.alt - z_m
+        # Camera, nu centrul vehiculului: detectorul masoara de la ea.
+        dz = v.alt - self.cam_mount_m - z_m
         if dz <= 0:
             return None
         dn = n_m - v.north
         de = e_m - v.east
+        # In cadrul CORPULUI: detectorul raporteaza inainte/dreapta, nu
+        # nord/est. Fara rotatia asta, eroarea unghiulara raportata e
+        # practic yaw-ul vehiculului.
+        psi = math.radians(v.yaw_deg)
+        inainte = dn * math.cos(psi) + de * math.sin(psi)
+        dreapta = -dn * math.sin(psi) + de * math.cos(psi)
         return {
             'range_m': dz,
             'dist3d_m': math.sqrt(dn * dn + de * de + dz * dz),
             'north_off_m': dn,
             'east_off_m': de,
-            'angle_x': math.atan2(dn, dz),
-            'angle_y': math.atan2(de, dz),
+            'fwd_off_m': inainte,
+            'right_off_m': dreapta,
+            'yaw_deg': v.yaw_deg,
+            'angle_x': math.atan2(inainte, dz),
+            'angle_y': math.atan2(dreapta, dz),
             'alt_m': v.alt,
             'marker_z_m': z_m,
             't': v.t,
@@ -216,6 +247,7 @@ class StaticTruth(SimTruth):
         self.vehicle_name = kw.get('vehicle', 'iris_with_gimbal')
         self.marker_name = kw.get('marker', 'aruco_26')
         self.verbose = False
+        self.cam_mount_m = kw.get('cam_mount_m', CAM_MOUNT_M)
         self.topic = None
         self._lock = threading.Lock()
         self._poses = {}

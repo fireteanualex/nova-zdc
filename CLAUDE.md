@@ -2382,6 +2382,94 @@ spune „prea departe pentru altitudinea asta, urcă" trimite pilotul exact
 unde trebuie. Element deschis 28.
 
 
+### 5.49 Prima campanie: 7/18, și toate eșecurile au aceeași cauză
+
+18 rulări (din 20, oprite manual), condiții variate. **7 reușite, 11
+eșecuri** — iar eșecurile nu sunt împrăștiate, sunt identice:
+
+| | |
+|---|---|
+| altitudinea la care s-a pierdut detecția | **0.46 – 0.56 m**, toate |
+| eroare laterală în acel moment | **0.1 – 0.7 cm** |
+| înclinare | **0.2 – 0.6°** |
+| verdictul diagnosticului | **IMAGINE**, nu geometrie, la toate |
+
+Deci bugetul de înclinare din §5.48 a funcționat: nu mai există niciun eșec
+de geometrie, iar centrarea e practic perfectă la momentul pierderii.
+
+**Cauza, din cadrul salvat: markerul e rotit în cadru.** Un pătrat rotit cu
+θ are cutia de încadrare mai mare cu `|cos θ| + |sin θ|` — până la **41%**
+la 45°. Criteriul din §5.2 măsoară **latura**, dar ce trebuie să încapă e
+cutia.
+
+Măsurat sintetic, cu aceeași calibrare:
+
+| range | yaw | `marker_px` | cutie | `fits_in_frame` zicea | detectat |
+|---|---|---|---|---|---|
+| 0.42 m | 10° | 1057 | 1220 | DA | **da** |
+| 0.42 m | 20° | 1056 | 1350 | DA | **nu** |
+| 0.375 m | 0° | 1184 | 1180 | DA | **da** |
+| 0.375 m | 10° | 1184 | 1367 | DA | **nu** |
+
+Detecția pică exact când cutia depășește înălțimea cadrului (1296 px), nu
+când latura depășește pragul. Pragul de 0.38 m din §5.2 e valabil doar la
+rotație zero; la 45° urcă la **0.52 m range**, adică ~0.60 m altitudine.
+
+Și explică de ce 11 din 18: rotația la handover e întâmplătoare — depinde de
+capul vehiculului față de orientarea markerului.
+
+**Trei schimbări:**
+
+1. **`CameraModel.fits_in_frame(marker_px, yaw_deg=0)`** ține cont de
+   rotație. Implicitul păstrează comportamentul vechi pentru apelanții care
+   nu știu rotația.
+2. **Campania trece în `FINAL_DESCENT` la 0.60 m**, nu la 0.40 m. Acolo
+   coborârea e verticală și oarbă prin proiect, iar monitorul de detecție nu
+   se mai aplică (§8) — deci pierderea detecției sub prag nu mai abortează.
+   Exact ideea „ține-o fixă, apoi coboară drept", cu o cifră măsurată în loc
+   de una aleasă.
+3. Pragul din `SequenceConfig` rămâne 0.40 m: e cod validat, sub freeze-ul
+   rundei. Element deschis 29.
+
+#### Două cifre din raport erau greșite — ale comparației, nu ale sistemului
+
+Campania a raportat `eroare range p50 = 10.8%` și `eroare unghi p50 = 12°`.
+Ambele imposibile pentru un sistem care aterizează cu **0.55 cm** eroare
+finală. Nu detectorul greșea, ci `nova/sim_truth.py`:
+
+- **Range-ul se măsura de la originea vehiculului**, nu de la cameră, care e
+  cu 74.5 mm mai jos. Bias de 0.7% la 10 m și **15% la 0.5 m** — exact acolo
+  unde se decide aterizarea.
+- **Unghiurile se comparau în cadre diferite.** Detectorul raportează
+  înainte/dreapta (cadrul corpului); adevărul avea nord/est. Cele două
+  coincid doar când capul e la zero, deci eroarea raportată era practic
+  chiar yaw-ul vehiculului.
+
+Reparate amândouă, cu un caz negativ care arată ce însemnau: cu vehiculul
+orientat spre est, un marker la nord trebuie să iasă „1 m la stânga, 0 în
+față".
+
+**Cifrele valide din campanie** — cele calculate direct din pozițiile
+adevărate, care nu treceau prin comparația stricată:
+
+| metrică | p50 | p95 |
+|---|---|---|
+| eroare finală | **0.55 cm** | 1.99 cm |
+| derivă captură → contact | 0.81 cm | 3.16 cm |
+| altitudine `SCORING_CAPTURE` | 0.56 m | 0.58 m |
+| durata secvenței | 36.0 s | 40.7 s |
+| rată de detecție 3–12 m | 100% | 100% |
+
+Comparabile cu Faza 1 (medie 1.57 cm, maxim 2.4 cm), de data asta cu pixeli
+reali. Eroarea de range și cea unghiulară se remăsoară la campania
+următoare, cu comparația reparată.
+
+**Lecția, a treia oară în aceeași rundă:** o cifră care contrazice o altă
+măsurătoare a aceluiași sistem e o eroare de măsurare până la proba
+contrarie. 12° de eroare unghiulară și 0.55 cm de eroare de aterizare nu pot
+fi ambele adevărate.
+
+
 ---
 
 ## 6. Cerințe care constrâng software-ul
@@ -2702,6 +2790,7 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 22b | **Campania nu a rulat niciodată.** O secvență a mers; `batch_sim.py` cu N rulări și condiții variate nu a fost pornit, deci nu există distribuții. Mediul de dezvoltare nu poate rula Gazebo (`libEGL: failed to create dri2 screen`), deci rulează operatorul | I4, 8.4.2 |
 | 23 | Cifrele I4 (eroare finală, derivă, eroare de range și unghi, latență) — **nicio măsurătoare încă**: prima secvență reușită a fost oprită înainte să-și scrie raportul (§5.47, reparat) | 8.4.2, Safety Case |
 | 24 | Distanța de frânare la 0.8 și 1.5 m/s, pentru `PROFIL_RAPID` (blocat până atunci) | 15.2.9, I5 |
+| 29 | `SequenceConfig.no_lateral_alt_m = 0.40` e sub pragul la care rotația markerului omoară detecția (~0.60 m, §5.49). Campania îl ridică din linia de comandă; valoarea din cod cere atingerea unui fișier validat | 8.3.3 |
 | 28 | Poarta acceptă 6.5 m lateral la orice altitudine, dar 6.5 m nu e recuperabil la niciuna: bugetul de înclinare dă 4.5 m la 12 m și 1.7 m la 5 m (§5.48). Pragul ar trebui să fie funcție de altitudine | 15.2.3, 8.3.2 |
 | 27 | Nimic nu trebuie să atârne în conul camerei de pe vehiculul real; zona liniștită de 60 mm e sub un modul ArUco și nu iartă umbre sau ocluzii parțiale (§5.46) | 8.3.3, E2 |
 | 26 | Fereastra de încadrare se închide la ~1 m cu erori realiste, nu la 0.38 m (§5.45). De decis: `FINAL_DESCENT` mai sus, limitare de înclinare, sau criteriu care include eroarea laterală | 8.3.3, 15.2.9 |

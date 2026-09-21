@@ -93,6 +93,19 @@ MARKER_HALF_M = 0.24           # latura codata 480 mm / 2
 #: lateral, admis 14.0 grade, folosit 19.3, marker iesit din cadru (§5.48).
 TILT_BUDGET_DEG = 15.0
 
+#: Sub ce altitudine coborarea devine verticala (FINAL_DESCENT).
+#:
+#: Implicitul din `SequenceConfig` e 0.40 m, derivat din pragul de nadir al
+#: §5.2. Masurat, prea jos: detectia moare INAINTE, din cauza rotatiei
+#: markerului in cadru (§5.49), iar supervizorul - care monitorizeaza
+#: detectia pana in FINAL_DESCENT - abortaza. 11 esecuri din 18 in prima
+#: campanie, toate intre 0.46 si 0.56 m, toate cu centrarea perfecta.
+#:
+#: 0.60 m e deasupra pragului de caz cel mai rau (yaw 45 grade -> 0.52 m
+#: range = 0.60 m altitudine). De acolo coborarea e verticala si oarba
+#: prin proiect, iar monitorul de detectie nu se mai aplica (§8).
+NO_LATERAL_ALT_M = 0.60
+
 #: Cat de departe de punctul de decolare sta markerul. Nu e o limita de
 #: regulament - e lungimea piciorului de zbor dinainte de handover. Destul
 #: cat vehiculul sa aiba viteza reala cand ajunge, destul de scurt cat o
@@ -640,10 +653,11 @@ def main(argv=None):
     p.add_argument('--dry-run', action='store_true',
                    help='genereaza lumile, nu porneste Gazebo')
     p.add_argument('--no-lateral-alt', type=float, default=None,
-                   help='sub ce altitudine coborarea devine verticala, fara '
-                        'corectii laterale. Implicit 0.40 m (cifra de nadir, '
-                        '§5.2); cu eroare laterala reala fereastra de '
-                        'incadrare se inchide mai sus (§5.45)')
+                   help=f'sub ce altitudine coborarea devine verticala, fara '
+                        f'corectii laterale. Implicit {NO_LATERAL_ALT_M} m '
+                        f'in campanie - pragul de 0.40 m din SequenceConfig '
+                        f'e sub nivelul la care rotatia markerului in cadru '
+                        f'omoara detectia (§5.49)')
     p.add_argument('--authority', action='store_true',
                    help='modularea de autoritate pe praguri de altitudine '
                         '(I5): limiteaza WP_ACC si viteza sub 3 m')
@@ -657,7 +671,8 @@ def main(argv=None):
     p.add_argument('--python', default=sys.executable)
     a = p.parse_args(argv)
 
-    sim_opts = {'no_lateral_alt': a.no_lateral_alt,
+    sim_opts = {'no_lateral_alt': (NO_LATERAL_ALT_M if a.no_lateral_alt
+                                   is None else a.no_lateral_alt),
                 'authority': a.authority,
                 'fast_descent': a.fast_descent}
 
@@ -717,8 +732,16 @@ def main(argv=None):
         if a.dry_run:
             randuri.append(row_from(c, 'dry-run'))
             continue
-        rand = run_one(c, run_dir, lume, a.calib, a.seconds, python=a.python,
-                       approach=not a.no_approach, sim_opts=sim_opts)
+        try:
+            rand = run_one(c, run_dir, lume, a.calib, a.seconds,
+                           python=a.python, approach=not a.no_approach,
+                           sim_opts=sim_opts)
+        except KeyboardInterrupt:
+            # §5.47 la nivelul campaniei: cine opreste nu trebuie sa piarda
+            # rezumatul rularilor deja facute. CSV-ul e scris oricum dupa
+            # fiecare rulare; aici se salveaza sinteza.
+            print("\n  oprit de utilizator; rezumat pe ce s-a rulat:")
+            break
         print(f"    -> {'REUSIT' if rand['succes'] else 'ESEC'}: "
               f"{rand['motiv']}")
         randuri.append(rand)

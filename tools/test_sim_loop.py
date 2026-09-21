@@ -50,16 +50,19 @@ def test_enu_devine_ned():
 
 
 def test_planul_markerului_se_scade_din_range():
+    """Range-ul e de la CAMERA la PLANUL markerului: se scad amandoua
+    offseturile, montajul camerei si cei 1 cm ai planului."""
+    dz = sim_truth.CAM_MOUNT_M + sim_truth.MARKER_PLANE_Z
     t = sim_truth.StaticTruth(
-        vehicle=sim_truth.pose_from_enu(0.0, 0.0, 5.01),
-        marker=sim_truth.pose_from_enu(0.0, 0.0, 0.01))
+        vehicle=sim_truth.pose_from_enu(0.0, 0.0, 5.0 + dz),
+        marker=sim_truth.pose_from_enu(0.0, 0.0, sim_truth.MARKER_PLANE_Z))
     tr = t.truth()
     assert abs(tr['range_m'] - 5.0) < 1e-6, tr['range_m']
-    # Si la altitudine mica, unde offsetul conteaza cel mai mult:
-    t.set('iris_with_gimbal', sim_truth.pose_from_enu(0, 0, 0.51))
+    # Si la altitudine mica, unde offseturile conteaza cel mai mult:
+    t.set('iris_with_gimbal', sim_truth.pose_from_enu(0, 0, 0.5 + dz))
     tr = t.truth()
     assert abs(tr['range_m'] - 0.5) < 1e-6, tr['range_m']
-    return "5.01 -> 5.000 si 0.51 -> 0.500"
+    return f"ambele offseturi ({dz * 100:.1f} cm) scazute, la 5 m si la 0.5 m"
 
 
 def test_offsetul_ignorat_ar_fi_2_la_suta():
@@ -79,10 +82,62 @@ def test_sub_planul_markerului_nu_exista_adevar():
     return "dz <= 0 -> None"
 
 
-def test_eroarea_de_range_are_semn():
+def test_adevarul_e_al_CAMEREI_nu_al_vehiculului():
+    """Detectorul masoara de la camera, aflata la 74.5 mm sub originea
+    vehiculului. Ignorat, apare ca bias pe range: 0.7% la 10 m, dar **15%
+    la 0.5 m** - exact acolo unde se decide aterizarea.
+
+    Prima campanie a raportat `eroare range p50 = 10.8%`, imposibil pentru o
+    aterizare cu 0.55 cm eroare finala. Nu detectorul gresea, ci
+    comparatia."""
     t = sim_truth.StaticTruth(
-        vehicle=sim_truth.pose_from_enu(0, 0, 5.01),
-        marker=sim_truth.pose_from_enu(0, 0, 0.01))
+        vehicle=sim_truth.pose_from_enu(0, 0, 5.0 + sim_truth.CAM_MOUNT_M
+                                        + sim_truth.MARKER_PLANE_Z),
+        marker=sim_truth.pose_from_enu(0, 0, sim_truth.MARKER_PLANE_Z))
+    assert abs(t.truth()['range_m'] - 5.0) < 1e-9, t.truth()['range_m']
+    # cat ar fi fost eroarea daca montajul se ignora, la 0.5 m
+    gresit = (0.5 + sim_truth.CAM_MOUNT_M) / 0.5 - 1.0
+    assert gresit > 0.14, gresit
+    return f"montajul scazut; ignorat ar fi dat +{gresit:.0%} la 0.5 m"
+
+
+def test_unghiurile_se_compara_in_cadrul_corpului():
+    """Detectorul raporteaza inainte/dreapta; adevarul are nord/est. Cele
+    doua coincid DOAR cand capul e la zero.
+
+    Fara rotatie, eroarea unghiulara raportata e practic chiar yaw-ul
+    vehiculului - de aceea prima campanie a dat `p50 = 12 deg` pe un sistem
+    care ateriza cu 0.55 cm."""
+    import math as _m
+    q = (_m.cos(_m.radians(45)), 0.0, 0.0, _m.sin(_m.radians(45)))  # yaw 90
+    t = sim_truth.StaticTruth(
+        vehicle=sim_truth.pose_from_enu(0, 0, 5.0 + sim_truth.CAM_MOUNT_M
+                                        + sim_truth.MARKER_PLANE_Z, q),
+        marker=sim_truth.pose_from_enu(0, 1.0, sim_truth.MARKER_PLANE_Z))
+    tr = t.truth()
+    assert abs(tr['yaw_deg'] - 90.0) < 1e-6, tr['yaw_deg']
+    assert abs(tr['north_off_m'] - 1.0) < 1e-9
+    # cu capul spre est, un marker la nord e la STANGA, nu in fata
+    assert abs(tr['fwd_off_m']) < 1e-9, tr['fwd_off_m']
+    assert abs(tr['right_off_m'] + 1.0) < 1e-9, tr['right_off_m']
+    assert abs(tr['angle_x']) < 1e-9, "unghiul inainte trebuie sa fie zero"
+    assert tr['angle_y'] < 0, "markerul e la stanga: unghi dreapta negativ"
+
+    # CAZUL NEGATIV: cu yaw zero, cele doua cadre coincid
+    t2 = sim_truth.StaticTruth(
+        vehicle=sim_truth.pose_from_enu(0, 0, 5.0 + sim_truth.CAM_MOUNT_M
+                                        + sim_truth.MARKER_PLANE_Z),
+        marker=sim_truth.pose_from_enu(0, 1.0, sim_truth.MARKER_PLANE_Z))
+    tr2 = t2.truth()
+    assert abs(tr2['fwd_off_m'] - 1.0) < 1e-9, tr2['fwd_off_m']
+    return "yaw 90 deg: marker la nord -> 1 m la stanga, 0 in fata"
+
+
+def test_eroarea_de_range_are_semn():
+    _dz = sim_truth.CAM_MOUNT_M + sim_truth.MARKER_PLANE_Z
+    t = sim_truth.StaticTruth(
+        vehicle=sim_truth.pose_from_enu(0, 0, 5.0 + _dz),
+        marker=sim_truth.pose_from_enu(0, 0, sim_truth.MARKER_PLANE_Z))
     det = Detection(t=0.0, angle_x=0.0, angle_y=0.0, distance_m=5.10,
                     marker_px=90.0, range_m=5.10)
     e = t.error_vs(det)
@@ -96,8 +151,9 @@ def test_eroarea_de_range_are_semn():
 
 def test_eroarea_unghiulara_e_distanta_nu_suma():
     t = sim_truth.StaticTruth(
-        vehicle=sim_truth.pose_from_enu(0, 0, 10.01),
-        marker=sim_truth.pose_from_enu(0, 0, 0.01))
+        vehicle=sim_truth.pose_from_enu(
+            0, 0, 10.0 + sim_truth.CAM_MOUNT_M + sim_truth.MARKER_PLANE_Z),
+        marker=sim_truth.pose_from_enu(0, 0, sim_truth.MARKER_PLANE_Z))
     # adevarul e 0 pe ambele axe; detectia greseste cu 3 si 4 grade
     det = Detection(t=0.0, angle_x=math.radians(3.0),
                     angle_y=math.radians(4.0), distance_m=10.0,
@@ -428,12 +484,12 @@ def test_eroarea_si_deriva_se_masoara_din_adevar():
     app.sm.state = 'DESCEND_TRACK'
     app._track(0.0)
     # la SCORING_CAPTURE vehiculul e la 8 cm nord de marker, 0.44 m alt
-    app.truth.set('iris_with_gimbal', sim_truth.pose_from_enu(0.0, 0.08, 0.45))
+    app.truth.set('iris_with_gimbal', sim_truth.pose_from_enu(0.0, 0.08, 0.55))
     app.v.alt = 0.45
     app.sm.state = 'SCORING_CAPTURE'
     app._track(1.0)
     # la contact, 10 cm nord si 3 cm est
-    app.truth.set('iris_with_gimbal', sim_truth.pose_from_enu(0.03, 0.10, 0.08))
+    app.truth.set('iris_with_gimbal', sim_truth.pose_from_enu(0.03, 0.10, 0.20))
     app.sm.state = 'TOUCHDOWN_CONFIRM'
     app._track(2.0)
     assert abs(app.alt_scoring_m - 0.45) < 1e-9, app.alt_scoring_m
@@ -1089,6 +1145,10 @@ TESTS = [
      test_offsetul_ignorat_ar_fi_2_la_suta),
     ('sub planul markerului nu exista adevar',
      test_sub_planul_markerului_nu_exista_adevar),
+    ('adevarul e al CAMEREI, nu al vehiculului',
+     test_adevarul_e_al_CAMEREI_nu_al_vehiculului),
+    ('unghiurile se compara in cadrul corpului',
+     test_unghiurile_se_compara_in_cadrul_corpului),
     ('eroarea de range are semn', test_eroarea_de_range_are_semn),
     ('eroarea unghiulara e distanta, nu suma',
      test_eroarea_unghiulara_e_distanta_nu_suma),
