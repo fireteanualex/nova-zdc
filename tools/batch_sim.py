@@ -253,7 +253,13 @@ def fly_cmd(alt_m, north_m=0.0, east_m=0.0, python=sys.executable):
     sistemul in care lucreaza restul codului (§5.31)."""
     return [python, os.path.join(REPO, 'tools', 'sim_fly_to.py'),
             '--conn', f'udpin:127.0.0.1:{PORT_FLY}', '--alt', str(alt_m),
-            '--north', str(north_m), '--east', str(east_m)]
+            '--north', str(north_m), '--east', str(east_m),
+            # `guided`, nu `loiter`: intre momentul in care fly_to iese si
+            # cel in care porneste injectorul RC nu e nimeni pe manse, iar
+            # in LOITER throttle-ul simulat al SITL-ului (jos) comanda
+            # coborare. Prima campanie a aterizat asa, orb, inainte de
+            # handover.
+            '--end-mode', 'guided']
 
 
 #: Secunde de la pornirea injectorului pana la ridicarea AUX. Acopera

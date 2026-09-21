@@ -38,6 +38,7 @@ TYPE_MASK_POS = 0b0000111111111000
 
 MODE_GUIDED = 4
 MODE_LOITER = 5
+MODE_NUME = {MODE_GUIDED: 'GUIDED', MODE_LOITER: 'LOITER'}
 
 ARM_TRIES = 30
 ARM_RETRY_S = 2.0
@@ -169,8 +170,27 @@ EXIT_FARA_LEGATURA = 2  # niciun HEARTBEAT: SITL nu e (inca) acolo
 EXIT_FARA_ARMARE = 3    # legatura exista, armarea e respinsa (prearm/EKF)
 
 
-def fly_to(m, alt_m, north_m=0.0, east_m=0.0, tol=1.0, verbose=True):
-    """Decolare -> altitudine -> pozitie -> LOITER. Intoarce un EXIT_*."""
+def fly_to(m, alt_m, north_m=0.0, east_m=0.0, tol=1.0, verbose=True,
+           end_mode=MODE_LOITER):
+    """Decolare -> altitudine -> pozitie -> `end_mode`. Intoarce un EXIT_*.
+
+    `end_mode=None` lasa vehiculul in GUIDED.
+
+    DE CE CONTEAZA CE MOD RAMANE. In LOITER, manseta de throttle comanda
+    urcare/coborare. SITL simuleaza un emitator, iar throttle-ul lui e JOS
+    cand nimeni nu injecteaza nimic - deci in secunda in care se trece in
+    LOITER fara un injector RC activ, vehiculul incepe sa COBOARE cu viteza
+    maxima si aterizeaza orb, oriunde s-ar afla.
+
+    Masurat: prima campanie cap-coada a facut exact asta. `fly_to` a ajuns
+    la 10.59 m, a comutat in LOITER, si pana cand a pornit injectorul (~20 s
+    mai tarziu) vehiculul era deja pe sol la 0.19 m. Poarta a refuzat
+    corect - "altitudine in afara ferestrei: 0.2 m" - iar ce se vedea in
+    Gazebo parea o aterizare fara centrare. Nu era aterizarea noastra deloc.
+
+    Aceeasi capcana ca §5.32, din partea cealalta: acolo injectam throttle
+    1100 si vehiculul cadea; aici NU injectam nimic si cade la fel, pentru
+    ca FC-ul foloseste emitatorul lui simulat."""
     if not wait_heartbeat(m):
         print("[fly] EROARE: niciun HEARTBEAT")
         print("      SITL nu raspunde. Daca tocmai a fost pornit, poate inca")
@@ -204,15 +224,20 @@ def fly_to(m, alt_m, north_m=0.0, east_m=0.0, tol=1.0, verbose=True):
             print("[fly] EROARE: nu a ajuns la tinta laterala")
             return EXIT_TINTA
 
-    # LOITER: starea in care ar fi vehiculul cand pilotul apasa AUX.
-    set_mode(m, MODE_LOITER)
+    if end_mode is None:
+        if verbose:
+            print("[fly] raman in GUIDED, gata de handover")
+        return EXIT_OK
+
+    set_mode(m, end_mode)
     pump(m, 2.0)
     hb = m.messages.get('HEARTBEAT')
-    if hb is not None and hb.custom_mode != MODE_LOITER:
+    if hb is not None and hb.custom_mode != end_mode:
         print(f"[fly] ATENTIE: FC raporteaza modul {hb.custom_mode}, "
-              f"nu LOITER ({MODE_LOITER})")
+              f"nu {end_mode}")
     elif verbose:
-        print("[fly] in LOITER, gata de handover")
+        print(f"[fly] in {MODE_NUME.get(end_mode, end_mode)}, "
+              f"gata de handover")
     return EXIT_OK
 
 
@@ -225,11 +250,17 @@ def main(argv=None):
     p.add_argument('--north', type=float, default=0.0)
     p.add_argument('--east', type=float, default=0.0)
     p.add_argument('--tol', type=float, default=1.0)
+    p.add_argument('--end-mode', choices=('loiter', 'guided'),
+                   default='loiter',
+                   help='modul in care ramane vehiculul. `guided` pentru '
+                        'campanii: in LOITER, fara injector RC activ, '
+                        'throttle-ul simulat jos comanda coborare')
     a = p.parse_args(argv)
 
     print(f"[fly] ma conectez la {a.conn}")
     m = mavutil.mavlink_connection(a.conn)
-    return fly_to(m, a.alt, a.north, a.east, tol=a.tol)
+    end = MODE_LOITER if a.end_mode == 'loiter' else None
+    return fly_to(m, a.alt, a.north, a.east, tol=a.tol, end_mode=end)
 
 
 if __name__ == '__main__':

@@ -142,7 +142,11 @@ class SimApp:
             roi_below_m=0.0)
         self.source = GazeboFrameSource(args.topic, clock='sim',
                                         timeout_s=args.frame_timeout)
-        self.detector = PiDetector(self.source, aruco, threaded=True).start()
+        # Ceasul de latenta e cel al SURSEI. Fara asta,
+        # `PiDetector` scade timp de simulare din `time.monotonic()` si
+        # raporteaza uptime-ul masinii ca latenta (§5.43).
+        self.detector = PiDetector(self.source, aruco, threaded=True,
+                                   clock=self._ceas_sursa).start()
 
         self.truth = None
         if not args.no_truth:
@@ -189,6 +193,12 @@ class SimApp:
                                                                'replace'))
         except Exception:                                    # noqa: BLE001
             pass
+
+    def _ceas_sursa(self):
+        """Timpul de simulare vazut de sursa de cadre, sau ceasul de perete
+        pana la primul cadru."""
+        t = sim_truth.latest_sim_t([self.source])
+        return time.monotonic() if t is None else t
 
     def now(self):
         """Ceasul buclei: timpul de SIMULARE.

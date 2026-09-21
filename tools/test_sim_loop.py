@@ -444,6 +444,40 @@ def test_eroarea_si_deriva_se_masoara_din_adevar():
     return f"eroare {er * 100:.1f} cm, deriva {dv * 100:.1f} cm"
 
 
+def test_latenta_se_masoara_in_ceasul_sursei():
+    """§5.43: `PiDetector` scadea `t_capture` (timp de simulare) din
+    `time.monotonic()` (uptime). Diferenta nu e o latenta.
+
+    Masurat in prima campanie: `lat p50 3385850 ms` = 3386 s, exact cat
+    rula masina. Verificat aici pe comportament, cu un ceas fals."""
+    from nova.detector_pi import PiDetector
+
+    class _Sursa:
+        def __init__(self):
+            self.cadre = [(None, 10.0), (None, 10.1)]
+        def read(self):
+            return self.cadre.pop(0) if self.cadre else None
+        def close(self):
+            pass
+
+    class _Det:
+        def detect(self, gray, t):
+            return object()
+
+    ceas = [10.05]
+    d = PiDetector(_Sursa(), _Det(), threaded=False, clock=lambda: ceas[0])
+    d._process_one()
+    assert d.latencies, "nicio latenta inregistrata"
+    assert abs(d.latencies[0] - 0.05) < 1e-9, (
+        f"latenta {d.latencies[0]} - ceasul sursei nu a fost folosit")
+
+    # implicitul ramane ceasul de perete, pentru vehicul
+    d2 = PiDetector(_Sursa(), _Det(), threaded=False)
+    import time as _t
+    assert d2.clock is _t.monotonic, "implicitul s-a schimbat pe vehicul"
+    return "latenta 50 ms in ceasul sursei; implicit neschimbat pe Pi"
+
+
 def test_adevarul_tacut_e_semnalat_nu_ignorat():
     """§5.33 aplicat pozelor: abonarea la un topic inexistent REUSESTE.
 
@@ -848,6 +882,27 @@ def test_copiii_nu_mostenesc_tastatura_si_nu_tamponeaza():
     return "stdin inchis, iesire netamponata"
 
 
+def test_campania_nu_lasa_vehiculul_in_LOITER_fara_manse():
+    """In LOITER, throttle-ul comanda urcare/coborare, iar emitatorul
+    simulat al SITL-ului il tine JOS.
+
+    Intre iesirea lui `fly_to` si pornirea injectorului RC nu e nimeni pe
+    manse. Prima campanie cap-coada a aterizat exact asa: 10.59 m -> 0.19 m,
+    orb, inainte de handover. Poarta a refuzat corect, iar in Gazebo arata
+    ca o aterizare fara centrare."""
+    c = batch_sim.fly_cmd(8.0, 1.0, 2.0)
+    assert '--end-mode' in c, "campania nu spune in ce mod ramane vehiculul"
+    assert c[c.index('--end-mode') + 1] == 'guided', (
+        "campania lasa vehiculul in LOITER fara injector activ: " + ' '.join(c))
+    # uzul manual pastreaza LOITER, care e modul realist pentru un pilot
+    import sim_fly_to
+    assert sim_fly_to.main.__doc__ is None or True
+    src = open(os.path.join(REPO, 'tools', 'sim_fly_to.py')).read()
+    assert "default='loiter'" in src, (
+        "implicitul pentru uz manual nu mai e LOITER")
+    return "campanie: guided; manual: loiter"
+
+
 def test_codurile_de_iesire_ale_decolarii_sunt_distincte():
     """Un singur 'a esuat' amesteca un SITL care inca compileaza cu un
     prearm respins. Distributia motivelor e ea insasi un rezultat."""
@@ -908,6 +963,8 @@ TESTS = [
     ('timpul per stare se aduna', test_timpul_per_stare_se_aduna),
     ('eroarea si deriva se masoara din adevar',
      test_eroarea_si_deriva_se_masoara_din_adevar),
+    ('latenta se masoara in ceasul sursei',
+     test_latenta_se_masoara_in_ceasul_sursei),
     ('adevarul tacut e semnalat, nu ignorat',
      test_adevarul_tacut_e_semnalat_nu_ignorat),
     ('fara adevar nu se inventeaza cifre',
@@ -954,6 +1011,8 @@ TESTS = [
      test_niciun_pas_din_campanie_nu_asteapta_o_tasta),
     ('copiii nu mostenesc tastatura si nu tamponeaza',
      test_copiii_nu_mostenesc_tastatura_si_nu_tamponeaza),
+    ('campania nu lasa vehiculul in LOITER fara manse',
+     test_campania_nu_lasa_vehiculul_in_LOITER_fara_manse),
     ('codurile de iesire ale decolarii sunt distincte',
      test_codurile_de_iesire_ale_decolarii_sunt_distincte),
     ('partea manuala nu e a doua cale spre autonom',

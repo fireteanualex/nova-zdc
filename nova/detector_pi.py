@@ -759,9 +759,22 @@ class PiDetector:
     FPS efectiv si rata de detectie pe aceeasi fereastra.
     """
 
-    def __init__(self, source, detector, threaded=True, max_queue=8):
+    def __init__(self, source, detector, threaded=True, max_queue=8,
+                 clock=None):
+        """`clock` e ceasul in care se masoara LATENTA captura->publicare.
+
+        Trebuie sa fie ACELASI cu cel in care sursa stampileaza cadrele. Pe
+        Pi ambele sunt `time.monotonic()`, deci implicitul e corect. Cu
+        `GazeboFrameSource`, cadrele poarta timp de SIMULARE, iar
+        `time.monotonic()` e timpul de la pornirea masinii: diferenta lor nu
+        e o latenta, e uptime-ul.
+
+        Masurat in prima campanie: `lat p50 3385850 ms`, adica 3386 s -
+        exact cat rula masina. A treia oara aceeasi forma ca §5.39, acum in
+        instrumentare. Aditiv: nimic nu se schimba pe vehicul."""
         self.source = source
         self.det = detector
+        self.clock = clock or time.monotonic
         self.threaded = threaded
         self.queue = collections.deque(maxlen=max_queue)
         self.lock = threading.Lock()
@@ -804,7 +817,8 @@ class PiDetector:
             self.frame_times.append(t_pub)
             self.frame_detected.append(det is not None)
             if det is not None:
-                self.latencies.append(t_pub - t_cap)
+                # Ceasul SURSEI, nu cel de perete: altfel scadem doua lumi.
+                self.latencies.append(self.clock() - t_cap)
                 if len(self.queue) == self.queue.maxlen:
                     self.n_dropped += 1
                 self.queue.append(det)

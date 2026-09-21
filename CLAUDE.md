@@ -1917,6 +1917,94 @@ pe care restul rundei încearcă să-l diagnosticheze, simplificarea e greșită
 oricât de curat sună.
 
 
+### 5.43 Prima aterizare în Gazebo nu a fost aterizarea noastră
+
+Ce s-a văzut: drona pe sol, departe de marker, fără nicio urmă de centrare.
+Ce spun logurile — și de ce merită citite înainte de a reacționa la imagine:
+
+```
+fly.log       [fly] la 10.59 m dupa 8.4 s
+              [fly] la tinta N=-14.01 E=5.68
+              [fly] in LOITER, gata de handover
+nova_sim.log  t=34.81  [IDLE] alt 1.42 m
+              >> IDLE -> HANDOVER_CHECK   (AUX sus, alt 0.45 m)
+              !! HANDOVER REFUZAT: altitudine in afara ferestrei: 0.2 m
+sitl.log      Mode GUIDED -> Mode LOITER        (niciun LAND, niciodată)
+```
+
+**Secvența autonomă nu a pornit.** Poarta a refuzat corect: vehiculul era
+deja pe sol când a fost cerut handover-ul. Ce a aterizat vehiculul e
+ArduPilot, în LOITER, nu codul nostru.
+
+**Cauza: în LOITER manșa de throttle comandă urcare/coborâre, iar
+emițătorul simulat al SITL-ului o ține JOS.** `sim_fly_to.py` comuta în
+LOITER și ieșea; injectorul RC pornea ~20 s mai târziu. În fereastra aia nu
+era nimeni pe manșe, deci FC-ul își citea propriul emițător simulat și
+cobora cu viteză maximă de la 10.59 m.
+
+Aceeași capcană ca §5.32, din partea cealaltă: acolo *injectam* throttle
+1100 și vehiculul cădea; aici **nu injectam nimic** și cade la fel.
+
+Reparat: în campanie `fly_to` lasă vehiculul în **GUIDED**, unde poziția e
+ținută activ de controler și manșele sunt ignorate (§6/15.3.1). Pentru uz
+manual implicitul rămâne LOITER, care e modul realist pentru un pilot.
+Rămâne de făcut, pentru fidelitate: injectorul să comute el în LOITER după
+ce a început să țină manșele — atunci pilotul emulat e prezent tot timpul.
+
+**Regula:** într-un stand, orice interval în care niciun actor nu ține
+manșele e un interval în care FC-ul ascultă de valori pe care nu le-a pus
+nimeni. Nu e „stare neutră", e o comandă.
+
+#### Al treilea ceas amestecat, de data asta în instrumentare
+
+Din același log: `lat p50 3385850 p99 3386819 ms`. Adică 3386 secunde —
+**exact cât rula mașina**.
+
+`PiDetector` calcula latența ca `time.monotonic() - t_capture`, iar
+`t_capture` vine de la sursă. Pe Pi ambele sunt `monotonic`, deci era
+corect. Cu `GazeboFrameSource` cadrele poartă timp de **simulare**, deci
+scădeam două lumi și obțineam uptime-ul.
+
+A treia oară aceeași formă ca §5.39 — după codul de aplicație și după
+harness-ul de test, acum în instrumentare. `PiDetector` primește un `clock`
+opțional; implicitul rămâne `time.monotonic`, deci pe vehicul nu se schimbă
+nimic.
+
+#### Ce am găsit și NU am reparat: `LANDING_TARGET` se trimite și în `IDLE`
+
+§8 spune despre `RACE_MONITOR`: *„detector activ, **ZERO comenzi**, ring
+buffer"*. Logul arată `LT 18 DS 18` cu starea `IDLE`, iar verificarea
+directă confirmă:
+
+```
+stare: IDLE | LT: 0 DS: 0
+dupa 5 detectii in IDLE -> LT: 5 DS: 5
+```
+
+`LandingStateMachine.on_detection()` emite `LANDING_TARGET` și
+`DISTANCE_SENSOR` **necondiționat**, indiferent de stare.
+
+Cât de grav e:
+
+| | efect în afara segmentului |
+|---|---|
+| `LANDING_TARGET` | inert: `PLND_ENABLED` e 0 până la handover (§5.8) |
+| `DISTANCE_SENSOR` | **nu e inert**: FC-ul are telemetru în tot zborul pilotului |
+
+Al doilea contează. §5.9 arată măsurat că o citire de telemetru schimbă
+`get_alt_above_ground_m()`, deci încetinirea de dinainte de contact, și că
+poate face `NAV_TAKEOFF` să fie respins prin gardul „can't takeoff
+downwards" (§5.7). Aici valorile sunt reale, nu o constantă falsă, deci
+efectul e mai blând — dar rândul din Compliance Matrix pentru 15.2.3
+(„companion-ul nu comandă nimic în afara segmentului") nu e susținut de cod.
+
+**Nu l-am reparat**, deliberat: `nova/state_machine.py` e cod validat în
+SITL, e interzis explicit de regula rundei 7, iar un test de regresie
+verifică prin `git diff` că nu a fost atins. Filtrul corect e o listă
+**pozitivă** de faze în care se emite (§5.25), nu o negație — și merită
+decis, nu strecurat. Element deschis 25 din §7.
+
+
 ---
 
 ## 6. Cerințe care constrâng software-ul
@@ -2236,6 +2324,7 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 22 | **Bucla închisă în Gazebo nu a rulat niciodată cap-coadă.** `nova_sim.py`, `sim_fly_to.py` și `batch_sim.py` sunt scrise și testate pe piese; secvența de procese e netestată (mediul de dezvoltare nu poate ține un server Gazebo: `libEGL: failed to create dri2 screen`) | I4, toate cifrele de mai jos |
 | 23 | Cifrele I4 (eroare de range, unghi, rată de detecție, latență, oscilație) — **nicio măsurătoare încă**, doar harness | 8.4.2, Safety Case |
 | 24 | Distanța de frânare la 0.8 și 1.5 m/s, pentru `PROFIL_RAPID` (blocat până atunci) | 15.2.9, I5 |
+| 25 | `on_detection()` emite `LANDING_TARGET` și `DISTANCE_SENSOR` în **toate** stările, inclusiv `IDLE`/`RACE_MONITOR`, contrar §8. Filtru pe listă pozitivă de faze; cere atingerea unui fișier validat (§5.43) | 15.2.3, Compliance Matrix |
 | 7 | ~~Măsurare latență override~~ 150 ms în SITL; deadband de măsurat pe emițătorul de concurs | 15.3.1 |
 | 8 | Mail organizatori: imagine scoring la 0.45 m | 8.3.3 |
 | 9 | Model SDF cu inerția reală (avem tensorul din Onshape) | fidelitate sim |
