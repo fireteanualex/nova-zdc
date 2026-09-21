@@ -2081,6 +2081,89 @@ Lanțul randare → `detectMarkers` → `solvePnP` → `LANDING_TARGET` → cont
 funcționează; ce lipsea era ca secvența să fie lăsată să continue.
 
 
+### 5.45 Pragul de 0.38 m din §5.2 e o cifră de nadir — în coborâre reală e ~1 m
+
+Coborârea a funcționat: 10.90 → 1.06 m, marker 41 → 423 px, `det 100%`,
+`range` în acord cu altitudinea pe tot parcursul. Apoi, la ~1 m:
+
+```
+[SAFETY faza=DESCEND_TRACK] detection_age: BRAKE - ultima detectie acum 0.53 s
+```
+
+Detecția s-a pierdut la **1.06 m**, nu la 0.38 m cum prezice §5.2 — și nu a
+mai revenit nici în hover, la 0.51 m.
+
+**Detectorul nu e de vină.** Randat sintetic, la nadir, cu aceeași
+calibrare, markerul se detectează până la **0.36 m** (1233 px), exact cât
+spune formula. Deci cauza e geometrică, nu de imagine.
+
+**Ce lipsea din §5.2: verificarea presupune camera la NADIR și eroare
+laterală zero.** Bugetul real are trei termeni:
+
+```
+h · tan(VFOV/2)  ≥  lateral  +  h · tan(înclinare)  +  0.24
+```
+
+Al doilea termen e cel perfid: vehiculul se înclină **tocmai ca să corecteze
+lateral**, deci exact când eroarea e mare, cadrul se mută în direcția
+greșită. Altitudinea minimă la care markerul mai încape întreg:
+
+| eroare laterală | 0° | 5° | 10° | 15° | 20° |
+|---|---|---|---|---|---|
+| 0 cm | **0.35 m** | 0.40 | 0.46 | 0.56 | 0.73 |
+| 5 cm | 0.42 | 0.48 | 0.56 | 0.68 | 0.88 |
+| 10 cm | 0.49 | 0.56 | 0.66 | 0.80 | 1.03 |
+| 20 cm | 0.63 | 0.73 | 0.85 | **1.03** | 1.33 |
+| 30 cm | 0.78 | 0.89 | 1.04 | 1.27 | 1.64 |
+
+Cifra din §5.2 e colțul din stânga sus. Cazul măsurat — pierdere la 1.06 m —
+cade exact pe 20 cm lateral + ~15° înclinare. `tools/check_handover_fov.py`
+tipărește tabelul pentru calibrarea curentă.
+
+Explică și de ce detecția **nu revine**: după BRAKE vehiculul rămâne unde
+s-a oprit, cu eroarea laterală de atunci, la 0.51 m. Acolo marja e
+0.35 − 0.24 = 11 cm; orice offset mai mare ține markerul în afara cadrului
+la infinit.
+
+**Consecință pentru arhitectură, de decis, nu de strecurat.** §8 oprește
+corecțiile laterale sub 0.4 m, cifră aleasă din pragul de nadir. Bugetul de
+mai sus spune că fereastra utilă se închide mult mai sus, și că închiderea
+depinde de cât de bine a mers coborârea. Trei direcții, niciuna gratuită:
+
+1. `FINAL_DESCENT` să înceapă mai sus (0.8–1.0 m), unde markerul sigur
+   încape — cu prețul ultimilor centimetri de corecție;
+2. limitarea înclinării în ultimul metru (prin `WP_ACC`, deja în profilul de
+   autoritate) ca termenul al doilea să nu crească;
+3. criteriul de încadrare să fie calculat din altitudine **și** din eroarea
+   laterală curentă, nu doar din `marker_px`.
+
+Prima e o **valoare**, nu cod: `SequenceConfig.no_lateral_alt_m`, expusă
+acum ca `--no-lateral-alt`. Se poate încerca 0.5 sau 0.8 m fără să atingi
+logica validată — adică un experiment cu o singură variabilă (§5.40).
+
+Celelalte două ating `nova/state_machine.py`. Element deschis 26 din §7.
+
+**Ce spune tabelul despre „ține-o fixă la 0.5 m, apoi coboară drept".**
+Ideea e corectă și e chiar direcția 1, dar altitudinea contează: la 0.5 m
+marja e 11 cm. Dacă vehiculul ajunge acolo cu 20 cm de eroare, markerul e
+deja în afara cadrului și nu mai are cum să se centreze. Ordinea corectă e
+**întâi fixarea, apoi coborârea**: oprește coborârea pe la 0.8–1.0 m, lasă
+eroarea și înclinarea să se stingă, și abia apoi coboară vertical — de la
+eroare zero, fereastra se închide la 0.35 m, deci drumul până la contact e
+liber. Invers — cobori la 0.5 m și abia acolo încerci să te fixezi — cere ca
+centrarea să fi reușit deja.
+
+Partea de „așteaptă până e fixă" e logică nouă în mașina de stări, nu un
+prag; de decis la runda următoare.
+
+**Ce am făcut în schimb:** `nova_sim.py` raportează, la pierderea detecției,
+geometria din adevărul simulării — altitudine, eroare laterală, înclinare,
+deviere, marjă — și spune explicit *„e GEOMETRIE, nu imagine"* sau invers,
+plus salvează cadrul care a picat (`--dump-dir`). Diagnosticul se declanșează
+la 0.35 s, sub pragul de 0.5 s al supervizorului, ca raportul să fie scris
+**înainte** ca BRAKE să schimbe geometria.
+
+
 ---
 
 ## 6. Cerințe care constrâng software-ul
@@ -2400,6 +2483,7 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 22 | **Bucla închisă în Gazebo nu a rulat niciodată cap-coadă.** `nova_sim.py`, `sim_fly_to.py` și `batch_sim.py` sunt scrise și testate pe piese; secvența de procese e netestată (mediul de dezvoltare nu poate ține un server Gazebo: `libEGL: failed to create dri2 screen`) | I4, toate cifrele de mai jos |
 | 23 | Cifrele I4 (eroare de range, unghi, rată de detecție, latență, oscilație) — **nicio măsurătoare încă**, doar harness | 8.4.2, Safety Case |
 | 24 | Distanța de frânare la 0.8 și 1.5 m/s, pentru `PROFIL_RAPID` (blocat până atunci) | 15.2.9, I5 |
+| 26 | Fereastra de încadrare se închide la ~1 m cu erori realiste, nu la 0.38 m (§5.45). De decis: `FINAL_DESCENT` mai sus, limitare de înclinare, sau criteriu care include eroarea laterală | 8.3.3, 15.2.9 |
 | 25 | `on_detection()` emite `LANDING_TARGET` și `DISTANCE_SENSOR` în **toate** stările, inclusiv `IDLE`/`RACE_MONITOR`, contrar §8. Filtru pe listă pozitivă de faze; cere atingerea unui fișier validat (§5.43) | 15.2.3, Compliance Matrix |
 | 7 | ~~Măsurare latență override~~ 150 ms în SITL; deadband de măsurat pe emițătorul de concurs | 15.3.1 |
 | 8 | Mail organizatori: imagine scoring la 0.45 m | 8.3.3 |

@@ -68,6 +68,20 @@ class Pose:
     def alt(self):
         return -self.down
 
+    @property
+    def roll_pitch_deg(self):
+        """(roll, pitch) in grade, din cuaternion.
+
+        Conteaza pentru §5.2: verificarea de incadrare presupune camera la
+        NADIR. Cu vehiculul inclinat, axa optica bate solul la
+        `alt * tan(inclinare)` de punctul de sub el, iar marja pana la
+        marginea cadrului scade cu atat."""
+        w, x, y, z = self.qw, self.qx, self.qy, self.qz
+        roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
+        sp = max(-1.0, min(1.0, 2 * (w * y - z * x)))
+        pitch = math.asin(sp)
+        return math.degrees(roll), math.degrees(pitch)
+
     def __repr__(self):
         return (f"<Pose N={self.north:.3f} E={self.east:.3f} "
                 f"alt={self.alt:.3f}>")

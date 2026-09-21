@@ -63,6 +63,40 @@ print(f"  jumatate VFOV geometric: "
       f"{math.degrees(math.atan(H / 2 / K[1,1])):.1f} deg\n")
 print(f"  {'alt':>5} {'lateral':>8} {'unghi':>7} {'px':>6} {'marja_y':>8} "
       f"{'in cadru':>9} {'detectat':>9} {'err range':>10}")
+def altitudine_minima(lat_m, tilt_deg, vfov_deg):
+    """Sub ce altitudine markerul nu mai incape INTREG in cadru.
+
+    §5.2 da 0.38 m, dar aia e cifra de NADIR, cu eroare laterala zero.
+    Bugetul real are trei termeni:
+
+        h * tan(VFOV/2)  >=  lateral  +  h * tan(inclinare)  +  0.24
+
+    Al doilea termen conteaza pentru ca la coborare vehiculul se inclina
+    tocmai ca sa corecteze lateral - deci exact cand eroarea e mare, si
+    cadrul se muta in directia gresita."""
+    k = math.tan(math.radians(vfov_deg / 2.0))
+    den = k - math.tan(math.radians(tilt_deg))
+    return None if den <= 0 else (lat_m + MARKER_HALF_M) / den
+
+
+def tabel_prag_jos(vfov_deg):
+    print(f"\n  --- altitudinea MINIMA la care markerul mai incape intreg ---")
+    print(f"  h * tan({vfov_deg / 2:.1f} deg) >= lateral + h*tan(inclinare) "
+          f"+ {MARKER_HALF_M:.2f} m\n")
+    tilturi = (0, 5, 10, 15, 20)
+    print("  " + f"{'lateral':>9} " + ' '.join(f"{t:>6} deg" for t in tilturi))
+    for lat in (0.0, 0.05, 0.10, 0.20, 0.30):
+        rand = []
+        for t in tilturi:
+            h = altitudine_minima(lat, t, vfov_deg)
+            rand.append('     -  ' if h is None else f"{h:6.2f} m")
+        print(f"  {lat * 100:7.0f} cm " + ' '.join(rand))
+    print("\n  Cifra din §5.2 (0.38 m) e coltul din stanga sus: nadir, eroare")
+    print("  zero. Cu 20 cm lateral si 15 deg inclinare pragul urca la ~1 m.")
+
+
+MARKER_HALF_M = 0.24
+
 for alt in (5.0, 8.0, 10.9, 12.0):
     for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
         # limita din batch_sim.raza_max
@@ -75,3 +109,5 @@ for alt in (5.0, 8.0, 10.9, 12.0):
               f"{r['marja_y']:8.0f} {str(r['in_cadru']):>9} "
               f"{str(r['detectat']):>9} {e:>10}")
     print()
+
+tabel_prag_jos(math.degrees(2 * math.atan(H / 2 / K[1, 1])))

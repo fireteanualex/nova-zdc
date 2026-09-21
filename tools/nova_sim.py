@@ -39,6 +39,7 @@ geometria era corecta prin constructie.
 import argparse
 import csv
 import json
+import math
 import os
 import sys
 import time
@@ -49,6 +50,7 @@ from pymavlink import mavutil                               # noqa: E402
 
 from nova import config as nova_config                      # noqa: E402
 from nova import sim_truth                                  # noqa: E402
+from nova.detection import MARKER_SIZE_M                    # noqa: E402
 from nova.detector_pi import (ArucoMarkerDetector,          # noqa: E402
                               CameraCalibration,
                               GazeboFrameSource, PiDetector)
@@ -128,6 +130,7 @@ class SimApp:
         self.eroare_finala_m = None
         self.deriva_m = None
         self.tranzitii = []
+        self.pierderi = 0          # de cate ori s-a raportat pierderea
 
         cal_path = args.calib or nova_config.resolve(cfg, 'camera_calibration')
         self.cal = CameraCalibration.load(cal_path,
@@ -146,7 +149,9 @@ class SimApp:
         # `PiDetector` scade timp de simulare din `time.monotonic()` si
         # raporteaza uptime-ul masinii ca latenta (§5.43).
         self.detector = PiDetector(self.source, aruco, threaded=True,
-                                   clock=self._ceas_sursa).start()
+                                   clock=self._ceas_sursa,
+                                   keep_last_frame=bool(args.dump_dir)
+                                   ).start()
 
         self.truth = None
         if not args.no_truth:
@@ -168,8 +173,13 @@ class SimApp:
         self.gate = HandoverGate(self.v, self.override,
                                  on_reject=self._on_reject,
                                  autonomy_enabled=True)
-        self.sm = LandingStateMachine(self.v, SequenceConfig(conv=args.conv),
-                                      gate=self.gate)
+        seq = SequenceConfig(conv=args.conv)
+        if args.no_lateral_alt is not None:
+            seq.no_lateral_alt_m = args.no_lateral_alt
+            print(f"[sim] corectii laterale doar peste "
+                  f"{args.no_lateral_alt:.2f} m "
+                  f"(implicit {SequenceConfig().no_lateral_alt_m:.2f} m)")
+        self.sm = LandingStateMachine(self.v, seq, gate=self.gate)
 
         # Modularea de autoritate e OPRITA implicit: o campanie de validare
         # a perceptiei nu are voie sa schimbe si parametrii de control in
@@ -235,6 +245,7 @@ class SimApp:
         self._note_frames(len(dets))
 
         age = None if self.last_det_t is None else (now - self.last_det_t)
+        self._diagnostic_pierdere(age, now)
         self.sup.update(now, age, self.sm.state)
 
         if self.authority is not None:
@@ -254,6 +265,66 @@ class SimApp:
         self.sm.update(now)
         self._track(now)
         return now
+
+    #: Sub pragul supervizorului, ca raportul sa apuce sa fie scris INAINTE
+    #: ca secventa sa fie oprita: dupa BRAKE, geometria s-a schimbat deja.
+    PRAG_DIAGNOSTIC_S = 0.35
+
+    def _diagnostic_pierdere(self, age, now):
+        """Cand detectia se pierde in coborare, spune DE CE, cu cifre.
+
+        `detection_age: BRAKE` singur nu distinge intre "markerul a iesit
+        din cadru din inclinare" si "imaginea nu mai e detectabila". Prima e
+        geometrie si se calculeaza; a doua cere pixelii. Se raporteaza
+        amandoua, o data per pierdere."""
+        if age is None or age < self.PRAG_DIAGNOSTIC_S:
+            if age is not None and age < 0.1:
+                self.pierderi = min(self.pierderi, 0) or 0
+            return
+        if self.sm.state not in ('DESCEND_TRACK', 'SCORING_CAPTURE'):
+            return
+        if self.pierderi:
+            return
+        self.pierderi += 1
+
+        alt = self.v.alt if self.v.have_pos else None
+        linii = [f"[sim] DETECTIE PIERDUTA de {age:.2f} s in {self.sm.state}"]
+        if alt is not None:
+            linii.append(f"  altitudine {alt:.2f} m")
+        tr = self.truth.truth() if self.truth is not None else None
+        if tr is not None:
+            lat = math.hypot(tr['north_off_m'], tr['east_off_m'])
+            v = self.truth.pose(self.truth.vehicle_name)
+            roll, pitch = v.roll_pitch_deg if v is not None else (0.0, 0.0)
+            inclinare = math.hypot(roll, pitch)
+            h = tr['range_m']
+            # §5.2 presupune camera la NADIR. Cu inclinare, axa optica bate
+            # solul la h*tan(incl) de punctul de sub vehicul.
+            deviere = h * math.tan(math.radians(inclinare))
+            demi_cadru = h * math.tan(math.radians(self.cal.vfov_deg() / 2.0))
+            marja = demi_cadru - (lat + deviere) - MARKER_SIZE_M / 2.0
+            linii.append(f"  adevar: lateral {lat * 100:.1f} cm, "
+                         f"inclinare {inclinare:.1f} deg "
+                         f"(roll {roll:+.1f}, pitch {pitch:+.1f})")
+            linii.append(f"  deviere din inclinare {deviere * 100:.1f} cm; "
+                         f"semi-cadru la sol {demi_cadru * 100:.1f} cm")
+            if marja < 0:
+                linii.append(f"  => markerul IESE din cadru cu "
+                             f"{-marja * 100:.1f} cm: e GEOMETRIE, nu imagine")
+            else:
+                linii.append(f"  => markerul incape, cu {marja * 100:.1f} cm "
+                             f"de marja: cauza e in IMAGINE")
+        if self.a.dump_dir and self.detector.last_frame is not None:
+            os.makedirs(self.a.dump_dir, exist_ok=True)
+            cale = os.path.join(self.a.dump_dir,
+                                f"pierdere_{alt or 0:.2f}m.png")
+            try:
+                import cv2
+                cv2.imwrite(cale, self.detector.last_frame)
+                linii.append(f"  cadru salvat: {cale}")
+            except Exception as e:                           # noqa: BLE001
+                linii.append(f"  cadrul NU s-a salvat: {e}")
+        print('\n'.join(linii))
 
     def _offset_fata_de_marker(self):
         """(nord, est) vehicul - marker, din adevarul simularii. None daca
@@ -442,6 +513,13 @@ def main(argv=None):
     p.add_argument('--marker-model', default='aruco_26')
     p.add_argument('--no-truth', action='store_true')
     p.add_argument('--conv', type=int, default=2, choices=[0, 1, 2, 3])
+    p.add_argument('--no-lateral-alt', type=float, default=None,
+                   help='sub ce altitudine se trece in FINAL_DESCENT, adica '
+                        'coborare verticala fara corectii laterale. '
+                        'Implicit 0.40 m - cifra de NADIR din §5.2. Cu '
+                        'eroare laterala reala fereastra de incadrare se '
+                        'inchide mai sus (§5.45); vezi '
+                        'tools/check_handover_fov.py pentru tabel')
     p.add_argument('--authority', action='store_true',
                    help='modularea de autoritate pe praguri (I5)')
     p.add_argument('--fast-descent', action='store_true',
@@ -451,6 +529,8 @@ def main(argv=None):
                    help='0 = pana la Ctrl-C; altfel secunde de SIMULARE')
     p.add_argument('--frame-timeout', type=float, default=10.0)
     p.add_argument('--status-s', type=float, default=2.0)
+    p.add_argument('--dump-dir', default=None,
+                   help='salveaza cadrul in care s-a pierdut detectia')
     p.add_argument('--csv', default=None)
     p.add_argument('--json', default=None,
                    help='raportul, pentru tools/batch_sim.py')

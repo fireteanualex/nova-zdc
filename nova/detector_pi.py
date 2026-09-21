@@ -760,7 +760,7 @@ class PiDetector:
     """
 
     def __init__(self, source, detector, threaded=True, max_queue=8,
-                 clock=None):
+                 clock=None, keep_last_frame=False):
         """`clock` e ceasul in care se masoara LATENTA captura->publicare.
 
         Trebuie sa fie ACELASI cu cel in care sursa stampileaza cadrele. Pe
@@ -775,6 +775,12 @@ class PiDetector:
         self.source = source
         self.det = detector
         self.clock = clock or time.monotonic
+        #: Ultimul cadru citit, pastrat DOAR daca cineva cere explicit.
+        #: Serveste la diagnostic: cand detectia se pierde, vrei pixelii
+        #: care au picat, nu o teorie despre ei. Oprit implicit - pe Pi
+        #: ar fi o copie de 3 MB pe fiecare cadru, din bugetul detectiei.
+        self.keep_last_frame = keep_last_frame
+        self.last_frame = None
         self.threaded = threaded
         self.queue = collections.deque(maxlen=max_queue)
         self.lock = threading.Lock()
@@ -811,6 +817,8 @@ class PiDetector:
             self.exhausted = True
             return False
         gray, t_cap = item
+        if self.keep_last_frame:
+            self.last_frame = gray
         det = self.det.detect(gray, t_cap)
         t_pub = time.monotonic()
         with self.lock:

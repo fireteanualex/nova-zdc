@@ -478,6 +478,76 @@ def test_latenta_se_masoara_in_ceasul_sursei():
     return "latenta 50 ms in ceasul sursei; implicit neschimbat pe Pi"
 
 
+def test_inclinarea_intra_in_verificarea_de_incadrare():
+    """§5.2 presupune camera la NADIR. Cu vehiculul inclinat, axa optica
+    bate solul la `h*tan(inclinare)` de punctul de sub el, iar marja pana la
+    marginea cadrului scade cu atat.
+
+    La 0.5 m marja e de ~11 cm, deci o inclinare de 12 grade scoate singura
+    markerul din cadru - fara ca nimic din imagine sa fie in neregula."""
+    import math as _m
+    q = (0.9962, 0.0872, 0.0, 0.0)          # roll 10 grade
+    p = sim_truth.pose_from_enu(0, 0, 1.0, q)
+    roll, pitch = p.roll_pitch_deg
+    assert abs(roll - 10.0) < 0.1, roll
+    assert abs(pitch) < 0.1, pitch
+
+    vfov = 69.5
+    for h, incl, asteptat in ((1.0, 10.0, True), (0.5, 15.0, False)):
+        demi = h * _m.tan(_m.radians(vfov / 2))
+        deviere = h * _m.tan(_m.radians(incl))
+        marja = demi - deviere - 0.24
+        assert (marja > 0) is asteptat, (h, incl, marja)
+    # Cazul masurat: pierdere la 1.06 m cu ~20 cm lateral si ~15 deg
+    # inclinare. Pragul de 0.38 m din §5.2 e o cifra de NADIR, cu eroare
+    # zero; bugetul real e lateral + h*tan(inclinare) + jumatate de marker.
+    h, lat, incl = 1.06, 0.20, 15.0
+    demi = h * _m.tan(_m.radians(vfov / 2))
+    assert demi - lat - h * _m.tan(_m.radians(incl)) - 0.24 < 0.05, (
+        "cazul masurat ar trebui sa fie chiar la limita")
+    return ("roll 10 deg din cuaternion; la 0.5 m, 15 deg scot markerul; "
+            "cazul de la 1.06 m e chiar la limita")
+
+
+def test_diagnosticul_de_pierdere_distinge_cauza():
+    """`detection_age: BRAKE` nu spune DE CE. Diagnosticul raporteaza
+    geometria din adevar si salveaza cadrul, o singura data per pierdere."""
+    src = open(os.path.join(REPO, 'tools', 'nova_sim.py')).read()
+    assert 'DETECTIE PIERDUTA' in src
+    assert 'e GEOMETRIE, nu imagine' in src, "nu distinge cauza geometrica"
+    assert 'cauza e in IMAGINE' in src, "nu distinge cauza de imagine"
+    # pragul trebuie sa fie SUB cel al supervizorului, altfel raportul se
+    # scrie dupa ce secventa a fost deja oprita si geometria s-a schimbat
+    from nova.safety import DETECTION_MAX_AGE_S
+    import importlib
+    mod = importlib.import_module('nova_sim')
+    assert mod.SimApp.PRAG_DIAGNOSTIC_S < DETECTION_MAX_AGE_S, (
+        f"diagnostic la {mod.SimApp.PRAG_DIAGNOSTIC_S} s, supervizor la "
+        f"{DETECTION_MAX_AGE_S} s: raportul vine prea tarziu")
+    assert '--dump-dir' in batch_sim.nova_sim_cmd('/tmp/x', 'c.yaml', 10), (
+        "campania nu cere salvarea cadrului")
+    return (f"prag {mod.SimApp.PRAG_DIAGNOSTIC_S} s < "
+            f"{DETECTION_MAX_AGE_S} s al supervizorului")
+
+
+def test_pragul_de_coborare_verticala_e_reglabil_fara_cod():
+    """Trecerea in FINAL_DESCENT e o VALOARE in SequenceConfig, nu o
+    constanta ingropata.
+
+    Conteaza pentru §5.45: fereastra de incadrare se inchide mai sus decat
+    cei 0.40 m impliciti daca eroarea laterala nu e mica. Sa poti incerca
+    0.5 sau 0.8 m fara sa atingi masina de stari inseamna un experiment cu
+    o singura variabila, nu o modificare de cod validat."""
+    from nova.state_machine import SequenceConfig
+    c = SequenceConfig()
+    assert c.no_lateral_alt_m == 0.40, c.no_lateral_alt_m
+    c.no_lateral_alt_m = 0.8
+    assert c.no_lateral_alt_m == 0.8
+    src = open(os.path.join(REPO, 'tools', 'nova_sim.py')).read()
+    assert '--no-lateral-alt' in src, "knob-ul nu e expus in aplicatie"
+    return "reglabil din SequenceConfig si din linia de comanda"
+
+
 def test_adevarul_tacut_e_semnalat_nu_ignorat():
     """§5.33 aplicat pozelor: abonarea la un topic inexistent REUSESTE.
 
@@ -965,6 +1035,12 @@ TESTS = [
      test_eroarea_si_deriva_se_masoara_din_adevar),
     ('latenta se masoara in ceasul sursei',
      test_latenta_se_masoara_in_ceasul_sursei),
+    ('inclinarea intra in verificarea de incadrare',
+     test_inclinarea_intra_in_verificarea_de_incadrare),
+    ('diagnosticul de pierdere distinge cauza',
+     test_diagnosticul_de_pierdere_distinge_cauza),
+    ('pragul de coborare verticala e reglabil fara cod',
+     test_pragul_de_coborare_verticala_e_reglabil_fara_cod),
     ('adevarul tacut e semnalat, nu ignorat',
      test_adevarul_tacut_e_semnalat_nu_ignorat),
     ('fara adevar nu se inventeaza cifre',

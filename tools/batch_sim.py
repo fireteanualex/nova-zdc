@@ -285,6 +285,10 @@ def nova_sim_cmd(run_dir, calib, seconds, python=sys.executable):
             '--calib', calib, '--provisional',
             '--seconds', str(seconds),
             '--csv', os.path.join(run_dir, 'frames.csv'),
+            # Cadrul in care s-a pierdut detectia, daca se pierde. Fara el,
+            # "detection_age: BRAKE" nu spune daca markerul a iesit din
+            # cadru sau imaginea nu mai e detectabila.
+            '--dump-dir', os.path.join(run_dir, 'cadre'),
             '--json', os.path.join(run_dir, 'report.json')]
 
 
