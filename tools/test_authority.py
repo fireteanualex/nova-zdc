@@ -175,8 +175,9 @@ def test_benzi_si_tinte():
     fc, s = make()
     rulare(s, fc, 3, 'DESCEND_TRACK', 12.0, latency=0.05)
     assert s.band.nume == 'sus', s.band
-    # multiplicator: 0.75 * originalul 1.0
-    assert abs(fc.reale['PSC_NE_POS_P'] - 0.75) < 1e-6, fc.reale
+    # multiplicator: 0.70 * originalul 1.0 (pasul 2 din procedura de
+    # diagnostic, docs/DIAGNOSTIC_OSCILATIE.md)
+    assert abs(fc.reale['PSC_NE_POS_P'] - 0.70) < 1e-6, fc.reale
     # D: 0.60 * 0.25
     assert abs(fc.reale['PSC_NE_VEL_D'] - 0.15) < 1e-6, fc.reale
 
@@ -185,19 +186,24 @@ def test_benzi_si_tinte():
     assert abs(fc.reale['PSC_NE_POS_P'] - 1.25) < 1e-6
     assert abs(fc.reale['WP_ACC'] - 0.7 * 2.5) < 1e-6, fc.reale['WP_ACC']
     assert abs(fc.reale['LAND_SPD_MS'] - 0.35) < 1e-6
-    return ("sus: P x0.75, D x0.60; jos: P x1.25, WP_ACC 1.75 m/s/s, "
+    return ("sus: P x0.70, D x0.60; jos: P x1.25, WP_ACC 1.75 m/s/s, "
             "LAND_SPD_MS 0.35")
 
 
 def test_histereza_nu_lasa_sa_oscileze():
-    """Zgomot de +-0.3 m in jurul pragului de 2 m: o singura trecere."""
+    """Zgomot de +-0.3 m in jurul pragului: o singura trecere.
+
+    Pragul se ia din profil, nu se scrie de mana: mutat (2.0 -> 3.0 la I5),
+    o cifra fixa aici ar face oscilatia sa cada INTEGRAL intr-o banda, iar
+    testul ar raporta '0 treceri' - adica ar trece fara sa testeze nimic."""
     fc, s = make()
     rulare(s, fc, 3, 'DESCEND_TRACK', 5.0, latency=0.05)
     n0 = len(fc.scrieri)
 
     import math
+    prag = auth.PROFIL_IMPLICIT[1].min_agl     # granita mijloc / jos
     t = rulare(s, fc, 60, 'DESCEND_TRACK',
-               lambda tt: 2.0 + 0.3 * math.sin(tt * 3.0), latency=0.05,
+               lambda tt: prag + 0.3 * math.sin(tt * 3.0), latency=0.05,
                t0=10.0, dt=0.2)
     treceri = [e for e in s.log if e.kind == 'band']
     assert len(treceri) <= 3, (
@@ -424,7 +430,51 @@ def test_numele_sunt_cele_de_pe_4_8():
     return ', '.join(sorted(nume))
 
 
+def test_profilele_difera_doar_pe_viteza():
+    """I5: cand se compara doua rulari, singura variabila schimbata trebuie
+    sa fie profilul de coborare. Daca si castigurile difera, o oscilatie
+    apuruta la 1.5 m/s nu se mai poate atribui vitezei."""
+    viteze = {'WP_SPD_DN', 'LAND_SPD_MS'}
+    a, b = auth.PROFIL_IMPLICIT, auth.PROFIL_RAPID
+    assert len(a) == len(b), (len(a), len(b))
+    for ba, bb in zip(a, b):
+        assert ba.min_agl == bb.min_agl, (ba.nume, ba.min_agl, bb.min_agl)
+        for k in set(ba.valori) | set(bb.valori):
+            if k in viteze:
+                continue
+            assert ba.valori.get(k) == bb.valori.get(k), (
+                f"{ba.nume}.{k}: {ba.valori.get(k)} vs {bb.valori.get(k)} - "
+                f"profilele nu au voie sa difere decat pe viteza")
+    return f"{len(a)} benzi, identice in afara de {sorted(viteze)}"
+
+
+def test_profilul_rapid_e_cel_din_tabelul_I5():
+    asteptat = [(8.0, 1.5), (3.0, 0.8), (0.5, 0.3), (0.0, 0.2)]
+    gasit = [(b.min_agl, b.valori['WP_SPD_DN'])
+             for b in auth.PROFIL_RAPID]
+    assert gasit == asteptat, f"{gasit} != {asteptat}"
+    for b in auth.PROFIL_RAPID:
+        assert b.valori['LAND_SPD_MS'] == b.valori['WP_SPD_DN'], (
+            f"{b.nume}: LAND_SPD_MS si WP_SPD_DN trebuie sa spuna acelasi "
+            f"lucru, altfel viteza depinde de care controler e activ")
+    return "8m/1.5, 3m/0.8, 0.5m/0.3, contact/0.2"
+
+
+def test_profilul_implicit_nu_depaseste_ce_s_a_validat():
+    for b in auth.PROFIL_IMPLICIT:
+        for k in ('WP_SPD_DN', 'LAND_SPD_MS'):
+            assert b.valori[k] <= auth.DESCENT_VALIDATED_MS, (
+                f"{b.nume}.{k} = {b.valori[k]} peste "
+                f"{auth.DESCENT_VALIDATED_MS} m/s validati")
+    return f"toate <= {auth.DESCENT_VALIDATED_MS} m/s"
+
+
 TESTS = [
+    ('profilele difera doar pe viteza', test_profilele_difera_doar_pe_viteza),
+    ('profilul rapid e cel din tabelul I5',
+     test_profilul_rapid_e_cel_din_tabelul_I5),
+    ('profilul implicit nu depaseste ce s-a validat',
+     test_profilul_implicit_nu_depaseste_ce_s_a_validat),
     ('nu modifica nimic inainte de a salva',
      test_nu_modifica_nimic_inainte_de_a_salva),
     ('NEGATIV: parametru inexistent nu e gestionat',

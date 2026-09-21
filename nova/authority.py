@@ -201,34 +201,64 @@ class Band:
 #: exista in PROFIL_RAPID si cere intai masuratoarea de franare (§6/D1).
 PROFIL_IMPLICIT = (
     Band('sus', 8.0,
-         PSC_NE_POS_P=0.75,     # estimarea e zgomotoasa: nu urmari zgomotul
+         # -30%: treapta din procedura de diagnostic (pasul 2,
+         # docs/DIAGNOSTIC_OSCILATIE.md). Suficient de mare cat sa se vada
+         # pe o singura rulare, suficient de mica sa nu strice altceva.
+         PSC_NE_POS_P=0.70,     # estimarea e zgomotoasa: nu urmari zgomotul
          PSC_NE_VEL_D=0.60,     # D amplifica cel mai tare
          WP_ACC=1.00,
          WP_SPD_DN=0.5,
          LAND_SPD_MS=0.5),
-    Band('mijloc', 2.0,
+    Band('mijloc', 3.0,
          PSC_NE_POS_P=1.00,     # nominal
          PSC_NE_VEL_D=1.00,
          WP_ACC=1.00,
          WP_SPD_DN=0.5,
          LAND_SPD_MS=0.5),
-    Band('jos', 0.0,
+    Band('jos', 0.5,
          PSC_NE_POS_P=1.25,     # 900 px la 0.5 m: estimarea merita urmarita
          PSC_NE_VEL_D=1.10,
          WP_ACC=0.70,           # langa sol, acceleratii laterale mici
          WP_SPD_DN=0.35,
          LAND_SPD_MS=0.35),
+    Band('contact', 0.0,
+         PSC_NE_POS_P=1.25,
+         PSC_NE_VEL_D=1.10,
+         WP_ACC=0.50,           # autoritatea laterala scoasa din joc
+         WP_SPD_DN=0.35,
+         LAND_SPD_MS=0.35),
 )
 
-#: Dupa masuratoarea de distanta de franare la fiecare treapta (§6/15.2.9,
-#: elementul deschis 11 din §7). Pana atunci, `allow_fast_descent` refuza.
+#: Profilul agresiv (I5). Difera de cel implicit **numai pe coloana de
+#: viteza**; benzile si castigurile sunt aceleasi. Asta e deliberat: cand se
+#: compara doua rulari, singura variabila schimbata trebuie sa fie profilul
+#: de coborare, nu si reglajul controlerului.
+#:
+#: | banda | AGL | viteza | ce se schimba fata de nominal |
+#: |---|---|---|---|
+#: | sus     | > 8 m     | 1.5 m/s | `PSC_NE_POS_P` x0.70, `PSC_NE_VEL_D` x0.60 |
+#: | mijloc  | 8 - 3 m   | 0.8 m/s | `PSC_NE_POS_P` nominal |
+#: | jos     | 3 - 0.5 m | 0.3 m/s | `WP_ACC` limitat la 0.70 |
+#: | contact | < 0.5 m   | 0.2 m/s | `WP_ACC` la podea, fara autoritate laterala |
+#:
+#: Ultima banda NU e cea care opreste corectiile laterale - aia e
+#: `FINAL_DESCENT` din masina de stari (§8, sub 0.4 m). Aici doar se scoate
+#: autoritatea care ar ramane disponibila daca ceva ar cere-o.
+#:
+#: BLOCAT pana la masuratoarea de distanta de franare la FIECARE treapta
+#: (§6/15.2.9, elementul deschis 11 din §7). `allow_fast_descent` refuza
+#: pana atunci, si refuza pe buna dreptate: la 1.5 m/s doar timpul de
+#: reactie masurat (0.48 s) inseamna 0.72 m, iar pragul sub care garantia
+#: de hover nu mai tine urca odata cu viteza.
 PROFIL_RAPID = (
-    Band('sus', 8.0, PSC_NE_POS_P=0.75, PSC_NE_VEL_D=0.60, WP_ACC=1.20,
+    Band('sus', 8.0, PSC_NE_POS_P=0.70, PSC_NE_VEL_D=0.60, WP_ACC=1.00,
          WP_SPD_DN=1.5, LAND_SPD_MS=1.5),
-    Band('mijloc', 2.0, PSC_NE_POS_P=1.00, PSC_NE_VEL_D=1.00, WP_ACC=1.00,
+    Band('mijloc', 3.0, PSC_NE_POS_P=1.00, PSC_NE_VEL_D=1.00, WP_ACC=1.00,
          WP_SPD_DN=0.8, LAND_SPD_MS=0.8),
-    Band('jos', 0.0, PSC_NE_POS_P=1.25, PSC_NE_VEL_D=1.10, WP_ACC=0.70,
-         WP_SPD_DN=0.35, LAND_SPD_MS=0.35),
+    Band('jos', 0.5, PSC_NE_POS_P=1.25, PSC_NE_VEL_D=1.10, WP_ACC=0.70,
+         WP_SPD_DN=0.3, LAND_SPD_MS=0.3),
+    Band('contact', 0.0, PSC_NE_POS_P=1.25, PSC_NE_VEL_D=1.10, WP_ACC=0.50,
+         WP_SPD_DN=0.2, LAND_SPD_MS=0.2),
 )
 
 
