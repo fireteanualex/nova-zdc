@@ -279,11 +279,25 @@ def handover_cmd(python=sys.executable, after=HANDOVER_AFTER_S):
             '--after', str(after)]
 
 
-def nova_sim_cmd(run_dir, calib, seconds, python=sys.executable):
+def nova_sim_cmd(run_dir, calib, seconds, python=sys.executable,
+                 no_lateral_alt=None, authority=False, fast_descent=False):
+    """Optiunile de experiment se DAU MAI DEPARTE, nu se redeclara aici.
+
+    Campania e doar orchestrare; ce se regleaza, se regleaza in aplicatie.
+    Un knob care exista in `nova_sim.py` si nu se poate atinge din campanie
+    inseamna ca experimentul se poate face doar de mana, pe o singura
+    rulare - adica exact ce nu vrei cand incerci o valoare noua."""
+    extra = []
+    if no_lateral_alt is not None:
+        extra += ['--no-lateral-alt', str(no_lateral_alt)]
+    if authority:
+        extra.append('--authority')
+    if fast_descent:
+        extra.append('--fast-descent')
     return [python, os.path.join(REPO, 'tools', 'nova_sim.py'),
             '--conn', f'udpin:127.0.0.1:{PORT_SIM}',
             '--calib', calib, '--provisional',
-            '--seconds', str(seconds),
+            '--seconds', str(seconds)] + extra + [
             '--csv', os.path.join(run_dir, 'frames.csv'),
             # Cadrul in care s-a pierdut detectia, daca se pierde. Fara el,
             # "detection_age: BRAKE" nu spune daca markerul a iesit din
@@ -438,7 +452,7 @@ def _r(v, n):
 
 
 def run_one(cond, run_dir, lume, calib, seconds, python=sys.executable,
-            gz_timeout=90.0, verbose=True, approach=True):
+            gz_timeout=90.0, verbose=True, approach=True, sim_opts=None):
     """O rulare completa. Intoarce randul de CSV.
 
     NETESTAT PE HARDWARE: secventa de mai jos nu a fost niciodata rulata
@@ -483,7 +497,8 @@ def run_one(cond, run_dir, lume, calib, seconds, python=sys.executable,
             return row_from(cond, MOTIV_FLY.get(
                 r.returncode, f"decolare: cod {r.returncode}"))
 
-        sim = spawn(nova_sim_cmd(run_dir, calib, seconds, python),
+        sim = spawn(nova_sim_cmd(run_dir, calib, seconds, python,
+                                 **(sim_opts or {})),
                     os.path.join(run_dir, 'nova_sim.log'))
         time.sleep(5.0)          # detectorul sa apuce sa vada markerul
 
@@ -611,12 +626,27 @@ def main(argv=None):
                    help='tipareste planul si iesi')
     p.add_argument('--dry-run', action='store_true',
                    help='genereaza lumile, nu porneste Gazebo')
+    p.add_argument('--no-lateral-alt', type=float, default=None,
+                   help='sub ce altitudine coborarea devine verticala, fara '
+                        'corectii laterale. Implicit 0.40 m (cifra de nadir, '
+                        '§5.2); cu eroare laterala reala fereastra de '
+                        'incadrare se inchide mai sus (§5.45)')
+    p.add_argument('--authority', action='store_true',
+                   help='modularea de autoritate pe praguri de altitudine '
+                        '(I5): limiteaza WP_ACC si viteza sub 3 m')
+    p.add_argument('--fast-descent', action='store_true',
+                   help='PROFIL_RAPID; cere --authority si distanta de '
+                        'franare masurata pe fiecare treapta')
     p.add_argument('--no-approach', action='store_true',
                    help='vehiculul planeaza deasupra punctului de decolare '
                         'in loc sa zboare la handover (comportamentul vechi, '
                         'pentru comparatie)')
     p.add_argument('--python', default=sys.executable)
     a = p.parse_args(argv)
+
+    sim_opts = {'no_lateral_alt': a.no_lateral_alt,
+                'authority': a.authority,
+                'fast_descent': a.fast_descent}
 
     conditii = plan(a.n, a.seed)
     if a.only is not None:
@@ -639,6 +669,13 @@ def main(argv=None):
     print(f"    soare: az {s['az'][0]:.0f}-{s['az'][1]:.0f} deg, "
           f"el {s['el'][0]:.0f}-{s['el'][1]:.0f} deg")
     print(f"    roughness: {s['roughness']}")
+    schimbate = [k for k, v in sim_opts.items() if v]
+    if schimbate:
+        print(f"    EXPERIMENT: {', '.join(schimbate)}")
+        if len(schimbate) > 1:
+            print(f"    ATENTIE: {len(schimbate)} variabile schimbate odata. "
+                  f"Un rezultat diferit nu se va putea atribui niciuneia "
+                  f"(§5.40).")
 
     if a.plan_only:
         print()
@@ -668,7 +705,7 @@ def main(argv=None):
             randuri.append(row_from(c, 'dry-run'))
             continue
         rand = run_one(c, run_dir, lume, a.calib, a.seconds, python=a.python,
-                       approach=not a.no_approach)
+                       approach=not a.no_approach, sim_opts=sim_opts)
         print(f"    -> {'REUSIT' if rand['succes'] else 'ESEC'}: "
               f"{rand['motiv']}")
         randuri.append(rand)

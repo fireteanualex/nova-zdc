@@ -530,6 +530,32 @@ def test_diagnosticul_de_pierdere_distinge_cauza():
             f"{DETECTION_MAX_AGE_S} s al supervizorului")
 
 
+def test_optiunile_de_experiment_ajung_din_campanie_in_aplicatie():
+    """Un knob care exista in `nova_sim.py` si nu se poate atinge din
+    `batch_sim.py` inseamna ca experimentul se poate face doar de mana, pe o
+    singura rulare - exact ce nu vrei cand incerci o valoare noua.
+
+    Prins cu mana pe tastatura: `--no-lateral-alt` a fost expus in aplicatie
+    si uitat in campanie, iar prima incercare a picat cu
+    `unrecognized arguments`."""
+    import argparse
+    base = batch_sim.nova_sim_cmd('/tmp/x', 'c.yaml', 10)
+    assert '--no-lateral-alt' not in base, "implicit nu se trimite nimic"
+
+    c = batch_sim.nova_sim_cmd('/tmp/x', 'c.yaml', 10, no_lateral_alt=0.8,
+                               authority=True)
+    assert c[c.index('--no-lateral-alt') + 1] == '0.8', c
+    assert '--authority' in c, c
+
+    # si CLI-ul campaniei chiar le accepta
+    p = argparse.ArgumentParser()
+    src = open(os.path.join(REPO, 'tools', 'batch_sim.py')).read()
+    for optiune in ('--no-lateral-alt', '--authority', '--fast-descent'):
+        assert f"'{optiune}'" in src, f"{optiune} lipseste din CLI-ul campaniei"
+    del p
+    return "3 optiuni, din campanie pana in aplicatie"
+
+
 def test_pragul_de_coborare_verticala_e_reglabil_fara_cod():
     """Trecerea in FINAL_DESCENT e o VALOARE in SequenceConfig, nu o
     constanta ingropata.
@@ -1039,6 +1065,8 @@ TESTS = [
      test_inclinarea_intra_in_verificarea_de_incadrare),
     ('diagnosticul de pierdere distinge cauza',
      test_diagnosticul_de_pierdere_distinge_cauza),
+    ('optiunile de experiment ajung din campanie in aplicatie',
+     test_optiunile_de_experiment_ajung_din_campanie_in_aplicatie),
     ('pragul de coborare verticala e reglabil fara cod',
      test_pragul_de_coborare_verticala_e_reglabil_fara_cod),
     ('adevarul tacut e semnalat, nu ignorat',
