@@ -6,3 +6,8 @@ __pycache__/
 # inventati si nimeni nu ar observa. Se genereaza cu
 # tools/make_camera_model.py dupa calibrare.
 sim/models/iris_nova/
+
+# Iesirea campaniilor: lumi generate, loguri, CSV-uri, cadre. Se
+# regenereaza din plan (`--seed`), deci nu are ce cauta in istorie. Ce se
+# pastreaza ca evidenta se copiaza explicit, cu tools/collect_session.py.
+data/batch/

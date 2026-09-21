@@ -65,6 +65,16 @@ class StubVehicle:
                        'LAND_SPD_MS': 0.5, 'PLND_LAG': 0.02}
         #: Cand a fost vazut fiecare parametru - vezi Vehicle.params_t.
         self.params_t = {}
+        #: Ceasul BUCLEI, nu cel de perete. Harness-ul il avanseaza la
+        #: fiecare pas. Prima varianta stampila `params_t` cu
+        #: `time.monotonic()`, in timp ce bucla numara de la 1000.0: cele
+        #: doua se compara in `authority._read_fresh`, iar testul trecea
+        #: DOAR pentru ca masina avea uptime de peste ~1000 s. Dupa o
+        #: repornire, cu monotonic ~890, niciun parametru nu mai parea
+        #: proaspat si modularea nu se aplica deloc. Aceeasi forma ca §5.39,
+        #: mutata in harness - si mai perfida, pentru ca facea testul sa
+        #: TREACA din coincidenta, nu sa pice.
+        self.now = 0.0
         # canalul 7 (AUX) sus = cerere de handover
         self.rc = (1500, 1500, 1100, 1500, 1000, 1000, AUX_HIGH_PWM, 1000)
         self.rc_t = 0.0
@@ -94,7 +104,7 @@ class StubVehicle:
         # Fara params_t, nova/authority.py nu poate deosebi o valoare
         # proaspata de una ramasa in cache.
         if name in self.params:
-            self.params_t[name] = time.monotonic()
+            self.params_t[name] = self.now
         return True
 
     def param_pending(self, name=None):
@@ -111,7 +121,7 @@ class StubVehicle:
 
     def set_param(self, name, value, now=None):
         self.params[name] = float(value)
-        self.params_t[name] = time.monotonic()
+        self.params_t[name] = self.now if now is None else now
         self.param_sets.append((name, float(value)))
         return True
 
@@ -191,6 +201,7 @@ def run_app(v, det, sm, sup, args, seconds=40.0, dt=0.002, stop_states=(),
     while t < seconds:
         now = 1000.0 + t
         v.rc_t = now
+        v.now = now
         dets = det.poll(now)
         for d in dets:
             last_det_t = d.t if last_det_t is None else max(last_det_t, d.t)
@@ -432,6 +443,30 @@ def _authority_originals(v):
     return {sp.name: v.params[sp.name] for sp in MANAGED}
 
 
+def test_harness_ul_stampileaza_pe_ceasul_buclei():
+    """Garda pentru un test care trecea din coincidenta.
+
+    `authority._read_fresh` compara `params_t` cu momentul armarii, iar
+    momentul armarii vine din ceasul buclei (1000.0 + t). Cu `params_t`
+    stampilat din `time.monotonic()`, comparatia amesteca doua ceasuri si
+    iese corecta **numai** cat timp uptime-ul masinii depaseste 1000 s.
+
+    Dupa o repornire (uptime 14 min, monotonic ~890) modularea de autoritate
+    nu se mai aplica deloc, iar testul de cablaj pica - nu pentru ca s-ar fi
+    stricat ceva, ci pentru ca acoperirea lui era accidentala. Vezi §5.39."""
+    import time as _t
+    v, det, sm, sup, events, args = build_app()
+    run_app(v, det, sm, sup, args, seconds=2.0)
+    assert v.now >= 1000.0, f"harness-ul nu a avansat ceasul: {v.now}"
+    v.request_param('PSC_NE_POS_P')
+    stampila = v.params_t['PSC_NE_POS_P']
+    assert stampila >= 1000.0, (
+        f"params_t stampilat cu {stampila}, nu cu ceasul buclei")
+    assert abs(stampila - _t.monotonic()) > 1.0 or _t.monotonic() > 1000.0, (
+        "stampila coincide cu ceasul de perete - harness-ul a revenit la el")
+    return f"params_t pe ceasul buclei ({stampila:.1f}), nu pe monotonic"
+
+
 def test_autoritate_restaurata_in_cablajul_real():
     """§5.14 pe modularea de autoritate: piesa are suita ei (test_authority),
     dar asta nu spune nimic despre cum e legata in bucla.
@@ -517,6 +552,8 @@ TESTS = [
     ('neutru memorat la ACCEPT', test_neutrul_se_memoreaza_la_accept),
     ('REGRESIE: supervizor armat in cablajul real',
      test_supervizorul_se_armeaza_in_cablajul_real),
+    ('harness-ul stampileaza pe ceasul buclei',
+     test_harness_ul_stampileaza_pe_ceasul_buclei),
     ('REGRESIE: autoritate restaurata in cablajul real',
      test_autoritate_restaurata_in_cablajul_real),
     ('REGRESIE: autoritate restaurata dupa override',

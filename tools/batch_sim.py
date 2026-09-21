@@ -1,0 +1,600 @@
+#!/usr/bin/env python3
+"""
+NOVA - ZDC 2026
+Campanie de rulari in Gazebo, cu conditii variate (I4).
+
+    ~/nova-sim-venv/bin/python tools/batch_sim.py --n 20
+    ~/nova-sim-venv/bin/python tools/batch_sim.py --plan-only --n 50 --seed 7
+    ~/nova-sim-venv/bin/python tools/batch_sim.py --n 5 --dry-run
+
+Fiecare rulare primeste conditii trase dintr-un plan reproductibil:
+
+    pozitia markerului    disc in jurul punctului de decolare (vezi mai jos)
+    altitudinea handover  5-12 m (fereastra portii, §8)
+    vant                  SIM_WIND_SPD 0-6 m/s, SIM_WIND_TURB pana la 15
+    unghi de lumina       azimut 0-360 deg, elevatie 15-75 deg
+    roughness marker      0.9 (mata) si 0.3 (lucios, 15.4.7), echilibrat
+
+Scrie un CSV cu o linie pe rulare si raporteaza **p50 si p95**, nu media.
+O medie ascunde exact coada care decide daca o incercare pica, iar evidenta
+de tip `A - Analysis` se puncteaza pe verificabilitate (8.4.2).
+
+VEHICULUL NU SE MISCA LATERAL INAINTE DE HANDOVER, MARKERUL DA
+
+E acelasi lucru geometric si costa o unealta in minus: `sim_fly_to.py`
+decoleaza vertical, iar distanta pana la marker e chiar raza din plan. Asa
+raman doua variabile independente (raza, altitudine) in loc de patru
+corelate, si nu exista un zbor lateral care sa introduca propria lui
+tranzitorie in conditiile initiale.
+
+REPRODUCTIBILITATE
+
+`--seed` fixeaza planul. Aceeasi samanta, aceleasi conditii, in aceeasi
+ordine - deci o rulare care a picat se reia identic cu `--only <index>`.
+Planul se poate si doar tipari (`--plan-only`), fara sa porneasca nimic.
+
+CE INSEAMNA "ESEC" AICI
+
+Un handover refuzat NU e un bug: poarta a facut ce trebuie. Motivul intra
+in CSV si se numara separat, pentru ca distributia refuzurilor e ea insasi
+un rezultat. Ce nu are voie sa se intample e o rulare care se termina in
+alta stare decat HANDBACK dupa ce poarta a acceptat.
+"""
+
+import argparse
+import csv
+import json
+import math
+import os
+import random
+import signal
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ARDUPILOT_DIR = os.path.expanduser('~/ardupilot')
+
+#: §8: poarta refuza peste 6.5 m de marker si in afara ferestrei 5-12 m.
+MARKER_RADIUS_M = 6.5
+ALT_MIN_M, ALT_MAX_M = 5.0, 12.0
+
+#: Jumatate de VFOV, din fisa tehnica (67 deg). Folosita doar ca sa nu
+#: planificam rulari in care markerul nu e in cadru la handover - vezi
+#: `raza_max`. Pentru detectia propriu-zisa conteaza calibrarea, nu asta.
+HALF_VFOV_DEG = 33.5
+MARKER_HALF_M = 0.24           # latura codata 480 mm / 2
+FRAME_USE = 0.9                # §5.2: markerul intreg, cu marja
+
+WIND_SPD_MAX = 6.0
+WIND_TURB_MAX = 15.0
+SUN_EL_MIN, SUN_EL_MAX = 15.0, 75.0
+ROUGHNESS = (0.9, 0.3)
+
+#: Porturi dedicate campaniei, ca sa nu se bata cu o sesiune interactiva
+#: pornita din start_sim.sh (14550/14552/14553/14554).
+PORT_FLY = 14560
+PORT_HANDOVER = 14561
+PORT_SIM = 14562
+
+#: Codurile lui sim_fly_to.py, traduse in ce scrie in CSV. Un singur
+#: "decolarea a esuat" ar amesteca un SITL care inca compileaza cu un prearm
+#: respins - si distributia motivelor e ea insasi un rezultat.
+MOTIV_FLY = {
+    1: 'decolare: nu a ajuns la tinta',
+    2: 'decolare: niciun HEARTBEAT de la SITL',
+    3: 'decolare: nu s-a armat (prearm / EKF)',
+}
+
+CSV_HEADER = [
+    'idx', 'seed', 'marker_n', 'marker_e', 'raza_m', 'alt_handover',
+    'wind_spd', 'wind_turb', 'sun_az', 'sun_el', 'roughness',
+    'succes', 'motiv', 'stare_finala',
+    'eroare_finala_cm', 'deriva_cm', 'alt_scoring_m',
+    't_descend_s', 't_final_s', 't_touchdown_s', 't_ascent_s', 't_total_s',
+    'rata_detectie', 'range_p95', 'angle_p95', 'lat_p99_ms', 'n_detectii',
+]
+
+
+# --- planul -----------------------------------------------------------------
+
+def raza_max(alt_m):
+    """Cat de departe poate fi markerul ca sa incapa in cadru la handover.
+
+    Poarta accepta pana la 6.5 m lateral la ORICE altitudine din fereastra,
+    dar camera nu: la 5 m si 6.5 m lateral markerul e la 52 deg de nadir,
+    peste jumatatea de VFOV (33.5 deg). Deci limita efectiva nu e cea din
+    poarta, ci a camerei - si e proportionala cu altitudinea:
+
+        d_max = 0.9 * h * tan(33.5 deg) - 0.24
+
+    | altitudine | d_max | limita portii |
+    |---|---|---|
+    | 5 m  | 2.7 m | 6.5 m |
+    | 8 m  | 4.5 m | 6.5 m |
+    | 12 m | 6.5 m | 6.5 m |
+
+    Un plan care ignora asta ar produce rulari in care poarta refuza pe
+    "marker nedetectat" din geometrie, nu din vreo problema de detectie."""
+    d = FRAME_USE * alt_m * math.tan(math.radians(HALF_VFOV_DEG)) - MARKER_HALF_M
+    return max(0.0, min(MARKER_RADIUS_M, d))
+
+
+def plan(n, seed=0):
+    """[dict] cu conditiile fiecarei rulari. Determinist pentru o samanta.
+
+    Doua alegeri care nu sunt evidente:
+
+    - Pozitia markerului e uniforma **pe disc**, nu pe (raza, unghi). Tras
+      naiv, `r = U(0, R)` aglomereaza punctele in centru si campania ar
+      testa mai ales cazul usor; `r = R*sqrt(U)` da densitate uniforma.
+    - `roughness` are doua valori, deci nu se trage independent: pe 4 rulari,
+      `choice` poate da 4x aceeasi valoare si conditia ramane netestata.
+      Lista e echilibrata si apoi amestecata."""
+    rng = random.Random(seed)
+    rough = [ROUGHNESS[i % len(ROUGHNESS)] for i in range(n)]
+    rng.shuffle(rough)
+    out = []
+    for i in range(n):
+        # Rotunjit INAINTE de a calcula raza: altfel conditia scrisa in CSV
+        # nu mai e consistenta cu ea insasi (raza trasa pentru 8.294 m,
+        # raportata langa 8.29 m, poate depasi limita celei raportate).
+        alt = round(rng.uniform(ALT_MIN_M, ALT_MAX_M), 2)
+        r = raza_max(alt) * math.sqrt(rng.random())
+        th = rng.uniform(0, 2 * math.pi)
+        out.append({
+            'idx': i,
+            'seed': seed,
+            'marker_n': round(r * math.cos(th), 3),
+            'marker_e': round(r * math.sin(th), 3),
+            'raza_m': round(r, 3),
+            'alt_handover': alt,
+            'wind_spd': round(rng.uniform(0.0, WIND_SPD_MAX), 2),
+            'wind_turb': round(rng.uniform(0.0, WIND_TURB_MAX), 1),
+            'sun_az': round(rng.uniform(0.0, 360.0), 1),
+            'sun_el': round(rng.uniform(SUN_EL_MIN, SUN_EL_MAX), 1),
+            'roughness': rough[i],
+        })
+    return out
+
+
+def plan_summary(p):
+    """Acopera planul chiar plaja ceruta? Tiparit inainte de orice rulare."""
+    if not p:
+        return {}
+
+    def rng_of(k):
+        v = [x[k] for x in p]
+        return min(v), max(v)
+
+    razele = [x['raza_m'] for x in p]
+    return {
+        'n': len(p),
+        'raza_max': max(razele), 'raza_medie': sum(razele) / len(razele),
+        'alt': rng_of('alt_handover'),
+        'vant': rng_of('wind_spd'), 'turb': rng_of('wind_turb'),
+        'az': rng_of('sun_az'), 'el': rng_of('sun_el'),
+        'roughness': sorted({x['roughness'] for x in p}),
+    }
+
+
+# --- comenzile (functii pure, ca sa fie testabile fara Gazebo) --------------
+
+def gz_cmd(world):
+    """Gazebo cu GUI, deliberat: headless nu randeaza (§5.31,-r ruleaza)."""
+    return ['gz', 'sim', '-v', '1', '-r', world]
+
+
+def sitl_cmd(param_file, wipe=True):
+    out = [f'--out=udp:127.0.0.1:{PORT_FLY}',
+           f'--out=udp:127.0.0.1:{PORT_HANDOVER}',
+           f'--out=udp:127.0.0.1:{PORT_SIM}']
+    c = [os.path.join(ARDUPILOT_DIR, 'Tools', 'autotest', 'sim_vehicle.py'),
+         '-v', 'ArduCopter', '-f', 'gazebo-iris', '--model', 'JSON',
+         f'--add-param-file={param_file}',
+         '--mavproxy-args=--daemon']
+    if wipe:
+        # §5.13: fara -w, --add-param-file doar seteaza valori implicite,
+        # iar eeprom-ul pastreaza ce era. Vantul rulari precedente ar
+        # ramane setat si campania ar masura altceva decat crede.
+        c.append('-w')
+    return c + out
+
+
+def fly_cmd(alt_m, python=sys.executable):
+    return [python, os.path.join(REPO, 'tools', 'sim_fly_to.py'),
+            '--conn', f'udpin:127.0.0.1:{PORT_FLY}', '--alt', str(alt_m)]
+
+
+def handover_cmd(python=sys.executable):
+    return [python, os.path.join(REPO, 'tools', 'sim_handover.py'),
+            '--conn', f'udpin:127.0.0.1:{PORT_HANDOVER}']
+
+
+def nova_sim_cmd(run_dir, calib, seconds, python=sys.executable):
+    return [python, os.path.join(REPO, 'tools', 'nova_sim.py'),
+            '--conn', f'udpin:127.0.0.1:{PORT_SIM}',
+            '--calib', calib, '--provisional',
+            '--seconds', str(seconds),
+            '--csv', os.path.join(run_dir, 'frames.csv'),
+            '--json', os.path.join(run_dir, 'report.json')]
+
+
+def param_file_for(cond, run_dir, baza=None):
+    """nova_sitl.parm + vantul acestei rulari, intr-un fisier propriu."""
+    baza = baza or os.path.join(REPO, 'config', 'nova_sitl.parm')
+    with open(baza) as f:
+        text = f.read()
+    cale = os.path.join(run_dir, 'run.parm')
+    with open(cale, 'w') as f:
+        f.write(text)
+        f.write(f"\n# conditii batch_sim, rularea {cond['idx']}\n")
+        f.write(f"SIM_WIND_SPD,{cond['wind_spd']}\n")
+        f.write(f"SIM_WIND_TURB,{cond['wind_turb']}\n")
+    return cale
+
+
+# --- procese ----------------------------------------------------------------
+
+def cleanup(verbose=True):
+    """Procesele ramase din rularea anterioara.
+
+    §5.5: un `gz sim` zombie tine porturile 9002/9003 si SITL-ul urmator da
+    timeout; §5.33: un al doilea server randeaza in paralel si contamineaza
+    orice masuratoare."""
+    for tipar in ('arducopter', 'gz sim', 'mavproxy', 'nova_sim.py',
+                  'sim_fly_to.py', 'sim_handover.py'):
+        subprocess.run(['pkill', '-f', tipar], capture_output=True)
+    if verbose:
+        print("    curatat")
+    time.sleep(2.0)
+
+
+def spawn(cmd, log_path, cwd=None, env=None):
+    """Proces in propriul grup, ca sa se poata omori cu tot cu copii.
+
+    §5.33: `terminate()` pe lansator lasa in viata `gz sim server` si
+    `gz sim gui`, care sunt forkate de el."""
+    f = open(log_path, 'w')
+    p = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, cwd=cwd,
+                         env=env, start_new_session=True)
+    p._nova_log = f
+    return p
+
+
+def kill_group(p, timeout=5.0):
+    if p is None or p.poll() is not None:
+        return
+    try:
+        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if p.poll() is not None:
+            break
+        time.sleep(0.2)
+    else:
+        try:
+            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    log = getattr(p, '_nova_log', None)
+    if log is not None:
+        try:
+            log.close()
+        except OSError:
+            pass
+
+
+def wait_topic(topic, timeout=60.0):
+    """Asteapta ca un topic gz sa publice CHIAR date.
+
+    §5.33: un topic ANUNTAT nu inseamna date. `gz topic -l` il arata si
+    cand randarea nu se intampla deloc."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        r = subprocess.run(['gz', 'topic', '-e', '-t', topic, '-n', '1'],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            return True
+        time.sleep(2.0)
+    return False
+
+
+# --- o rulare ---------------------------------------------------------------
+
+def build_world(cond, out_dir, calib, python=sys.executable):
+    """Lumea si modelele pentru aceste conditii. (cale_lume, mesaj)."""
+    cmd = [python, os.path.join(REPO, 'tools', 'make_marker_model.py'),
+           '--out', out_dir,
+           '--north', str(cond['marker_n']), '--east', str(cond['marker_e']),
+           '--sun-az', str(cond['sun_az']), '--sun-el', str(cond['sun_el']),
+           '--roughness', str(cond['roughness'])]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if r.returncode != 0:
+        return None, f"make_marker_model: {r.stderr.strip()[:200]}"
+    cmd2 = [python, os.path.join(REPO, 'tools', 'make_camera_model.py'),
+            '--out', out_dir, '--calib', calib, '--provisional']
+    r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=300)
+    if r2.returncode != 0:
+        return None, f"make_camera_model: {r2.stderr.strip()[:200]}"
+    return os.path.join(out_dir, 'worlds', 'nova_marker.sdf'), 'ok'
+
+
+def row_from(cond, motiv, raport=None, succes=False):
+    r = {k: '' for k in CSV_HEADER}
+    r.update(cond)
+    r['succes'] = 1 if succes else 0
+    r['motiv'] = motiv
+    if raport:
+        t = raport.get('t_state') or {}
+        r.update({
+            'stare_finala': raport.get('stare_finala', ''),
+            'eroare_finala_cm': _r(raport.get('eroare_finala_cm'), 2),
+            'deriva_cm': _r(raport.get('deriva_cm'), 2),
+            'alt_scoring_m': _r(raport.get('alt_scoring_m'), 3),
+            't_descend_s': _r(t.get('DESCEND_TRACK'), 2),
+            't_final_s': _r(t.get('FINAL_DESCENT'), 2),
+            't_touchdown_s': _r(t.get('TOUCHDOWN_CONFIRM'), 2),
+            't_ascent_s': _r(t.get('ASCENT'), 2),
+            't_total_s': _r(sum(v for v in t.values()), 2) if t else '',
+            'rata_detectie': _r(raport.get('rata_detectie'), 4),
+            'range_p95': _r(raport.get('range_p95'), 6),
+            'angle_p95': _r(raport.get('angle_p95'), 4),
+            'lat_p99_ms': _r(raport.get('lat_p99_ms'), 2),
+            'n_detectii': raport.get('n_detectii', ''),
+        })
+    return r
+
+
+def _r(v, n):
+    return '' if v is None else round(v, n)
+
+
+def run_one(cond, run_dir, lume, calib, seconds, python=sys.executable,
+            gz_timeout=90.0, verbose=True):
+    """O rulare completa. Intoarce randul de CSV.
+
+    NETESTAT PE HARDWARE: secventa de mai jos nu a fost niciodata rulata
+    cap-coada - mediul in care a fost scrisa nu poate tine un server Gazebo
+    in viata (`libEGL: failed to create dri2 screen`). Fiecare pas e
+    verificat separat; ORDINEA lor nu."""
+    gz = sitl = sim = hand = None
+    try:
+        cleanup(verbose=False)
+        # Mediul se construieste pentru FIECARE rulare, nu se acumuleaza in
+        # os.environ: altfel dupa 20 de rulari variabila are 20 de intrari,
+        # iar modelele rularilor vechi raman pe cale. Lumea generata
+        # foloseste oricum cai absolute (§5.31); intrarea de aici e doar
+        # pentru cine ar scrie `model://`.
+        env = dict(os.environ)
+        env['GZ_SIM_RESOURCE_PATH'] = (
+            os.path.join(run_dir, 'models') + os.pathsep
+            + os.environ.get('GZ_SIM_RESOURCE_PATH', ''))
+
+        gz = spawn(gz_cmd(lume), os.path.join(run_dir, 'gazebo.log'), env=env)
+        if verbose:
+            print("    Gazebo pornit, astept cadre...")
+        if not wait_topic('/down_cam/camera_info', timeout=gz_timeout):
+            return row_from(cond, 'gazebo: camera nu publica (randare?)')
+
+        parm = param_file_for(cond, run_dir)
+        sitl = spawn(sitl_cmd(parm), os.path.join(run_dir, 'sitl.log'),
+                     cwd=ARDUPILOT_DIR, env=env)
+        if verbose:
+            print("    SITL pornit, decolez...")
+
+        r = subprocess.run(fly_cmd(cond['alt_handover'], python),
+                           capture_output=True, text=True, timeout=300)
+        with open(os.path.join(run_dir, 'fly.log'), 'w') as f:
+            f.write(r.stdout + r.stderr)
+        if r.returncode != 0:
+            return row_from(cond, MOTIV_FLY.get(
+                r.returncode, f"decolare: cod {r.returncode}"))
+
+        sim = spawn(nova_sim_cmd(run_dir, calib, seconds, python),
+                    os.path.join(run_dir, 'nova_sim.log'))
+        time.sleep(5.0)          # detectorul sa apuce sa vada markerul
+
+        # Pornit in fundal si TINUT pornit pana la final, nu rulat si
+        # inchis: `sim_handover.py` injecteaza continuu manse in neutru,
+        # iar daca se opreste, override-ul expira dupa RC_OVERRIDE_TIME si
+        # FC-ul revine la RC-ul simulat. Manetele lui nu sunt in neutrul
+        # memorat la handover, deci monitorul de override ar vedea un pilot
+        # care preia - si ar opri secventa in fiecare rulare, din unealta
+        # de test, nu din ce testam.
+        hand = spawn(handover_cmd(python),
+                     os.path.join(run_dir, 'handover.log'))
+
+        sim.wait(timeout=seconds * 4 + 120)
+        cale_json = os.path.join(run_dir, 'report.json')
+        if not os.path.exists(cale_json):
+            return row_from(cond, 'nova_sim: fara raport (vezi nova_sim.log)')
+        with open(cale_json) as f:
+            raport = json.load(f)
+        succes = bool(raport.get('succes'))
+        motiv = 'ok' if succes else f"oprit in {raport.get('stare_finala')}"
+        return row_from(cond, motiv, raport, succes)
+
+    except subprocess.TimeoutExpired:
+        return row_from(cond, 'timeout')
+    except OSError as e:
+        return row_from(cond, f"eroare de proces: {e}")
+    finally:
+        for p in (sim, hand, sitl, gz):
+            kill_group(p)
+
+
+# --- statistici -------------------------------------------------------------
+
+def pct(vals, p):
+    v = sorted(x for x in vals if x is not None)
+    if not v:
+        return None
+    k = (len(v) - 1) * p / 100.0
+    lo, hi = int(math.floor(k)), int(math.ceil(k))
+    return v[lo] + (v[hi] - v[lo]) * (k - lo)
+
+
+def summarize(rows):
+    """p50 si p95 peste rulari, plus rata de succes si motivele esecurilor."""
+    reusite = [r for r in rows if r.get('succes')]
+    esecuri = [r for r in rows if not r.get('succes')]
+    motive = {}
+    for r in esecuri:
+        m = r.get('motiv') or 'necunoscut'
+        motive[m] = motive.get(m, 0) + 1
+
+    def col(k):
+        out = []
+        for r in reusite:
+            v = r.get(k)
+            if v in ('', None):
+                continue
+            try:
+                out.append(float(v))
+            except (TypeError, ValueError):
+                pass
+        return out
+
+    s = {'n': len(rows), 'reusite': len(reusite), 'esecuri': len(esecuri),
+         'motive': motive}
+    if rows:
+        s['rata_succes'] = len(reusite) / len(rows)
+    for k in ('eroare_finala_cm', 'deriva_cm', 'alt_scoring_m', 't_total_s',
+              'rata_detectie', 'range_p95', 'angle_p95', 'lat_p99_ms'):
+        v = col(k)
+        s[k] = {'p50': pct(v, 50), 'p95': pct(v, 95),
+                'min': min(v) if v else None, 'max': max(v) if v else None,
+                'n': len(v)}
+    return s
+
+
+def print_summary(s):
+    print(f"\n  --- {s['n']} rulari: {s['reusite']} reusite, "
+          f"{s['esecuri']} esecuri ---")
+    if s.get('rata_succes') is not None:
+        print(f"    rata de succes: {s['rata_succes']:.0%}")
+    if s['motive']:
+        print("    motive de esec:")
+        for m, k in sorted(s['motive'].items(), key=lambda x: -x[1]):
+            print(f"      {k:>3}x  {m}")
+    print(f"\n    {'metrica':<20} {'p50':>10} {'p95':>10}   (n)")
+    etichete = [
+        ('eroare_finala_cm', 'eroare finala (cm)'),
+        ('deriva_cm', 'deriva (cm)'),
+        ('alt_scoring_m', 'alt SCORING (m)'),
+        ('t_total_s', 'durata (s)'),
+        ('rata_detectie', 'rata detectie'),
+        ('range_p95', 'eroare range'),
+        ('angle_p95', 'eroare unghi (deg)'),
+        ('lat_p99_ms', 'latenta p99 (ms)'),
+    ]
+    for k, et in etichete:
+        d = s.get(k) or {}
+        if not d.get('n'):
+            continue
+        p50 = '-' if d['p50'] is None else f"{d['p50']:.3f}"
+        p95 = '-' if d['p95'] is None else f"{d['p95']:.3f}"
+        print(f"    {et:<20} {p50:>10} {p95:>10}   ({d['n']})")
+    print("\n    p50 si p95, nu media: media ascunde coada care decide daca o")
+    print("    incercare pica. Evidenta A - Analysis pentru 8.4.2.")
+
+
+# --- CLI --------------------------------------------------------------------
+
+def main(argv=None):
+    p = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--n', type=int, default=10)
+    p.add_argument('--seed', type=int, default=0)
+    p.add_argument('--out', default=os.path.join(REPO, 'data', 'batch'))
+    p.add_argument('--calib', default=os.path.join(REPO, 'config',
+                                                   'camera_sim.yaml'))
+    p.add_argument('--seconds', type=float, default=120.0,
+                   help='durata maxima a unei rulari, in timp de simulare')
+    p.add_argument('--only', type=int, default=None,
+                   help='ruleaza doar indexul dat din plan')
+    p.add_argument('--plan-only', action='store_true',
+                   help='tipareste planul si iesi')
+    p.add_argument('--dry-run', action='store_true',
+                   help='genereaza lumile, nu porneste Gazebo')
+    p.add_argument('--python', default=sys.executable)
+    a = p.parse_args(argv)
+
+    conditii = plan(a.n, a.seed)
+    if a.only is not None:
+        conditii = [c for c in conditii if c['idx'] == a.only]
+        if not conditii:
+            print(f"  indexul {a.only} nu e in plan (0..{a.n - 1})")
+            return 1
+
+    s = plan_summary(plan(a.n, a.seed))
+    print(f"\n  plan: {s['n']} rulari, samanta {a.seed}")
+    print(f"    marker: raza pana la {s['raza_max']:.2f} m "
+          f"(medie {s['raza_medie']:.2f}), uniform pe disc,")
+    print(f"            plafonata de cadrul camerei la altitudinea trasa")
+    print(f"    handover: {s['alt'][0]:.1f}-{s['alt'][1]:.1f} m")
+    print(f"    vant: {s['vant'][0]:.1f}-{s['vant'][1]:.1f} m/s, "
+          f"turbulenta {s['turb'][0]:.0f}-{s['turb'][1]:.0f}")
+    print(f"    soare: az {s['az'][0]:.0f}-{s['az'][1]:.0f} deg, "
+          f"el {s['el'][0]:.0f}-{s['el'][1]:.0f} deg")
+    print(f"    roughness: {s['roughness']}")
+
+    if a.plan_only:
+        print()
+        for c in conditii:
+            print(f"    {json.dumps(c, sort_keys=True)}")
+        print()
+        return 0
+
+    os.makedirs(a.out, exist_ok=True)
+    ses = os.path.join(a.out, time.strftime('%Y%m%d-%H%M%S'))
+    os.makedirs(ses, exist_ok=True)
+    csv_path = os.path.join(ses, 'runs.csv')
+
+    randuri = []
+    for c in conditii:
+        print(f"\n  --- rularea {c['idx'] + 1}/{len(conditii)} "
+              f"(idx {c['idx']}) ---")
+        run_dir = os.path.join(ses, f"run_{c['idx']:03d}")
+        os.makedirs(run_dir, exist_ok=True)
+        lume, mesaj = build_world(c, run_dir, a.calib, python=a.python)
+        if lume is None:
+            print(f"    lumea NU s-a generat: {mesaj}")
+            randuri.append(row_from(c, f"lume: {mesaj}"))
+            continue
+        print(f"    lume: {os.path.relpath(lume, ses)}")
+        if a.dry_run:
+            randuri.append(row_from(c, 'dry-run'))
+            continue
+        rand = run_one(c, run_dir, lume, a.calib, a.seconds, python=a.python)
+        print(f"    -> {'REUSIT' if rand['succes'] else 'ESEC'}: "
+              f"{rand['motiv']}")
+        randuri.append(rand)
+
+        # CSV scris dupa fiecare rulare, nu la final: o campanie de 20 de
+        # rulari tine ore, iar un Ctrl-C la rularea 19 nu are voie sa
+        # arunce tot ce s-a masurat.
+        _scrie_csv(csv_path, randuri)
+
+    _scrie_csv(csv_path, randuri)
+    print_summary(summarize(randuri))
+    print(f"\n  CSV: {csv_path}\n")
+    return 0
+
+
+def _scrie_csv(cale, randuri):
+    with open(cale, 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=CSV_HEADER, extrasaction='ignore')
+        w.writeheader()
+        for r in randuri:
+            w.writerow({k: r.get(k, '') for k in CSV_HEADER})
+
+
+if __name__ == '__main__':
+    sys.exit(main())

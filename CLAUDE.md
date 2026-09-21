@@ -139,6 +139,7 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── preview.py            # previzualizare: banc / VNC / bord (§5.28)
 │   ├── race_screen.py        # ecranul de concurs (§5.29)
 │   ├── authority.py          # modulare de autoritate pe praguri (§5.30)
+│   ├── sim_truth.py          # adevarul din Gazebo, pentru validare (I4)
 │   └── state_machine.py      # mașina de stări a segmentului autonom
 ├── tools/
 │   ├── nova_pi.py            # aplicația de BORD (detector real, fără ocolire E0)
@@ -153,6 +154,9 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── measure_rtf.py        # factorul de timp real, fara pornire (§5.33)
 │   ├── setup_sim_venv.sh     # mediul cu gz-transport + OpenCV 4.10 (§5.36)
 │   ├── gz_frames.py          # verifica sursa de cadre din Gazebo (I3)
+│   ├── nova_sim.py           # aplicatia de SIM cu cadre din Gazebo (I4)
+│   ├── sim_fly_to.py         # partea "manuala": decolare + pozitionare (I4)
+│   ├── batch_sim.py          # campanie de rulari cu conditii variate (I4)
 │   ├── race_mode.py          # ziua cursei: preflight + un singur ecran
 │   ├── collect_session.py    # evidența 6.2.1.30: .bin, loguri, cadre, manifest
 │   ├── fake_detector.py      # detector sintetic + aplicația de SIM (ocolește E0)
@@ -165,12 +169,14 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │                             #   detector_pi, calibrate_camera, link, ops,
 │                             #   pi_tooling, make_calib_target,
 │                             #   authority, sim_handover, marker_model,
-│                             #   camera_model, gz_source
+│                             #   camera_model, gz_source, sim_loop
 ├── sim/
 │   ├── models/aruco_26/      # marker ArUco 26, generat (nu edita de mână)
 │   └── worlds/nova_marker.sdf  # derivată din iris_runway.sdf
 ├── docs/
-│   └── CHECKLIST_TEREN.md    # checklist + tabel simptom → cauză → fix
+│   ├── CHECKLIST_TEREN.md    # checklist + tabel simptom → cauză → fix
+│   ├── LIMITE_SIM.md         # ce NU poate spune Gazebo (I6)
+│   └── DIAGNOSTIC_OSCILATIE.md  # oscilatia de pendul, un parametru pe rulare (I5)
 ├── systemd/
 │   └── nova-monitor.service  # generat de nova_service.py --install-unit
 ├── requirements-pi.txt       # pip comun (fără picamera2/numpy/opencv)
@@ -207,6 +213,14 @@ neschimbat. Consecințe pentru cine scrie detectorul real:
 | 14552 | `fake_detector.py` |
 | 14553 | `gamepad_rc.py` |
 | 14554 | `check_params.py`, rulat automat de `start_sim.sh` |
+| 14560 | `sim_fly_to.py` (campanie `batch_sim.py`) |
+| 14561 | `sim_handover.py` (campanie) |
+| 14562 | `nova_sim.py` (campanie) |
+
+Porturile de campanie sunt separate deliberat de cele interactive: o
+campanie pornita peste o sesiune `start_sim.sh` deschisa nu are voie sa
+consume mesajele altcuiva. Un test verifica faptul ca cele doua multimi nu
+se intersecteaza.
 
 ### Rulare
 
@@ -1615,6 +1629,190 @@ cadrul **vechi**, nu cel nou: pe un vehicul care coboară, un cadru vechi e mai
 rău decât niciunul.
 
 
+### 5.37 Raza de 6.5 m a porții nu e utilizabilă la 5 m — limita e camera
+
+Poarta acceptă handover până la **6.5 m** lateral față de marker, la orice
+altitudine din fereastra 5–12 m (§8). Geometric, cele două limite nu sunt
+compatibile la capătul de jos.
+
+La 5 m altitudine și 6.5 m lateral, markerul e la `atan(6.5/5) = 52°` de
+nadir — peste jumătatea de VFOV (33.5°). **Markerul nu e în cadru**, deci
+poarta refuză pe „marker nedetectat" dintr-o cauză pur geometrică, nu
+dintr-o problemă de detecție.
+
+Limita efectivă e proporțională cu altitudinea:
+
+```
+d_max = 0.9 · h · tan(33.5°) − 0.24        # 0.9: §5.2; 0.24: jumătate de marker
+```
+
+| altitudine | d_max efectiv | ce spune poarta |
+|---|---|---|
+| 5 m | **2.7 m** | 6.5 m |
+| 8 m | 4.5 m | 6.5 m |
+| 12 m | 6.5 m | 6.5 m |
+
+**Ce am schimbat și ce nu.** `tools/batch_sim.py` nu planifică rulări în
+afara conului camerei — altfel o campanie ar raporta refuzuri care nu spun
+nimic despre software. Poarta **nu** a fost modificată: regula rundei
+interzice atingerea lui `nova/handover.py`, iar refuzul ei e corect oricum,
+doar motivul raportat e mai puțin util decât ar putea fi.
+
+De discutat la runda următoare: un refuz care spune „prea departe pentru
+altitudinea asta" ar trimite pilotul să urce, nu să caute markerul. Pe teren
+diferența e între două secunde și o încercare pierdută.
+
+### 5.38 O campanie randomizată se poate înșela singură în trei feluri
+
+Toate trei prinse scriind `tools/batch_sim.py`, toate trei cu test.
+
+**1. `r = R·U` aglomerează punctele în centru.** Tras naiv, raza uniformă
+înseamnă densitate *neuniformă* pe disc: jumătate din puncte cad în sfertul
+interior de arie. Campania ar testa mai ales cazul ușor, cu markerul aproape
+sub vehicul, și ar raporta o rată de succes optimistă. Corect: `r = R·√U`.
+Testul cere ca ~50% din puncte să fie în jumătatea exterioară de arie.
+
+**2. O condiție cu două valori nu se trage independent.** `roughness` are
+exact două valori (0.9 mată, 0.3 lucioasă). `random.choice` pe o campanie de
+4 rulări poate da de patru ori aceeași valoare — iar reflexia, care e chiar
+riscul semnalat de 15.4.7, rămâne netestată fără ca nimic să spună asta.
+Lista se construiește echilibrată și apoi se amestecă.
+
+**3. Condiția scrisă în CSV trebuie să fie consistentă cu ea însăși.**
+Raza era trasă din altitudinea neroturnjită și raportată lângă altitudinea
+rotunjită la 2 zecimale. Diferența e sub un centimetru, dar înseamnă că o
+linie din CSV putea arăta o rază peste limita altitudinii scrise pe aceeași
+linie — adică evidența se contrazice singură. Rotunjirea se face **înainte**
+de a calcula orice depinde de valoare.
+
+Prins de testul care verifică `raza ≤ raza_max(alt)` pe 60 de rulări. Fără
+el, cineva care ar fi verificat CSV-ul la scrutineering ar fi găsit
+inconsistența înaintea noastră.
+
+### 5.39 Un al doilea ceas face monitoarele inerte, fără să dea nicio eroare
+
+`nova_sim.py` rulează pe timp de simulare (§5.36). `Vehicle.pump()` notează
+ora heartbeat-ului cu `time.monotonic()`. Cele două diferă cu ordine de
+mărime — `time.monotonic()` e de ordinul zecilor de mii de secunde, timpul
+de simulare pornește de la zero.
+
+Deci `vehicle.time_since_heartbeat(now_sim)` iese **negativă**, de exemplu
+−98 752 s. Niciun prag pozitiv nu se atinge vreodată:
+
+```
+LINK_MAX_AGE_S = 1.0        ->  -98752 < 1.0  ->  "legatura e proaspata"
+```
+
+**`_mon_link` din supervizor (H1) nu s-ar fi declanșat niciodată în
+simulare.** Fără eroare, fără avertisment, fără nimic de văzut în log —
+doar un monitor care raportează sănătate la infinit. A treia oară aceeași
+formă ca §5.14: piesele merg, cablajul nu.
+
+Reparat aditiv, în `tools/nova_sim.py`, cu un `SimVehicle` care schimbă doar
+**ceasul implicit** al metodelor care își notează singure ora
+(`_note_heartbeat`, `set_param`). `nova/vehicle.py` rămâne neatins.
+
+Două lucruri de reținut dincolo de bug:
+
+- **Granița dintre ceasuri trebuie să fie o decizie, nu un accident.**
+  Vârsta detecției și temporizările mașinii de stări aparțin lumii simulate;
+  timpii de rețea ar aparține lumii reale. Alegerea aici e ca **totul** să
+  fie pe ceasul buclei, ca să nu existe două unități în aceeași comparație.
+  Consecința asumată: backoff-ul de reconectare se numără în secunde de
+  simulare, adică ~1.8× mai mult timp de perete la RTF 0.56.
+- **Un test pozitiv singur nu ar fi dovedit nimic.** Perechea lui — un
+  `Vehicle` obișnuit întrebat cu timp de simulare, care dă −98 752 s — e cea
+  care arată că testul măsoară ceva (§5.11).
+
+Aceeași verificare a scos la iveală și o metrică moartă: `note_miss()` din
+prima variantă a lui `nova_sim.py` nu era apelată de nimeni, deci rata de
+detecție ar fi raportat **100% în orice condiții**, inclusiv cu detectorul
+oprit. Cadrele se numără acum din contorul detectorului, iar un test cere ca
+rata să poată scădea sub 100%.
+
+
+### 5.40 Două profiluri care se compară trebuie să difere într-o singură coloană
+
+`PROFIL_RAPID` (coborâre agresivă, I5) exista ca variantă a lui
+`PROFIL_IMPLICIT` cu viteze mai mari — dar avea și `WP_ACC` 1.20 în loc de
+1.00 pe banda de sus. Pare inofensiv: mai multă viteză, mai multă
+accelerație laterală.
+
+Consecința e că o oscilație apărută la 1.5 m/s **nu s-ar mai putea atribui
+vitezei**. Iar exact atribuirea e ce trebuie să intre în Safety Case: §6
+cere distanța de frânare *la fiecare treaptă de viteză*, nu o cifră globală.
+
+Regula, scrisă ca test: cele două profiluri au aceleași benzi și aceleași
+câștiguri, și diferă **numai** pe `WP_SPD_DN` / `LAND_SPD_MS`. Testul a
+prins abaterea imediat ce a fost scris — nu o presupunere, ci diferența
+reală din fișier.
+
+Tot de acolo: benzile ambelor profiluri sunt acum aceleași (8 / 3 / 0.5 m),
+cu o a patra bandă „contact" sub 0.5 m. Banda de contact **nu** e cea care
+oprește corecțiile laterale — aia e `FINAL_DESCENT` din mașina de stări
+(§8, sub 0.4 m); aici doar se scoate autoritatea care ar rămâne disponibilă.
+
+Procedura de reglaj, cu ordinea și motivul fiecărui pas, e în
+`docs/DIAGNOSTIC_OSCILATIE.md`.
+
+#### Corolar: același bug de ceas făcea un test să **treacă** din coincidență
+
+§5.39 descrie amestecul de ceasuri în codul de aplicație. Aceeași formă
+exista de luni de zile în **harness-ul de test**, și acolo efectul era
+invers — nu un monitor inert, ci un test verde fără acoperire.
+
+`FakeVehicle.request_param()` stampila `params_t` cu `time.monotonic()`.
+Bucla de test numără de la `1000.0 + t`. `authority._read_fresh` compară
+cele două, deci parametrul părea „proaspăt" **numai cât timp uptime-ul
+mașinii depășea 1000 s**.
+
+După o repornire (uptime 14 minute, `monotonic ≈ 891`) niciun parametru nu
+mai era acceptat la salvare, modularea de autoritate nu se mai aplica deloc,
+și testul de cablaj a picat cu *„autoritatea nu a fost modificată
+niciodată"*. Nimic nu se stricase: acoperirea lui fusese accidentală tot
+timpul.
+
+| uptime la rulare | ce măsura testul |
+|---|---|
+| > ~17 min | cablajul, corect |
+| < ~17 min | nimic — modularea nu pornea |
+
+Al doilea, în aceeași rulare: o verificare scria `assert now_sim([sursa_goală]) > 1000.0`, pornind de la ideea că `time.monotonic()` e „un număr mare". Aceeași dependență de uptime, în direcția cealaltă — testul pica după repornire deși codul era corect.
+
+**Regula:** un test nu are voie să compare ceasul intern al scenariului cu
+`time.monotonic()`, nici să presupună ceva despre mărimea lui. Harness-ul
+avansează acum explicit ceasul vehiculului fals (`v.now`), iar o gardă de
+regresie verifică faptul că `params_t` e stampilat de acolo, nu de la
+perete.
+
+**Al treilea caz, în aceeași rulare.** Cazul negativ al verificării de
+stivă (`test_pi_tooling.py`) pretindea că suntem pe Pi și aștepta `ESEC`
+pentru „numpy din venv". Rulat în venv-ul de simulare — care are
+`--system-site-packages`, deci numpy vine legitim din apt (§5.36) — regula
+nu se declanșa, iar testul trecea fără să verifice nimic. Acum ambele
+condiții se declară explicit, nu se moștenesc din interpretorul care se
+întâmplă să ruleze suita.
+
+**De ce merită paragraful:** un test care pică se repară. Un test care trece
+din coincidență se repară doar dacă cineva îi schimbă accidental condiția de
+mediu — aici, o repornire și o schimbare de venv. Între timp, rândul din
+Compliance Matrix care se sprijină pe el spune ceva ce nu a fost verificat.
+
+**Tiparul comun al celor trei:** verificarea depindea de o proprietate a
+mediului pe care nimeni nu o declarase — uptime-ul mașinii, mărimea lui
+`time.monotonic()`, de unde vine numpy. Regula practică: dacă un test are un
+caz negativ, condiția care îl declanșează se **injectează**, nu se speră.
+
+**Și un test care a încetat să testeze când s-a mutat pragul.** Verificarea
+de histereză oscila cu ±0.3 m „în jurul pragului de 2 m", cu 2.0 scris de
+mână. Mutat pragul la 3.0, oscilația a căzut **integral** într-o singură
+bandă: testul raporta 0 treceri și trecea — fără să testeze nimic. Acum ia
+pragul din profil (`PROFIL_IMPLICIT[1].min_agl`), deci se mută odată cu el.
+
+A patra formă a aceleiași lecții din §5.11: un test care nu poate eșua nu e
+test, iar o constantă duplicată în test e felul cel mai ieftin de a ajunge
+acolo.
+
 ---
 
 ## 6. Cerințe care constrâng software-ul
@@ -1931,6 +2129,9 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 19 | `check_params.py` pe FC-ul real, cu `config/nova_flight.parm` (fișier neverificat pe hardware) | scrutineering |
 | 20 | `FLTMODE_CH` + `FLTMODE1..6` pe emițătorul de concurs; lipsesc deliberat din `nova_flight.parm` | 16.2.3, 15.3.1 |
 | 21 | Paritatea OpenCV 4.10 verificată pe x86-64; Pi-ul e aarch64 (§5.24) | E2 |
+| 22 | **Bucla închisă în Gazebo nu a rulat niciodată cap-coadă.** `nova_sim.py`, `sim_fly_to.py` și `batch_sim.py` sunt scrise și testate pe piese; secvența de procese e netestată (mediul de dezvoltare nu poate ține un server Gazebo: `libEGL: failed to create dri2 screen`) | I4, toate cifrele de mai jos |
+| 23 | Cifrele I4 (eroare de range, unghi, rată de detecție, latență, oscilație) — **nicio măsurătoare încă**, doar harness | 8.4.2, Safety Case |
+| 24 | Distanța de frânare la 0.8 și 1.5 m/s, pentru `PROFIL_RAPID` (blocat până atunci) | 15.2.9, I5 |
 | 7 | ~~Măsurare latență override~~ 150 ms în SITL; deadband de măsurat pe emițătorul de concurs | 15.3.1 |
 | 8 | Mail organizatori: imagine scoring la 0.45 m | 8.3.3 |
 | 9 | Model SDF cu inerția reală (avem tensorul din Onshape) | fidelitate sim |
@@ -2069,11 +2270,19 @@ verticală și lentă, ceea ce elimină și forfecarea de rolling shutter
 
 Același cod pe desktop și pe Pi. Diferențele, toate în aplicația de intrare:
 
-| | `tools/fake_detector.py` (sim) | `tools/nova_pi.py` (bord) |
-|---|---|---|
-| sursa de `Detection` | geometrie din poziția cunoscută a markerului | `nova/detector_pi.py`: picamera2 → ArUco → `solvePnP` |
-| legătura | `udpin:127.0.0.1:14552` | `/dev/serial0` @ 921600 |
-| garda E0 | ocolită explicit, anunțat la pornire | citită din `config/nova.json`, fără ocolire |
+| | `tools/fake_detector.py` (sim) | `tools/nova_sim.py` (Gazebo) | `tools/nova_pi.py` (bord) |
+|---|---|---|---|
+| sursa de `Detection` | geometrie din poziția cunoscută a markerului | `GazeboFrameSource` → ArUco → `solvePnP` | `PiCameraSource` → ArUco → `solvePnP` |
+| legătura | `udpin:127.0.0.1:14552` | `udpin:127.0.0.1:14562` | `/dev/serial0` @ 921600 |
+| ceasul | `time.monotonic()` | **timpul de simulare** (§5.36) | `time.monotonic()` |
+| bucla | `run_loop` | buclă proprie, aceeași ordine, verificată de test | `run_loop` |
+| garda E0 | ocolită explicit, anunțat la pornire | ocolită explicit, anunțat la pornire | citită din `config/nova.json`, fără ocolire |
+| adevăr de comparat | poziția din care s-a generat detecția | `nova/sim_truth.py`, din Gazebo | ruleta, la E2 |
+
+`nova_sim.py` e singurul care nu poate folosi `run_loop`: ceasul trebuie să
+fie cel de simulare, iar `run_loop` e validat și nu se atinge. Consecința e
+un al doilea cablaj, adică exact riscul din §5.14 — de aceea un test compară
+**ordinea apelurilor** din cele două, nu doar prezența lor.
 
 `nova/detector_pi.py` are trei straturi: `FrameSource` (picamera2 / director
 de imagini / cadre din memorie — o singură interfață `read() → (gray, t)`),

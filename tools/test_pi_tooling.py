@@ -277,18 +277,28 @@ def test_H0_verificarea_de_stiva():
     assert 'numpy' in r.detail and 'cv2' in r.detail
     assert '/' in r.detail, "nu raporteaza CALEA, doar versiunea"
 
-    # acelasi mediu, dar pretinzand ca suntem pe Pi -> devine ESEC
-    vechi = pf._model
+    # Cazul negativ: pretindem si ca suntem pe Pi, SI ca numpy vine din
+    # venv. A doua parte trebuie spusa explicit, nu mostenita din mediul in
+    # care se intampla sa ruleze suita: intr-un venv cu
+    # --system-site-packages (cum e cel de simulare, §5.36) numpy vine
+    # legitim din apt, deci regula nu s-ar declansa si testul ar trece fara
+    # sa fi verificat nimic. A treia oara azi aceeasi forma - un test a
+    # carui acoperire depinde de mediu (§5.40).
+    vechi_model, vechi_origin = pf._model, pf._module_origin
     try:
         pf._model = lambda path=None: 'Raspberry Pi 4 Model B Rev 1.5'
+        pf._module_origin = lambda mod: (
+            ('VENV', '/home/pi/venv/lib/python3/site-packages/numpy/__init__.py')
+            if getattr(mod, '__name__', '') == 'numpy'
+            else vechi_origin(mod))
         r2 = pf.check_stack()
     finally:
-        pf._model = vechi
+        pf._model, pf._module_origin = vechi_model, vechi_origin
     assert r2.status == pf.ESEC, (
         "pe Pi, numpy incarcat din venv trebuie sa pice: picamera2 si "
         "simplejpeg sunt compilate impotriva celui de sistem")
     assert 'setup_pi.sh' in r2.detail, "refuzul nu spune cum se repara"
-    return "desktop: OK cu cale; acelasi mediu pretinzand Pi: ESEC"
+    return "desktop: OK cu cale; Pi + numpy din venv: ESEC"
 
 
 # --- G2: serviciul ----------------------------------------------------------
