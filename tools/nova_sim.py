@@ -56,7 +56,7 @@ from nova.authority import (PROFIL_IMPLICIT,                # noqa: E402
                             PROFIL_RAPID, AuthorityScheduler)
 from nova.handover import HandoverGate                      # noqa: E402
 from nova.rc import OverrideMonitor                         # noqa: E402
-from nova.safety import SafetySupervisor                    # noqa: E402
+from nova.safety import LINK_MAX_AGE_S, SafetySupervisor    # noqa: E402
 from nova.state_machine import (LandingStateMachine,        # noqa: E402
                                 SequenceConfig)
 from nova.vehicle import Vehicle                            # noqa: E402
@@ -518,6 +518,18 @@ def main(argv=None):
                 else:
                     print(f"[sim] adevar din simulare: {app.truth.n_msgs} "
                           f"mesaje, {len(app.truth.names())} entitati")
+                # Aceeasi verificare pentru rata de HEARTBEAT: ceruta la
+                # HEARTBEAT_HZ, dar o cerere nu e aplicata pana nu a fost
+                # observata (§5.10). Daca iese ~1 s, monitorul de legatura
+                # nu are marja si va opri secventa (§5.44).
+                iv = app.v.heartbeat_interval()
+                if iv is not None:
+                    marja = LINK_MAX_AGE_S / iv
+                    semn = 'ok' if marja >= 3.0 else 'FARA MARJA'
+                    print(f"[sim] heartbeat la {1.0 / iv:.1f} Hz "
+                          f"(interval {iv:.2f} s); prag legatura "
+                          f"{LINK_MAX_AGE_S:g} s = {marja:.1f} "
+                          f"heartbeat-uri  {semn}")
 
             if now - last_status > a.status_s:
                 last_status = now

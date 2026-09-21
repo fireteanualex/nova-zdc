@@ -439,7 +439,89 @@ def test_prioritate_override_peste_link():
     return "override escaladeaza peste BRAKE de link"
 
 
+def test_pragul_de_legatura_are_marja_fata_de_rata_ceruta():
+    """H1 avea MARJA ZERO, si a oprit o secventa autonoma reala.
+
+    ArduPilot trimite HEARTBEAT implicit la 1 Hz (verificat in
+    GCS_Common.cpp: `set_mavlink_message_id_interval(MAVLINK_MSG_ID_HEARTBEAT,
+    1000)`). Cu LINK_MAX_AGE_S = 1.0, monitorul declara legatura cazuta
+    exact cand soseste urmatorul heartbeat.
+
+    Masurat in Gazebo: DESCEND_TRACK oprit dupa 1.2 m de coborare, cu
+    `fara HEARTBEAT de 1.02 s (prag 1.00 s)`. Pe vehicul raportul e
+    identic - nu e artefact de simulare.
+
+    Testul leaga cele doua constante: nici pragul, nici rata nu se pot
+    schimba singure fara ca asta sa pice."""
+    from nova.vehicle import HEARTBEAT_HZ
+    from nova.safety import LINK_MAX_AGE_S
+    marja = LINK_MAX_AGE_S * HEARTBEAT_HZ
+    assert marja >= 3.0, (
+        f"pragul de {LINK_MAX_AGE_S} s la {HEARTBEAT_HZ} Hz inseamna doar "
+        f"{marja:.1f} heartbeat-uri pierdute; sub 3 nu e marja, e noroc")
+    return (f"{HEARTBEAT_HZ} Hz cerut, prag {LINK_MAX_AGE_S} s "
+            f"= {marja:.0f} heartbeat-uri de marja")
+
+
+def test_rata_de_heartbeat_chiar_se_cere():
+    """§5.10 pe stream-uri: daca nu o ceri, primesti implicitul.
+
+    Prima varianta cerea LOCAL_POSITION_NED, ATTITUDE, GLOBAL_POSITION_INT,
+    EXTENDED_SYS_STATE si RC_CHANNELS - dar nu HEARTBEAT, tocmai mesajul de
+    care atarna un monitor de siguranta."""
+    from pymavlink import mavutil
+    from nova.vehicle import Vehicle, HEARTBEAT_HZ
+    cerute = []
+
+    class _Mav:
+        def command_long_send(self, *a):
+            # command_long_send(sys, comp, cmd, confirmation, p1..p7):
+            # p1 = msg_id, p2 = interval_us. HEARTBEAT are id 0, deci un
+            # index gresit aici trece neobservat pana la prima citire.
+            cerute.append((a[4], a[5]))
+
+    v = object.__new__(Vehicle)
+    v.m = type('M', (), {'mav': _Mav(), 'target_system': 1,
+                         'target_component': 1})()
+    v.telem_hz, v.landed_hz = 20, 50
+    v._request_streams()
+    ids = dict(cerute)
+    hb = mavutil.mavlink.MAVLINK_MSG_ID_HEARTBEAT
+    assert hb in ids, f"HEARTBEAT nu e cerut deloc; cerute: {sorted(ids)}"
+    assert abs(ids[hb] - 1e6 / HEARTBEAT_HZ) < 1.0, ids[hb]
+    return f"{len(ids)} rate cerute, HEARTBEAT la {1e6 / ids[hb]:.0f} Hz"
+
+
+def test_intervalul_observat_e_masurat_nu_presupus():
+    """Nu putem citi inapoi un interval de mesaj, dar putem masura ce vine.
+    Daca iese ~1 s, cererea nu s-a aplicat si marja nu exista."""
+    from nova.vehicle import Vehicle
+    v = object.__new__(Vehicle)
+    v.hb_t = None
+    v.hb_gaps = __import__('collections').deque(maxlen=20)
+    v.link_healthy = True
+    v.reconnect_attempts = 0
+    v.reconnects = 0
+    v._reconnect_next_t = None
+    v.time_boot_ms = None
+    v.link_verbose = False
+    v.on_link_event = None
+    assert v.heartbeat_interval() is None, "fara date trebuie 'nu stiu'"
+    t = 0.0
+    for _ in range(6):
+        v._note_heartbeat(t)
+        t += 0.2
+    assert abs(v.heartbeat_interval() - 0.2) < 1e-9, v.heartbeat_interval()
+    return "median 0.2 s din 5 intervale; fara date -> None"
+
+
 TESTS = [
+    ('pragul de legatura are marja fata de rata ceruta',
+     test_pragul_de_legatura_are_marja_fata_de_rata_ceruta),
+    ('rata de heartbeat chiar se cere',
+     test_rata_de_heartbeat_chiar_se_cere),
+    ('intervalul observat e masurat, nu presupus',
+     test_intervalul_observat_e_masurat_nu_presupus),
     ('link sanatos nu reconecteaza', test_link_sanatos_nu_reconecteaza),
     ('reconectare reusita', test_reconectare_reusita),
     ('NEGATIV: port care nu raspunde niciodata',

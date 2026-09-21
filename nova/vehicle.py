@@ -11,6 +11,7 @@ Singura diferenta intre simulare si vehiculul real e sirul de conectare
 Masina de stari vede doar interfata de aici, deci nu stie pe ce link merge.
 """
 
+import collections
 import time
 
 from pymavlink import mavutil
@@ -20,6 +21,22 @@ from .detection import MARKER_SIZE_M
 TELEM_HZ = 20
 LANDED_HZ = 50        # EXTENDED_SYS_STATE: semnalul cu care prindem
                       # fereastra de ~0.5 s dinainte de dezarmare (5.6)
+#: HEARTBEAT: ArduPilot il trimite implicit la **1 Hz**
+#: (`GCS_Common.cpp`: `set_mavlink_message_id_interval(MAVLINK_MSG_ID_HEARTBEAT,
+#: 1000)`, tratat ca un caz special pentru ca nu e "streamed"). Cu
+#: `safety.LINK_MAX_AGE_S = 1.0`, monitorul de legatura ar avea **marja
+#: zero**: declara legatura cazuta exact cand soseste urmatorul heartbeat.
+#: Orice jitter - o iteratie mai lenta, un pachet pierdut - il declanseaza,
+#: iar actiunea lui e BRAKE, adica incercarea autonoma anulata.
+#:
+#: Masurat in Gazebo: secventa a pornit, a coborat 1.2 m si a fost oprita la
+#: `fara HEARTBEAT de 1.02 s (prag 1.00 s)`. Nu e artefact de simulare -
+#: pe vehicul raportul e identic, 1 Hz fata de un prag de 1 s.
+#:
+#: La 5 Hz pragul inseamna 5 heartbeat-uri pierdute la rand. Un test leaga
+#: cele doua constante, ca sa nu poata fi schimbata una singura.
+HEARTBEAT_HZ = 5
+
 RC_HZ = 50            # 15.3.1: implicit RC_CHANNELS vine la 10 Hz, adica
                       # 100 ms consumate doar de streaming, dintr-un buget
                       # total de 250 ms. La 50 Hz raman 20 ms.
@@ -108,6 +125,9 @@ class Vehicle:
         # devine True la primul HEARTBEAT - nu presupunem ca merge pana la
         # proba contrarie.
         self.hb_t = None              # time.monotonic() al ultimului HEARTBEAT
+        #: Ultimele intervale intre heartbeat-uri, ca sa se poata verifica
+        #: daca rata ceruta s-a aplicat (vezi heartbeat_interval).
+        self.hb_gaps = collections.deque(maxlen=20)
         self.link_healthy = False
         self.reconnects = 0           # cate redeschideri au reusit
         self.reconnect_attempts = 0   # cate s-au incercat de la ultima reusita
@@ -144,6 +164,11 @@ class Vehicle:
         de doua ori in log. Un log de siguranta care numara gresit
         evenimentele e mai rau decat unul absent."""
         now = now if now is not None else time.monotonic()
+        # §5.10 aplicat unui STREAM: cererea de rata nu e aplicata pana nu a
+        # fost observata. Nu putem citi inapoi un interval de mesaj, dar
+        # putem masura ce soseste.
+        if self.hb_t is not None and now > self.hb_t:
+            self.hb_gaps.append(now - self.hb_t)
         self.hb_t = now
         if not self.link_healthy:
             self.link_healthy = True
@@ -169,6 +194,16 @@ class Vehicle:
         if self.on_link_event:
             self.on_link_event(ev)
         return ev
+
+    def heartbeat_interval(self):
+        """Intervalul MEDIAN observat intre heartbeat-uri, sau None.
+
+        Cerut 1/HEARTBEAT_HZ; daca iese ~1 s, cererea nu s-a aplicat si
+        monitorul de legatura ramane fara marja."""
+        with_gaps = sorted(self.hb_gaps)
+        if len(with_gaps) < 3:
+            return None
+        return with_gaps[len(with_gaps) // 2]
 
     def time_since_heartbeat(self, now=None):
         """Secunde de la ultimul HEARTBEAT, sau None daca nu a existat."""
@@ -259,6 +294,8 @@ class Vehicle:
 
     def _request_streams(self):
         rates = [
+            # Primul, fiindca de el atarna monitorul de legatura (H1).
+            (mavutil.mavlink.MAVLINK_MSG_ID_HEARTBEAT, HEARTBEAT_HZ),
             (mavutil.mavlink.MAVLINK_MSG_ID_LOCAL_POSITION_NED, self.telem_hz),
             (mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE, self.telem_hz),
             (mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, self.telem_hz),

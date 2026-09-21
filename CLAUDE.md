@@ -2005,6 +2005,82 @@ verifică prin `git diff` că nu a fost atins. Filtrul corect e o listă
 decis, nu strecurat. Element deschis 25 din §7.
 
 
+### 5.44 Monitorul de legătură avea marjă zero — și a oprit o secvență reală
+
+A doua campanie cap-coadă a mers: poarta a **acceptat** la 10.91 m, ACQUIRE
+a confirmat LAND, `DESCEND_TRACK` a pornit și vehiculul a coborât 1.2 m.
+Apoi:
+
+```
+[SAFETY faza=DESCEND_TRACK] link_age: BRAKE - fara HEARTBEAT de 1.02 s (prag 1.00 s)
+[SAFETY faza=CONFIRM] mode_confirm: BRAKE - FC raporteaza BRAKE dupa 1 comenzi
+>> DESCEND_TRACK -> IDLE   (mod schimbat (17))
+```
+
+Supervizorul a făcut exact ce trebuia, pe o informație falsă. Ce s-a văzut
+în Gazebo — o coborâre scurtă, o mică corecție laterală, apoi hover
+constant — e chiar semnătura asta.
+
+**Cauza e aritmetică, nu software.** ArduPilot trimite `HEARTBEAT` la
+**1 Hz**, iar `Vehicle._request_streams()` cerea rate pentru
+`LOCAL_POSITION_NED`, `ATTITUDE`, `GLOBAL_POSITION_INT`,
+`EXTENDED_SYS_STATE` și `RC_CHANNELS` — dar **nu pentru `HEARTBEAT`**,
+tocmai mesajul de care atârnă un monitor de siguranță. Cu
+`LINK_MAX_AGE_S = 1.0`:
+
+| | |
+|---|---|
+| interval heartbeat | 1.00 s |
+| prag „legătură căzută" | 1.00 s |
+| marjă | **zero** |
+
+Orice jitter — o iterație mai lentă, un pachet pierdut — declanșează BRAKE.
+Iar BRAKE în `DESCEND_TRACK` înseamnă încercarea autonomă anulată: 10 puncte
+(8.3.2).
+
+**Nu e artefact de simulare.** Pe vehiculul real raportul e identic: 1 Hz
+față de un prag de 1 s. Ar fi apărut la primul zbor, și ar fi arătat ca o
+problemă de cablu sau de telemetrie.
+
+Verificat în sursă, nu presupus (§5.10):
+
+```cpp
+// GCS_Common.cpp
+set_mavlink_message_id_interval(MAVLINK_MSG_ID_HEARTBEAT, 1000);
+// get_default_interval_for_ap_message:
+//   "handle heartbeat requests as a special case because heartbeat is
+//    not streamed"  -> interval = 1000
+```
+
+Deci implicitul e 1 Hz, dar `SET_MESSAGE_INTERVAL` pe `HEARTBEAT` **este**
+acceptat. `Vehicle` îl cere acum la `HEARTBEAT_HZ = 5`, primul din listă,
+ceea ce transformă pragul în „5 heartbeat-uri pierdute la rând".
+
+**Reparat în `nova/vehicle.py`, nu în `nova/safety.py`**, deliberat. Un prag
+de siguranță nu se slăbește ca să încapă un stream pe care pur și simplu nu
+l-am cerut. Direcția corectă e să ceri informația la rata de care depinzi.
+
+Trei lucruri care fac reparația să țină:
+
+- **Un test leagă cele două constante**: `LINK_MAX_AGE_S × HEARTBEAT_HZ ≥ 3`.
+  Niciuna nu se mai poate schimba singură fără ca testul să pice. Constantele
+  stau în fișiere diferite, deci nimic altceva nu le-ar fi legat.
+- **Un test verifică faptul că `HEARTBEAT` chiar e în lista de rate cerute.**
+  Prima variantă a testului l-a ratat: `MAVLINK_MSG_ID_HEARTBEAT` este **0**,
+  iar un index greșit în parametrii lui `command_long_send` face
+  `ids[0]` să existe oricum. Un id care e zero iartă greșeli de indexare.
+- **Intervalul observat se măsoară**, nu se presupune (`heartbeat_interval()`,
+  median pe ultimele 20). §5.10 aplicat unui stream: un interval de mesaj nu
+  se poate citi înapoi, dar se poate cronometra ce sosește. `nova_sim.py` îl
+  raportează o dată, cu marja calculată, și scrie `FARA MARJA` dacă cererea
+  nu s-a aplicat.
+
+**Ce mai spune același log, și e o veste bună:** detecția în Gazebo merge —
+`det 100%`, marker 41–47 px la 9.5–10.9 m, `range` în acord cu altitudinea.
+Lanțul randare → `detectMarkers` → `solvePnP` → `LANDING_TARGET` → controler
+funcționează; ce lipsea era ca secvența să fie lăsată să continue.
+
+
 ---
 
 ## 6. Cerințe care constrâng software-ul
