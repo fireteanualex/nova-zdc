@@ -2701,27 +2701,116 @@ Mecanismul e în loc și demonstrabil; comportamentul se măsoară cu o campanie
 comparativă, aceeași sămânță, cu și fără `--no-gnss`.
 
 
+### 5.54 15.2.5 nu cere hardware în plus — măsurat
+
+Campania cu `--no-gnss`, 10 rulări, plan identic cu cel rulat cu GNSS
+(aceeași sămânță, același n):
+
+| | cu GNSS | **fără GNSS** |
+|---|---|---|
+| aterizări complete | 10/10 | **9/10** |
+| eroare finală p50 | 0.715 cm | **0.67 cm** |
+| eroare finală p95 | — | 1.39 cm |
+| derivă captură → contact p50 | — | 0.68 cm |
+| rată de detecție | 100% | 100% |
+
+Singurul eșec a fost captura de scoring, nu aterizarea. **Precizia nu s-a
+schimbat.**
+
+Comutarea e verificată, nu presupusă — la fiecare rulare:
+
+```
+[EKF arm]     citesc EK3_SRC2_* inainte de a comuta
+[EKF switch]  set 2 cerut; POSXY=0, POSZ=1, VELXY=0, VELZ=0, YAW=1
+[EKF restore] set 1 cerut inapoi; faza HANDBACK
+```
+
+Valorile din linia de mijloc sunt **citite de pe FC**, nu din fișierul de
+parametri. Asta e diferența dintre „am configurat" și „am demonstrat".
+
+**De ce merge:** precision landing e relativă. Dacă estimarea derivă, ținta
+derivă cu ea. Ce nu se anulează e viteza estimată, care amortizează — și
+tocmai de aceea rezultatul nu era evident dinainte.
+
+**Ce NU spune:** IMU-ul din SITL e idealizat. Deriva de pe vehicul, cu bias
+real de accelerometru pe 35 s de segment, e necunoscută. Mecanismul e
+demonstrat; magnitudinea derivei se măsoară la primul zbor.
+
+#### Pragul de 800 px e marginal la rotație mare
+
+Eșecul din campanie: yaw **−40.8°**, `marker_px` maxim atins **759** — sub
+pragul de 800.
+
+| | la yaw 40.8° |
+|---|---|
+| maxim teoretic (randare sintetică) | 873 px |
+| maxim **măsurat în Gazebo** | **759 px** (87% din teoretic) |
+
+Deci estimarea sintetică din §5.51 e optimistă cu ~13%. Randarea reală
+pierde markerul mai devreme decât prezice geometria pură — plauzibil din
+marginea colii care iese din cadru și din filtrarea texturii.
+
+| prag | altitudine capturii | marjă față de 759 px |
+|---|---|---|
+| 800 px | 0.65 m | **−5%** |
+| 750 px | 0.68 m | +1% |
+| **700 px** | **0.73 m** | **+8%** |
+
+700 px capturează mai sus, ceea ce pentru 8.3.3 e mai **bine**, nu mai rău:
+amprenta camerei la 0.73 m e ~1.0 × 0.56 m, deci juriul vede markerul întreg
+plus împrejurimi, nu un sfert din el.
+
+**Soluția corectă nu e totuși un prag mai mic, ci alt criteriu.** Captura ar
+trebui să se declanșeze pe *ultima detecție bună înainte de pierdere*, nu pe
+o dimensiune fixă — pragul fix e o aproximare a acelei intenții, și e
+sensibil la o variabilă (rotația) pe care nu o controlăm. Asta e logică nouă
+în mașina de stări; element deschis 33.
+
+
 ---
 
 ## 6. Cerințe care constrâng software-ul
 
 Referințele sunt la `ZDC_Regulations_V0_5.pdf`.
 
-### 15.2.5 — interdicția GNSS (RISCUL CEL MAI MARE, NEREZOLVAT)
+### 15.2.5 — interdicția GNSS (MECANISM IMPLEMENTAT, COMPORTAMENT MĂSURAT ÎN SIM)
 
 Din momentul activării autonome, **niciun estimator sau filtru care
 contribuie la ghidare sau control** nu are voie să primească date GNSS.
 
-Configurația testată de noi **NU respectă** asta: LAND cu PLND folosește
-controlerul de poziție orizontală → EKF3 → care fuzionează GPS implicit.
+**Rezolvat prin seturi de surse EKF3 comutabile.** `nova/ekf_source.py`
+comută pe `EK3_SRC2_*` la intrarea în segment și restaurează `EK3_SRC1_*`
+la ieșire — handback, abort, dezarmare sau o fază neprevăzută (§5.14).
 
-Mecanism candidat: seturi de surse EKF comutabile
-(`EK3_SRC1_*`, `EK3_SRC2_*`, `EK3_SRC3_*`), cu `EK3_SRC2_POSXY = 0`.
-Comutare la handover prin `RCx_OPTION 90` sau MAVLink.
+Setul autonom, citit înapoi de pe FC la fiecare rulare:
 
-**Netestat.** Riscul: fără GPS și fără flux optic, poziția orizontală
-derivă rapid pe inerțial pur. Poate impune hardware suplimentar.
-Verificat la scrutineering.
+| parametru | valoare | sursă |
+|---|---|---|
+| `EK3_SRC2_POSXY` | 0 | None — nicio poziție orizontală |
+| `EK3_SRC2_VELXY` | 0 | None |
+| `EK3_SRC2_POSZ` | 1 | Baro |
+| `EK3_SRC2_VELZ` | 0 | None |
+| `EK3_SRC2_YAW` | 1 | Compass |
+
+**Măsurat: 10 rulări, comutarea confirmată în toate, 9 aterizări complete
+cu eroare finală p50 0.67 cm** — practic identică cu cele 0.715 cm de pe
+exact același plan (aceeași sămânță, același n) **cu** GNSS. Singurul eșec a
+fost captura de scoring, nu aterizarea (§5.54).
+
+**De ce funcționează, și ce nu demonstrează asta.** Precision landing e o
+măsurătoare **relativă**: ținta se calculează din poziția vehiculului plus
+vectorul măsurat către marker. Dacă estimarea de poziție derivă, ținta
+derivă odată cu ea, iar corecția relativă rămâne validă la ordinul întâi.
+Ce nu se anulează e estimarea de viteză, care amortizează bucla.
+
+Dar IMU-ul din SITL e idealizat. Pe vehiculul real, bias-ul de accelerometru
+derivă mai repede, iar segmentul durează ~35 s. **Cifra de derivă e a
+SITL-ului, nu a vehiculului** — de reverificat la primul zbor de test, cu
+`.bin`-ul care arată poziția estimată față de cea reală.
+
+Rândul din Compliance Matrix se poate scrie acum cu evidență: parametrii
+citiți înapoi, `COMMAND_ACK` logat, restaurarea verificată. Vezi §5.53
+pentru de ce predicatul din firmware nu e suficient.
 
 ### 15.2.7 — urcare la 5 m după touchdown (IMPLEMENTAT, DE VALIDAT)
 
@@ -3003,7 +3092,7 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 1 | Masa reală: CAD zice 2.483 kg, matricea zice 3 kg | 11.1, model SDF |
 | 2 | TWR: estimat 4–5:1; recomandat 2.5–3:1 pentru precizie | 11.2 |
 | 3 | Motor/elice/baterie nefinalizate | model SDF, buget termic |
-| 4 | Test EKF fără GNSS în SITL | 15.2.5 |
+| 4 | ~~Test EKF fără GNSS în SITL~~ măsurat: 10 rulări, 9 aterizări, eroare neschimbată (§5.54). Rămâne: deriva reală pe hardware, unde IMU-ul nu e idealizat | 15.2.5 |
 | 5 | ~~Fix urcare la 5 m după touchdown~~ validat în SITL | 15.2.7 |
 | 6 | ~~Safety Supervisor~~ detecție + override + geofence validate în SITL | 15.2.9, 15.3.1, 15.2.4 |
 | 11 | Distanța de frânare la fiecare treaptă din profilul D1 | 15.2.9 + D1 |
@@ -3021,6 +3110,7 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 22b | **Campania nu a rulat niciodată.** O secvență a mers; `batch_sim.py` cu N rulări și condiții variate nu a fost pornit, deci nu există distribuții. Mediul de dezvoltare nu poate rula Gazebo (`libEGL: failed to create dri2 screen`), deci rulează operatorul | I4, 8.4.2 |
 | 23 | ~~Cifrele I4 — nicio măsurătoare~~ măsurate pe 20 de rulări (§5.52). Rămâne: coada erorii unghiulare pe `DESCEND_TRACK` (p95 2.26° față de pragul de 0.5°), cauză nelămurită; și latența, care se măsoară pe Pi, nu aici | 8.4.2, Safety Case |
 | 24 | Distanța de frânare la 0.8 și 1.5 m/s, pentru `PROFIL_RAPID` (blocat până atunci) | 15.2.9, I5 |
+| 33 | Captura de scoring se declanșează pe o dimensiune fixă în pixeli, dar intenția e „cea mai mare imagine disponibilă înainte de a pierde markerul". Pragul fix e sensibil la rotație, pe care nu o controlăm: măsurat, 759 px la yaw 41° față de 873 teoretic (§5.54). Criteriu pe marja de încadrare, nu pe px | 8.3.3 |
 | 32 | `SequenceConfig.scoring_px = 980` e de neatins peste ~18° de yaw: markerul iese din cadru înainte să crească atât (§5.51). Campania îl poate regla la 800; valoarea din cod cere atingerea unui fișier validat. Alternativa — aliniere de yaw cu markerul înainte de coborâre — rezolvă și §5.49, dar e logică nouă | **8.3.3** |
 | 31 | **Plafonul de 12 m al porții e mai conservator decât măsurătoarea.** §8 l-a ales din estimarea „la 20 m markerul are 22 px, prea puțin"; măsurat sintetic cu calibrarea curentă, detecția merge până la **17 m** la orice rotație, iar la 20 m pică doar la yaw 45°. La 15 m `raza_max` crește de la 4.5 la 5.7 m, deci pilotul are mai multă libertate. Costă însă timp de coborâre (+10 s la 0.5 m/s de la 15 m față de 10 m) contra celor 40 de puncte de timp, iar eroarea de range la 30–35 px e 1–5% (§5.23) exact unde ArduPilot o folosește pentru încetinire. Propus de utilizator (altitudine aleatoare 5–15 m în campanie); cere întâi ridicarea plafonului porții, cod validat | 15.2.3, 8.4.2 |
 | 30 | **`MAX_TILT_DEG = 30°` e peste limita camerei în tot regimul care contează.** La 1 m și 10 cm eroare laterală markerul iese din cadru la 19.5°; supervizorul nu reacționează până la 30°, deci monitorul de înclinare nu poate proteja niciodată detecția — se declanșează întâi cel de vârstă a detecției, iar atunci încercarea e pierdută. Sunt două praguri distincte care împart un număr: integritatea vehiculului (30°, constantă) și limita camerei (funcție de altitudine și eroare laterală, inexistentă în cod). Propus de utilizator; de implementat după campania de 10 rulări | 15.2.9, 8.3.2 |

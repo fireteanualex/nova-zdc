@@ -29,7 +29,15 @@ dintre cele trei rămâne acoperit de suita lui, iar ordinea din `run_loop` vs
 
 ---
 
-## J1 — 15.2.5: niciun estimator alimentat cu GNSS în segmentul autonom
+## J1 — 15.2.5 ✔ REZOLVAT (mecanism + măsurătoare în sim)
+
+**Rezultat:** 10 rulări cu `--no-gnss`, comutare confirmată prin citire
+înapoi în toate, 9 aterizări complete, eroare finală p50 **0.67 cm** față de
+0.715 cm cu GNSS pe același plan. **Nu cere hardware în plus.** Detalii în
+§5.53 (predicatul) și §5.54 (măsurătoarea). Rămâne de verificat deriva reală
+pe hardware, unde IMU-ul nu e idealizat.
+
+Ce urmează din text e contextul inițial, păstrat pentru trasabilitate.
 
 **Cel mai mare risc deschis, și singurul care poate invalida tot.** Din
 momentul activării autonome, niciun estimator care contribuie la ghidare sau
