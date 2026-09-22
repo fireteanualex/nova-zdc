@@ -117,3 +117,32 @@ FS_THR_ENABLE,1
 # Pe vehiculul real bugetul e mai strans, nu mai larg: erorile de pozitie
 # sunt mai mari. Vezi §5.48.
 WP_ACC,1.5
+
+# ---------------------------------------------------------------------------
+# 15.2.5: setul de surse EKF3 folosit in segmentul autonom, FARA GNSS.
+#
+# Regula: din momentul activarii autonome, niciun estimator care contribuie
+# la ghidare sau control nu are voie sa primeasca date GNSS. Companion-ul
+# comuta pe setul 2 la handover (nova/ekf_source.py) si il pune inapoi pe 1
+# la handback, abort sau dezarmare.
+#
+# Toate cinci sunt scrise EXPLICIT, desi patru coincid cu implicitul. §5.10:
+# un parametru pe care nu l-ai scris e o presupunere, iar aici presupunerea
+# e chiar afirmatia din Compliance Matrix.
+#
+# ATENTIE la YAW. Predicatul din firmware (AP_NavEKF_Source::usingGPS())
+# verifica doar YAW == GSF (8) si NU semnaleaza YAW == GPS (2) sau
+# GPS_COMPASS_FALLBACK (3) - amandoua alimenteaza estimatorul de cap cu
+# GNSS. Un set cu YAW = 2 ar fi raportat de firmware ca "fara GPS" si ar
+# incalca regula. Verificarea noastra e mai stricta, deliberat.
+#
+#   POSXY 0 = None      (fara pozitie orizontala: nici GPS, nici altceva)
+#   VELXY 0 = None
+#   POSZ  1 = Baro      (altitudinea barometrica nu e GNSS)
+#   VELZ  0 = None
+#   YAW   1 = Compass   (busola nu e GNSS; 2, 3 si 8 ar fi)
+EK3_SRC2_POSXY,0
+EK3_SRC2_VELXY,0
+EK3_SRC2_POSZ,1
+EK3_SRC2_VELZ,0
+EK3_SRC2_YAW,1

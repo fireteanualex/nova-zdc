@@ -420,16 +420,31 @@ def test_bucla_de_sim_nu_foloseste_ceasul_de_perete():
     return f"step() curat, now() marcheaza {len(perete)} cadere pe rezerva"
 
 
-def test_run_loop_a_ramas_neatins():
-    """Regula rundei 7: nova/state_machine.py nu se modifica."""
+def test_cele_trei_fisiere_raman_acoperite(): 
+    """J0: interdicția rundei 7 se ridică, acoperirea nu.
+
+    Testul de dinainte rula `git diff` pe `state_machine.py`, `safety.py` si
+    `handover.py` si pica daca erau atinse. Runda 8 le deschide deliberat -
+    dar sters pur si simplu, ar fi disparut si semnalul ca sunt fisiere care
+    cer grija.
+
+    Ce apara acum e PROPRIETATEA, nu fisierul: fiecare are suita lui, si
+    ordinea din `run_loop` vs `SimApp.step()` ramane verificata separat."""
     import subprocess
-    r = subprocess.run(['git', 'diff', '--stat', 'HEAD', '--',
-                        'nova/state_machine.py', 'nova/safety.py',
-                        'nova/handover.py'],
-                       capture_output=True, text=True, cwd=REPO)
-    assert not r.stdout.strip(), (
-        "runda 7 interzice modificarea acestor fisiere:\n" + r.stdout)
-    return "state_machine, safety, handover nemodificate"
+    perechi = (('nova/state_machine.py', 'tools/test_state_machine.py'),
+               ('nova/safety.py', 'tools/test_safety.py'),
+               ('nova/handover.py', 'tools/test_handover.py'))
+    for sursa, suita in perechi:
+        assert os.path.exists(os.path.join(REPO, sursa)), sursa
+        cale = os.path.join(REPO, suita)
+        assert os.path.exists(cale), f"{sursa} nu mai are suita {suita}"
+        r = subprocess.run([sys.executable, cale], capture_output=True,
+                           text=True, cwd=REPO, timeout=300)
+        ultima = [l for l in r.stdout.splitlines() if 'teste trecute' in l]
+        assert ultima, f"{suita} nu raporteaza un rezumat"
+        n, d = ultima[-1].strip().split()[0].split('/')
+        assert n == d, f"{suita}: {ultima[-1].strip()}"
+    return f"{len(perechi)} fisiere sensibile, fiecare cu suita lui verde"
 
 
 def test_E0_e_ocolita_explicit_si_anuntata():
@@ -1329,7 +1344,8 @@ TESTS = [
      test_ordinea_din_SimApp_o_oglindeste_pe_run_loop),
     ('bucla de sim nu foloseste ceasul de perete',
      test_bucla_de_sim_nu_foloseste_ceasul_de_perete),
-    ('run_loop a ramas neatins', test_run_loop_a_ramas_neatins),
+    ('cele trei fisiere raman acoperite',
+     test_cele_trei_fisiere_raman_acoperite),
     ('E0 e ocolita explicit si anuntata',
      test_E0_e_ocolita_explicit_si_anuntata),
     ('vehiculul foloseste acelasi ceas ca bucla',

@@ -124,6 +124,8 @@ class Vehicle:
         # H1: sanatatea legaturii. `link_healthy` e False de la inceput si
         # devine True la primul HEARTBEAT - nu presupunem ca merge pana la
         # proba contrarie.
+        #: Ultimul raspuns la SET_EKF_SOURCE_SET, sau None daca nu s-a cerut.
+        self.ekf_src_ack = None
         self.hb_t = None              # time.monotonic() al ultimului HEARTBEAT
         #: Ultimele intervale intre heartbeat-uri, ca sa se poata verifica
         #: daca rata ceruta s-a aplicat (vezi heartbeat_interval).
@@ -395,6 +397,12 @@ class Vehicle:
         elif msg.command == mavutil.mavlink.MAV_CMD_DO_SET_MODE:
             if msg.result != mavutil.mavlink.MAV_RESULT_ACCEPTED:
                 print(f"!! DO_SET_MODE respins (result={msg.result})")
+        elif msg.command == mavutil.mavlink.MAV_CMD_SET_EKF_SOURCE_SET:
+            # 15.2.5: comutarea de surse e o afirmatie de conformitate, deci
+            # raspunsul FC-ului se pastreaza, nu doar se tipareste.
+            self.ekf_src_ack = msg.result
+            if msg.result != mavutil.mavlink.MAV_RESULT_ACCEPTED:
+                print(f"!! SET_EKF_SOURCE_SET respins (result={msg.result})")
 
     @property
     def alt(self):
@@ -482,6 +490,20 @@ class Vehicle:
             mavutil.mavlink.MAV_CMD_DO_SET_MODE, 0,
             mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
             mode, 0, 0, 0, 0, 0)
+
+    def send_ekf_source_set(self, n):
+        """Comuta setul de surse al EKF3 (15.2.5). `n` e 1..3.
+
+        `GCS_Common.cpp:5133`: comanda accepta 1..3 si scade 1 intern.
+        Confirmarea vine prin `COMMAND_ACK`, citit in `_on_ack`."""
+        if n not in (1, 2, 3):
+            raise ValueError(f"setul de surse EKF e 1..3, nu {n}")
+        self.ekf_src_ack = None
+        return self._send(
+            self.m.mav.command_long_send,
+            self.m.target_system, self.m.target_component,
+            mavutil.mavlink.MAV_CMD_SET_EKF_SOURCE_SET, 0,
+            float(n), 0, 0, 0, 0, 0, 0)
 
     def send_takeoff(self, alt_above_home_m):
         # Copter accepta NAV_TAKEOFF ca COMMAND_LONG; cadrul devine

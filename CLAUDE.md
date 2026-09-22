@@ -140,6 +140,7 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── race_screen.py        # ecranul de concurs (§5.29)
 │   ├── authority.py          # modulare de autoritate pe praguri (§5.30)
 │   ├── sim_truth.py          # adevarul din Gazebo, pentru validare (I4)
+│   ├── ekf_source.py         # 15.2.5: surse EKF fara GNSS (§5.53)
 │   └── state_machine.py      # mașina de stări a segmentului autonom
 ├── tools/
 │   ├── nova_pi.py            # aplicația de BORD (detector real, fără ocolire E0)
@@ -170,7 +171,8 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │                             #   detector_pi, calibrate_camera, link, ops,
 │                             #   pi_tooling, make_calib_target,
 │                             #   authority, sim_handover, marker_model,
-│                             #   camera_model, gz_source, sim_loop
+│                             #   camera_model, gz_source, sim_loop,
+│                             #   ekf_source
 ├── sim/
 │   ├── models/aruco_26/      # marker ArUco 26, generat (nu edita de mână)
 │   └── worlds/nova_marker.sdf  # derivată din iris_runway.sdf
@@ -2639,6 +2641,64 @@ lămurit ce anume — nu scriu o cauză pentru că se potrivesc cifrele, greșea
 din §5.45. Ce se poate spune ferm: eroarea de range trece pragul de 3% la
 p95 (2.88% agregat, 1.47% pe `DESCEND_TRACK`), iar cea unghiulară trece la
 p50 și nu la p95.
+
+
+### 5.53 Predicatul de conformitate al ArduPilot nu acoperă 15.2.5
+
+`AP_NavEKF_Source::usingGPS()` e helper-ul pe care l-ai folosi instinctiv ca
+să răspunzi la „primește estimatorul date GNSS?". Nu e suficient pentru
+15.2.5:
+
+```cpp
+// AP_NavEKF_Source.cpp
+return getPosXYSource(i) == SourceXY::GPS ||
+       getPosZSource(i)  == SourceZ::GPS  ||
+       getVelXYSource(i) == SourceXY::GPS ||
+       getVelZSource(i)  == SourceZ::GPS  ||
+       getYawSource(i)   == SourceYaw::GSF;
+```
+
+Ultimul termen verifică **doar** `GSF` (8). Dar `SourceYaw` are și:
+
+| valoare | sursă | GNSS? | prinsă de `usingGPS()` |
+|---|---|---|---|
+| 1 | Compass | nu | — |
+| **2** | **GPS** | **da** | **nu** |
+| **3** | **GPS_COMPASS_FALLBACK** | **da** | **nu** |
+| 8 | GSF | da | da |
+
+Deci un set cu `EK3_SRC2_YAW = 2` ar fi raportat de firmware drept „fără
+GPS" și ar alimenta estimatorul de cap direct din GNSS — exact ce interzice
+regula. Iar yaw-ul contribuie la control: controlerul de poziție lucrează în
+cadrul estimat.
+
+`nova/ekf_source.py` folosește un predicat propriu, mai strict, cu toate
+trei valorile de yaw. Lista de termeni e scrisă **pozitiv** (§5.25), ca o
+sursă nouă adăugată de ArduPilot să nu scape neverificată.
+
+**Trei reguli, fiecare cu test:**
+
+- **Nu comuta ce nu ai citit.** Setul țintă se citește de pe FC înainte de
+  comutare; un `PARAM_SET` acceptat tăcut nu e garanție (§5.10), iar aici
+  garanția e chiar afirmația din Compliance Matrix.
+- **Un set necitit nu e un set curat.** Un termen care lipsește produce
+  refuz, nu acceptare tăcută. Necunoscut nu înseamnă conform.
+- **Refuzul e total.** Dacă setul conține GNSS, nu se comută deloc — nu se
+  comută și apoi se raportează. O comutare care încalcă regula e mai rea
+  decât niciuna: vehiculul ar zbura autonom în afara conformității, iar
+  logul ar arăta că am știut.
+
+Restaurarea se face din **fază**, ca la supervizor și la modularea de
+autoritate (§5.14): handback, abort, dezarmare, sau o fază pe care nimeni
+nu a prevăzut-o. Un test folosește o fază inventată exact pentru asta.
+
+`conform` e o **măsurătoare**: rămâne fals până când setul a fost citit,
+verificat și comutat, cu `COMMAND_ACK` de la FC. „Am trimis comanda" nu e
+același lucru cu „estimatorul nu mai primește GNSS".
+
+**Ce nu spune încă nimic:** dacă vehiculul chiar poate ateriza fără GNSS.
+Mecanismul e în loc și demonstrabil; comportamentul se măsoară cu o campanie
+comparativă, aceeași sămânță, cu și fără `--no-gnss`.
 
 
 ---

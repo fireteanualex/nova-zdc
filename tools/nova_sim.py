@@ -57,6 +57,7 @@ from nova.detector_pi import (ArucoMarkerDetector,          # noqa: E402
                               GazeboFrameSource, PiDetector)
 from nova.authority import (PROFIL_IMPLICIT,                # noqa: E402
                             PROFIL_RAPID, AuthorityScheduler)
+from nova.ekf_source import EkfSourceManager                # noqa: E402
 from nova.handover import HandoverGate                      # noqa: E402
 from nova.rc import OverrideMonitor                         # noqa: E402
 from nova.safety import LINK_MAX_AGE_S, SafetySupervisor    # noqa: E402
@@ -207,6 +208,15 @@ class SimApp:
         # a perceptiei nu are voie sa schimbe si parametrii de control in
         # acelasi timp - altfel nu se mai stie ce a schimbat rezultatul.
         # Pornita, ordinea din bucla e cea din run_loop (§5.14).
+        # 15.2.5: setul de surse fara GNSS, comutat pe segmentul autonom.
+        # Se armeaza si elibereaza din FAZA, ca supervizorul si modularea de
+        # autoritate (§5.14) - deci si aborturile il restaureaza.
+        self.ekf = None
+        if args.no_gnss:
+            self.ekf = EkfSourceManager(self.v)
+            print("[sim] 15.2.5: comut pe setul de surse EKF fara GNSS in "
+                  "segmentul autonom")
+
         self.authority = None
         if args.authority:
             profil = PROFIL_RAPID if args.fast_descent else PROFIL_IMPLICIT
@@ -287,6 +297,9 @@ class SimApp:
         age = None if self.last_det_t is None else (now - self.last_det_t)
         self._diagnostic_pierdere(age, now)
         self.sup.update(now, age, self.sm.state)
+
+        if self.ekf is not None:
+            self.ekf.update(now, self.sm.state)
 
         if self.authority is not None:
             lat = None
@@ -478,6 +491,7 @@ class SimApp:
         return {
             'n_detectii': s.get('n', 0),
             'faze_masurate': list(FAZE_MASURATE),
+            'gnss': (self.ekf.raport() if self.ekf is not None else None),
             'n_cadre': self._prev_frames,
             'range_p50': s.get('range_p50'), 'range_p95': s.get('range_p95'),
             'angle_p50': s.get('angle_p50'), 'angle_p95': s.get('angle_p95'),
@@ -533,6 +547,15 @@ def print_report(r, praguri=(0.03, 0.5, 0.95)):
         print(f"    {'latenta cadru->LT':<19}: p50 {r['lat_p50_ms']:.1f} ms  "
               f"p99 {r['lat_p99_ms']:.1f} ms  (timp de simulare)")
     print(f"    stare finala       : {r['stare_finala']}")
+    g = r.get('gnss')
+    if g is not None:
+        semn = 'CONFORM' if g['ack_ok'] and g['stare'] in ('ACTIV',
+                                                           'RESTAURAT') \
+            else 'NECONFIRMAT'
+        print(f"    {'15.2.5 fara GNSS':<19}: {semn} - set {g['set_autonom']}"
+              f" {g['valori']}, stare {g['stare']}")
+        if g['motive_refuz']:
+            print(f"    {'':19}  refuz: {', '.join(g['motive_refuz'])}")
     if r.get('eroare_finala_cm') is not None:
         print(f"    {'eroare la contact':<19}: "
               f"{r['eroare_finala_cm']:.1f} cm"
@@ -577,6 +600,9 @@ def main(argv=None):
                         'eroare laterala reala fereastra de incadrare se '
                         'inchide mai sus (§5.45); vezi '
                         'tools/check_handover_fov.py pentru tabel')
+    p.add_argument('--no-gnss', action='store_true',
+                   help='15.2.5: comuta pe EK3_SRC2 (fara GNSS) pe durata '
+                        'segmentului autonom si restaureaza la iesire')
     p.add_argument('--authority', action='store_true',
                    help='modularea de autoritate pe praguri (I5)')
     p.add_argument('--fast-descent', action='store_true',

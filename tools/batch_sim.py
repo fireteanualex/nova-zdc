@@ -141,6 +141,7 @@ CSV_HEADER = [
     'eroare_finala_cm', 'deriva_cm', 'alt_scoring_m', 'scoring_px',
     't_descend_s', 't_final_s', 't_touchdown_s', 't_ascent_s', 't_total_s',
     'rata_detectie', 'range_p95', 'angle_p95', 'lat_p99_ms', 'n_detectii',
+    'gnss_conform',
 ]
 
 
@@ -307,7 +308,7 @@ def handover_cmd(python=sys.executable, after=HANDOVER_AFTER_S):
 
 def nova_sim_cmd(run_dir, calib, seconds, python=sys.executable,
                  no_lateral_alt=None, authority=False, fast_descent=False,
-                 scoring_px=None):
+                 scoring_px=None, no_gnss=False):
     """Optiunile de experiment se DAU MAI DEPARTE, nu se redeclara aici.
 
     Campania e doar orchestrare; ce se regleaza, se regleaza in aplicatie.
@@ -319,6 +320,8 @@ def nova_sim_cmd(run_dir, calib, seconds, python=sys.executable,
         extra += ['--scoring-px', str(scoring_px)]
     if no_lateral_alt is not None:
         extra += ['--no-lateral-alt', str(no_lateral_alt)]
+    if no_gnss:
+        extra.append('--no-gnss')
     if authority:
         extra.append('--authority')
     if fast_descent:
@@ -473,6 +476,8 @@ def row_from(cond, motiv, raport=None, succes=False):
             'angle_p95': _r(raport.get('angle_p95'), 4),
             'lat_p99_ms': _r(raport.get('lat_p99_ms'), 2),
             'n_detectii': raport.get('n_detectii', ''),
+            'gnss_conform': (1 if (raport.get('gnss') or {}).get('ack_ok')
+                             else 0) if raport.get('gnss') else '',
         })
     return r
 
@@ -682,6 +687,9 @@ def main(argv=None):
                         f'in campanie - pragul de 0.40 m din SequenceConfig '
                         f'e sub nivelul la care rotatia markerului in cadru '
                         f'omoara detectia (§5.49)')
+    p.add_argument('--no-gnss', action='store_true',
+                   help='15.2.5: segmentul autonom ruleaza pe setul de surse '
+                        'EKF fara GNSS')
     p.add_argument('--authority', action='store_true',
                    help='modularea de autoritate pe praguri de altitudine '
                         '(I5): limiteaza WP_ACC si viteza sub 3 m')
@@ -695,7 +703,7 @@ def main(argv=None):
     p.add_argument('--python', default=sys.executable)
     a = p.parse_args(argv)
 
-    sim_opts = {'scoring_px': a.scoring_px,
+    sim_opts = {'scoring_px': a.scoring_px, 'no_gnss': a.no_gnss,
                 'no_lateral_alt': (NO_LATERAL_ALT_M if a.no_lateral_alt
                                    is None else a.no_lateral_alt),
                 'authority': a.authority,
