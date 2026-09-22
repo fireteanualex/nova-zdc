@@ -138,7 +138,7 @@ CSV_HEADER = [
     'ho_n', 'ho_e', 'dist_zbor_m', 'raza_m', 'alt_handover',
     'wind_spd', 'wind_turb', 'sun_az', 'sun_el', 'roughness',
     'succes', 'motiv', 'stare_finala',
-    'eroare_finala_cm', 'deriva_cm', 'alt_scoring_m',
+    'eroare_finala_cm', 'deriva_cm', 'alt_scoring_m', 'scoring_px',
     't_descend_s', 't_final_s', 't_touchdown_s', 't_ascent_s', 't_total_s',
     'rata_detectie', 'range_p95', 'angle_p95', 'lat_p99_ms', 'n_detectii',
 ]
@@ -306,7 +306,8 @@ def handover_cmd(python=sys.executable, after=HANDOVER_AFTER_S):
 
 
 def nova_sim_cmd(run_dir, calib, seconds, python=sys.executable,
-                 no_lateral_alt=None, authority=False, fast_descent=False):
+                 no_lateral_alt=None, authority=False, fast_descent=False,
+                 scoring_px=None):
     """Optiunile de experiment se DAU MAI DEPARTE, nu se redeclara aici.
 
     Campania e doar orchestrare; ce se regleaza, se regleaza in aplicatie.
@@ -314,6 +315,8 @@ def nova_sim_cmd(run_dir, calib, seconds, python=sys.executable,
     inseamna ca experimentul se poate face doar de mana, pe o singura
     rulare - adica exact ce nu vrei cand incerci o valoare noua."""
     extra = []
+    if scoring_px is not None:
+        extra += ['--scoring-px', str(scoring_px)]
     if no_lateral_alt is not None:
         extra += ['--no-lateral-alt', str(no_lateral_alt)]
     if authority:
@@ -459,6 +462,7 @@ def row_from(cond, motiv, raport=None, succes=False):
             'eroare_finala_cm': _r(raport.get('eroare_finala_cm'), 2),
             'deriva_cm': _r(raport.get('deriva_cm'), 2),
             'alt_scoring_m': _r(raport.get('alt_scoring_m'), 3),
+            'scoring_px': _r(raport.get('scoring_px'), 0),
             't_descend_s': _r(t.get('DESCEND_TRACK'), 2),
             't_final_s': _r(t.get('FINAL_DESCENT'), 2),
             't_touchdown_s': _r(t.get('TOUCHDOWN_CONFIRM'), 2),
@@ -544,8 +548,19 @@ def run_one(cond, run_dir, lume, calib, seconds, python=sys.executable,
             return row_from(cond, 'nova_sim: fara raport (vezi nova_sim.log)')
         with open(cale_json) as f:
             raport = json.load(f)
-        succes = bool(raport.get('succes'))
-        motiv = 'ok' if succes else f"oprit in {raport.get('stare_finala')}"
+        # Succesul cere SI captura de scoring, nu doar HANDBACK. Fara ea,
+        # campania raporta 100% pe rulari care NU indeplineau 8.3.3 - adica
+        # exact cerinta care aduce puncte (§5.51). Un criteriu de succes
+        # care nu poate detecta lipsa lucrului masurat nu e criteriu.
+        ajuns = bool(raport.get('succes'))
+        capturat = bool(raport.get('scoring_ok'))
+        succes = ajuns and capturat
+        if succes:
+            motiv = 'ok'
+        elif not ajuns:
+            motiv = f"oprit in {raport.get('stare_finala')}"
+        else:
+            motiv = 'HANDBACK dar FARA captura de scoring (8.3.3)'
         return row_from(cond, motiv, raport, succes)
 
     except subprocess.TimeoutExpired:
@@ -615,7 +630,8 @@ def print_summary(s):
     etichete = [
         ('eroare_finala_cm', 'eroare finala (cm)'),
         ('deriva_cm', 'deriva (cm)'),
-        ('alt_scoring_m', 'alt SCORING (m)'),
+        ('alt_scoring_m', 'alt captura (m)'),
+        ('scoring_px', 'captura (px)'),
         ('t_total_s', 'durata (s)'),
         ('rata_detectie', 'rata detectie'),
         ('range_p95', 'eroare range'),
@@ -652,6 +668,10 @@ def main(argv=None):
                    help='tipareste planul si iesi')
     p.add_argument('--dry-run', action='store_true',
                    help='genereaza lumile, nu porneste Gazebo')
+    p.add_argument('--scoring-px', type=float, default=None,
+                   help='pragul in pixeli pentru captura de scoring. '
+                        'Implicit 980 e de neatins peste ~18 grade de yaw '
+                        '(§5.51); 800 e atins la orice rotatie')
     p.add_argument('--no-lateral-alt', type=float, default=None,
                    help=f'sub ce altitudine coborarea devine verticala, fara '
                         f'corectii laterale. Implicit {NO_LATERAL_ALT_M} m '
@@ -671,7 +691,8 @@ def main(argv=None):
     p.add_argument('--python', default=sys.executable)
     a = p.parse_args(argv)
 
-    sim_opts = {'no_lateral_alt': (NO_LATERAL_ALT_M if a.no_lateral_alt
+    sim_opts = {'scoring_px': a.scoring_px,
+                'no_lateral_alt': (NO_LATERAL_ALT_M if a.no_lateral_alt
                                    is None else a.no_lateral_alt),
                 'authority': a.authority,
                 'fast_descent': a.fast_descent}

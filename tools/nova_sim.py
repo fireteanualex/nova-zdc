@@ -68,7 +68,8 @@ CSV_HEADER = [
     'sim_t', 'state', 'alt_m', 'detected', 'marker_px',
     'det_range_m', 'truth_range_m', 'range_rel',
     'angle_deg', 'angle_x_deg', 'angle_y_deg',
-    'truth_north_off_m', 'truth_east_off_m', 'lat_ms',
+    'truth_north_off_m', 'truth_east_off_m', 'yaw_deg', 'tilt_deg',
+    'lat_ms',
 ]
 
 
@@ -126,6 +127,8 @@ class SimApp:
         self.prev_state = None
         self.prev_t = None
         self.alt_scoring_m = None
+        self.scoring_alt_m = None
+        self.scoring_px = None
         self.pos_scoring = None
         self.pos_touchdown = None
         self.eroare_finala_m = None
@@ -175,12 +178,17 @@ class SimApp:
                                  on_reject=self._on_reject,
                                  autonomy_enabled=True)
         seq = SequenceConfig(conv=args.conv)
+        if args.scoring_px is not None:
+            seq.scoring_px = args.scoring_px
+            print(f"[sim] prag captura de scoring: {args.scoring_px:.0f} px "
+                  f"(implicit {SequenceConfig().scoring_px:.0f})")
         if args.no_lateral_alt is not None:
             seq.no_lateral_alt_m = args.no_lateral_alt
             print(f"[sim] corectii laterale doar peste "
                   f"{args.no_lateral_alt:.2f} m "
                   f"(implicit {SequenceConfig().no_lateral_alt_m:.2f} m)")
-        self.sm = LandingStateMachine(self.v, seq, gate=self.gate)
+        self.sm = LandingStateMachine(self.v, seq, gate=self.gate,
+                                      on_event=self._on_event)
 
         # Modularea de autoritate e OPRITA implicit: o campanie de validare
         # a perceptiei nu are voie sa schimbe si parametrii de control in
@@ -194,6 +202,24 @@ class SimApp:
                 allow_fast_descent=args.fast_descent)
             print(f"[sim] autoritate: profil "
                   f"{'RAPID' if args.fast_descent else 'IMPLICIT'}")
+
+    def _on_event(self, nume, info):
+        """Captura de scoring se numara din EVENIMENT, nu din tranzitia de
+        stare.
+
+        `on_detection` emite `scoring_capture` si in `DESCEND_TRACK`, si in
+        `FINAL_DESCENT`, dar schimba starea doar din prima. Cu
+        `no_lateral_alt` ridicat, coborarea intra in FINAL_DESCENT inainte
+        de pragul in pixeli - deci instrumentarea legata de stare raporta
+        `None` desi captura se putea produce. Iar in campanie asta a aratat
+        ca 100% succes pe rulari care NU indeplineau 8.3.3 (§5.51)."""
+        if nume != 'scoring_capture':
+            return
+        self.scoring_alt_m = info.get('alt')
+        self.scoring_px = info.get('marker_px')
+        self.pos_scoring = self._offset_fata_de_marker()
+        print(f"  >> captura de scoring la {self.scoring_alt_m:.3f} m, "
+              f"{self.scoring_px:.0f} px")
 
     def _on_reject(self, reason):
         print(f"\n!! HANDOVER REFUZAT: {reason}\n")
@@ -292,13 +318,14 @@ class SimApp:
         linii = [f"[sim] DETECTIE PIERDUTA de {age:.2f} s in {self.sm.state}"]
         if alt is not None:
             linii.append(f"  altitudine {alt:.2f} m")
-        tr = self.truth.truth() if self.truth is not None else None
+        tr = (self.truth.truth(self.v.roll, self.v.pitch, self.v.yaw)
+              if self.truth is not None else None)
         if tr is not None:
             lat = math.hypot(tr['north_off_m'], tr['east_off_m'])
-            v = self.truth.pose(self.truth.vehicle_name)
-            roll, pitch = v.roll_pitch_deg if v is not None else (0.0, 0.0)
-            inclinare = math.hypot(roll, pitch)
-            h = tr['range_m']
+            roll = math.degrees(self.v.roll)
+            pitch = math.degrees(self.v.pitch)
+            inclinare = tr['tilt_deg']
+            h = tr['vert_m']
             # §5.2 presupune camera la NADIR. Cu inclinare, axa optica bate
             # solul la h*tan(incl) de punctul de sub vehicul.
             deviere = h * math.tan(math.radians(inclinare))
@@ -333,7 +360,7 @@ class SimApp:
         adevar ar fi exact cifra pe care nu vrem sa o raportam."""
         if self.truth is None:
             return None
-        tr = self.truth.truth()
+        tr = self.truth.truth(self.v.roll, self.v.pitch, self.v.yaw)
         if tr is None:
             return None
         return (-tr['north_off_m'], -tr['east_off_m'])
@@ -349,10 +376,7 @@ class SimApp:
             return
         self.tranzitii.append((round(now, 3), self.prev_state, st))
         self.prev_state = st
-        if st == 'SCORING_CAPTURE':
-            self.alt_scoring_m = self.v.alt if self.v.have_pos else None
-            self.pos_scoring = self._offset_fata_de_marker()
-        elif st == 'TOUCHDOWN_CONFIRM':
+        if st == 'TOUCHDOWN_CONFIRM':
             self.pos_touchdown = self._offset_fata_de_marker()
             if self.pos_touchdown is not None:
                 n, e = self.pos_touchdown
@@ -366,7 +390,10 @@ class SimApp:
         n_lt = self.v.n_lt
         err = None
         if self.truth is not None:
-            err = self.truth.error_vs(det)
+            # Atitudinea vine de la FC (NED), nu din cuaternionul Gazebo
+            # (ENU): yaw = 0 inseamna EST acolo si NORD aici (§5.50).
+            err = self.truth.error_vs(det, roll=self.v.roll,
+                                      pitch=self.v.pitch, yaw=self.v.yaw)
             self.errors.append(err)
         alt = self.v.alt
         self.det_by_alt.append((alt, True))
@@ -393,6 +420,8 @@ class SimApp:
                 'angle_y_deg': round(err['angle_y_deg'], 4),
                 'truth_north_off_m': round(err['truth_north_off_m'], 4),
                 'truth_east_off_m': round(err['truth_east_off_m'], 4),
+                'yaw_deg': round(err['yaw_deg'], 2),
+                'tilt_deg': round(err['tilt_deg'], 2),
             })
         self.rows.append(rand)
         del n_lt
@@ -441,7 +470,9 @@ class SimApp:
             'lat_p50_ms': pct(lat, 50), 'lat_p99_ms': pct(lat, 99),
             'stare_finala': self.sm.state,
             'succes': self.sm.state == 'HANDBACK',
-            'alt_scoring_m': self.alt_scoring_m,
+            'alt_scoring_m': self.scoring_alt_m,
+            'scoring_px': self.scoring_px,
+            'scoring_ok': self.scoring_alt_m is not None,
             'eroare_finala_cm': (None if self.eroare_finala_m is None
                                  else self.eroare_finala_m * 100.0),
             'deriva_cm': (None if self.deriva_m is None
@@ -492,7 +523,11 @@ def print_report(r, praguri=(0.03, 0.5, 0.95)):
               + ('' if r.get('deriva_cm') is None
                  else f"   deriva captura->contact {r['deriva_cm']:.1f} cm"))
     if r.get('alt_scoring_m') is not None:
-        print(f"    {'SCORING_CAPTURE la':<19}: {r['alt_scoring_m']:.2f} m")
+        print(f"    {'captura scoring':<19}: {r['alt_scoring_m']:.2f} m, "
+              f"{r.get('scoring_px', 0):.0f} px")
+    else:
+        print(f"    {'captura scoring':<19}: NU S-A PRODUS - 8.3.3 nu e "
+              f"indeplinit")
     if r.get('t_state'):
         parti = '  '.join(f"{k} {v:g}s" for k, v in r['t_state'].items())
         print(f"    timp per stare     : {parti}")
@@ -514,6 +549,11 @@ def main(argv=None):
     p.add_argument('--marker-model', default='aruco_26')
     p.add_argument('--no-truth', action='store_true')
     p.add_argument('--conv', type=int, default=2, choices=[0, 1, 2, 3])
+    p.add_argument('--scoring-px', type=float, default=None,
+                   help='pragul in pixeli pentru captura de scoring '
+                        '(8.3.3). Implicit 980 - de neatins pentru yaw peste '
+                        '~18 grade, fiindca markerul iese din cadru inainte '
+                        'sa creasca atat (§5.51)')
     p.add_argument('--no-lateral-alt', type=float, default=None,
                    help='sub ce altitudine se trece in FINAL_DESCENT, adica '
                         'coborare verticala fara corectii laterale. '

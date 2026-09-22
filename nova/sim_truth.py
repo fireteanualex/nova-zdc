@@ -61,6 +61,21 @@ def _gz_imports():
         "  Incercat: " + '; '.join(erori))
 
 
+def ned_to_body(dn, de, dd, roll, pitch, yaw):
+    """Un vector din NED in cadrul corpului, cu secventa 3-2-1.
+
+    `dd` e componenta in JOS (NED), pozitiva sub vehicul."""
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    x = cp * cy * dn + cp * sy * de - sp * dd
+    y = ((sr * sp * cy - cr * sy) * dn + (sr * sp * sy + cr * cy) * de
+         + sr * cp * dd)
+    z = ((cr * sp * cy + sr * sy) * dn + (cr * sp * sy - sr * cy) * de
+         + cr * cp * dd)
+    return x, y, z
+
+
 class Pose:
     """Pozitia unui model, in NED, cu timpul de simulare."""
 
@@ -169,13 +184,25 @@ class SimTruth:
         self._node = None
 
     # -- adevarul de comparat ----------------------------------------------
-    def truth(self):
-        """(range_m, angle_x, angle_y) ale markerului fata de vehicul, sau
-        None daca inca nu stim ambele pozitii.
+    def truth(self, roll=0.0, pitch=0.0, yaw=0.0):
+        """Adevarul, EXPRIMAT CA SI CUM l-ar masura detectorul.
 
-        `range_m` e distanta pana la PLANUL markerului, ca in
-        `nova/detector_pi.py`: proiectia pe verticala, nu distanta 3D. Asa
-        se compara cu ce trimite detectorul ca DISTANCE_SENSOR (§5.3)."""
+        `roll`, `pitch`, `yaw` sunt atitudinea vehiculului in **NED**,
+        radiani - de luat din `ATTITUDE` raportat de FC, nu din cuaternionul
+        Gazebo. Motivul e o capcana de convenție: in ENU, yaw = 0 inseamna
+        nasul spre EST, iar in NED spre NORD. Derivat din cuaternion, unghiul
+        iese rotit cu 90 de grade, iar eroarea unghiulara raportata devine
+        chiar offsetul de convenție (§5.50).
+
+        Ce intoarce, si de ce exact asa:
+
+        - `angle_x` / `angle_y` in cadrul CAMEREI, prin aceleasi formule ca
+          `detector_pi.detect()`. Detectorul nu raporteaza nord/est, deci un
+          adevar in nord/est nu se poate compara cu el.
+        - `range_m` pe AXA OPTICA pana la planul markerului, `(t·n)/n_z`, nu
+          distanta verticala. Cu vehiculul inclinat cele doua difera cu
+          `1/cos(inclinare)`: 1.2% la 8.7 grade, 3.5% la 15 (§5.50).
+        """
         v = self.pose(self.vehicle_name)
         m = self.pose(self.marker_name)
         if v is None:
@@ -189,32 +216,40 @@ class SimTruth:
             return None
         dn = n_m - v.north
         de = e_m - v.east
-        # In cadrul CORPULUI: detectorul raporteaza inainte/dreapta, nu
-        # nord/est. Fara rotatia asta, eroarea unghiulara raportata e
-        # practic yaw-ul vehiculului.
-        psi = math.radians(v.yaw_deg)
-        inainte = dn * math.cos(psi) + de * math.sin(psi)
-        dreapta = -dn * math.sin(psi) + de * math.cos(psi)
+
+        # NED -> corpul vehiculului, cu atitudinea completa (3-2-1).
+        xb, yb, zb = ned_to_body(dn, de, dz, roll, pitch, yaw)
+        # Normala planului markerului: (0,0,1) in NED, adusa in corp.
+        nx, ny, nz = ned_to_body(0.0, 0.0, 1.0, roll, pitch, yaw)
+        if abs(nz) < 0.2 or zb <= 0:
+            return None
+        rng = (xb * nx + yb * ny + zb * nz) / nz
+
+        inclinare = math.degrees(math.acos(
+            max(-1.0, min(1.0, math.cos(roll) * math.cos(pitch)))))
         return {
-            'range_m': dz,
+            'range_m': rng,
             'dist3d_m': math.sqrt(dn * dn + de * de + dz * dz),
             'north_off_m': dn,
             'east_off_m': de,
-            'fwd_off_m': inainte,
-            'right_off_m': dreapta,
-            'yaw_deg': v.yaw_deg,
-            'angle_x': math.atan2(inainte, dz),
-            'angle_y': math.atan2(dreapta, dz),
+            'fwd_off_m': xb,
+            'right_off_m': yb,
+            'vert_m': dz,
+            'yaw_deg': math.degrees(yaw),
+            'tilt_deg': inclinare,
+            'angle_x': math.atan2(xb, zb),
+            'angle_y': math.atan2(yb, zb),
             'alt_m': v.alt,
             'marker_z_m': z_m,
             't': v.t,
         }
 
-    def error_vs(self, det, marker_px_expect=None):
+    def error_vs(self, det, marker_px_expect=None,
+                 roll=0.0, pitch=0.0, yaw=0.0):
         """Eroarea detectiei fata de adevar. None daca nu se poate compara.
 
         `det` e un `Detection` din nova/detection.py."""
-        tr = self.truth()
+        tr = self.truth(roll, pitch, yaw)
         if tr is None or det is None:
             return None
         rng = tr['range_m']
@@ -233,6 +268,8 @@ class SimTruth:
             'marker_px': det.marker_px,
             'truth_north_off_m': tr['north_off_m'],
             'truth_east_off_m': tr['east_off_m'],
+            'yaw_deg': tr['yaw_deg'],
+            'tilt_deg': tr['tilt_deg'],
         }
         if marker_px_expect is not None:
             out['marker_px_expect'] = marker_px_expect

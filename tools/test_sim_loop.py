@@ -101,6 +101,70 @@ def test_adevarul_e_al_CAMEREI_nu_al_vehiculului():
     return f"montajul scazut; ignorat ar fi dat +{gresit:.0%} la 0.5 m"
 
 
+def test_yaw_ul_vine_de_la_FC_nu_din_cuaternionul_ENU():
+    """ENU si NED numara capul din axe diferite: yaw = 0 inseamna EST in
+    Gazebo si NORD la noi. Derivat din cuaternion, unghiul iese rotit cu
+    90 de grade, iar eroarea unghiulara raportata devine chiar offsetul de
+    convenție.
+
+    Masurat: campania a raportat `eroare unghi p50 = 15.7 deg` pe un sistem
+    care ateriza cu 0.7 cm. Adevarul se cere acum cu atitudinea din
+    `ATTITUDE` raportat de FC, care e NED prin definitie."""
+    import math as _m
+    dz = sim_truth.CAM_MOUNT_M + sim_truth.MARKER_PLANE_Z
+    t = sim_truth.StaticTruth(
+        vehicle=sim_truth.pose_from_enu(0, 0, 5.0 + dz),
+        marker=sim_truth.pose_from_enu(0.0, 1.0, sim_truth.MARKER_PLANE_Z))
+
+    # cap spre NORD: markerul de la nord e IN FATA
+    tr = t.truth(yaw=0.0)
+    assert abs(tr['fwd_off_m'] - 1.0) < 1e-9, tr['fwd_off_m']
+    assert abs(tr['right_off_m']) < 1e-9, tr['right_off_m']
+    assert tr['angle_x'] > 0 and abs(tr['angle_y']) < 1e-9
+
+    # cap spre EST: acelasi marker e la STANGA
+    tr = t.truth(yaw=_m.radians(90))
+    assert abs(tr['fwd_off_m']) < 1e-9, tr['fwd_off_m']
+    assert abs(tr['right_off_m'] + 1.0) < 1e-9, tr['right_off_m']
+
+    # CAZUL NEGATIV: convenția gresita da tocmai raspunsul celalalt
+    psi = _m.radians(90)
+    gresit_fwd = 1.0 * _m.cos(psi) + 0.0 * _m.sin(psi)
+    assert abs(gresit_fwd) < 1e-9, "aici cele doua coincid; alege alt unghi"
+    tr45 = t.truth(yaw=_m.radians(45))
+    psi45 = _m.radians(45)
+    gresit = 1.0 * _m.cos(psi45)
+    assert abs(tr45['fwd_off_m'] - gresit) < 1e-9, (
+        "la 45 deg cele doua convenții coincid din intamplare; testul nu "
+        "distinge nimic")
+    return "cap nord -> in fata; cap est -> la stanga"
+
+
+def test_range_ul_adevarat_e_pe_axa_optica_nu_vertical():
+    """`detector_pi` calculeaza `range_m = (t·n)/n_z`, adica distanta pe axa
+    optica pana la PLANUL markerului. Cu vehiculul inclinat, aia e
+    `vertical / cos(inclinare)` - 1.2% la 8.7 grade, 3.5% la 15.
+
+    Adevarul comparat vertical raporta diferenta asta ca eroare de range."""
+    import math as _m
+    dz = sim_truth.CAM_MOUNT_M + sim_truth.MARKER_PLANE_Z
+    t = sim_truth.StaticTruth(
+        vehicle=sim_truth.pose_from_enu(0, 0, 5.0 + dz),
+        marker=sim_truth.pose_from_enu(0, 0, sim_truth.MARKER_PLANE_Z))
+    drept = t.truth()
+    assert abs(drept['range_m'] - 5.0) < 1e-9, drept['range_m']
+    for grade in (8.7, 15.0):
+        tr = t.truth(pitch=_m.radians(grade))
+        astept = 5.0 / _m.cos(_m.radians(grade))
+        assert abs(tr['range_m'] - astept) < 1e-9, (grade, tr['range_m'])
+        assert abs(tr['tilt_deg'] - grade) < 1e-6, tr['tilt_deg']
+        assert abs(tr['vert_m'] - 5.0) < 1e-9, "verticala ramane disponibila"
+    # cat ar fi fost eroarea raportata gresit
+    gresit = 1.0 / _m.cos(_m.radians(15.0)) - 1.0
+    assert gresit > 0.03, gresit
+    return f"5/cos(15 deg) exact; comparat vertical ar da +{gresit:.1%}"
+
+
 def test_unghiurile_se_compara_in_cadrul_corpului():
     """Detectorul raporteaza inainte/dreapta; adevarul are nord/est. Cele
     doua coincid DOAR cand capul e la zero.
@@ -109,12 +173,11 @@ def test_unghiurile_se_compara_in_cadrul_corpului():
     vehiculului - de aceea prima campanie a dat `p50 = 12 deg` pe un sistem
     care ateriza cu 0.55 cm."""
     import math as _m
-    q = (_m.cos(_m.radians(45)), 0.0, 0.0, _m.sin(_m.radians(45)))  # yaw 90
     t = sim_truth.StaticTruth(
         vehicle=sim_truth.pose_from_enu(0, 0, 5.0 + sim_truth.CAM_MOUNT_M
-                                        + sim_truth.MARKER_PLANE_Z, q),
+                                        + sim_truth.MARKER_PLANE_Z),
         marker=sim_truth.pose_from_enu(0, 1.0, sim_truth.MARKER_PLANE_Z))
-    tr = t.truth()
+    tr = t.truth(yaw=_m.radians(90))
     assert abs(tr['yaw_deg'] - 90.0) < 1e-6, tr['yaw_deg']
     assert abs(tr['north_off_m'] - 1.0) < 1e-9
     # cu capul spre est, un marker la nord e la STANGA, nu in fata
@@ -128,7 +191,7 @@ def test_unghiurile_se_compara_in_cadrul_corpului():
         vehicle=sim_truth.pose_from_enu(0, 0, 5.0 + sim_truth.CAM_MOUNT_M
                                         + sim_truth.MARKER_PLANE_Z),
         marker=sim_truth.pose_from_enu(0, 1.0, sim_truth.MARKER_PLANE_Z))
-    tr2 = t2.truth()
+    tr2 = t2.truth(yaw=0.0)
     assert abs(tr2['fwd_off_m'] - 1.0) < 1e-9, tr2['fwd_off_m']
     return "yaw 90 deg: marker la nord -> 1 m la stanga, 0 in fata"
 
@@ -390,6 +453,8 @@ class _V:
     def __init__(self, alt=5.0):
         self.alt = alt
         self.have_pos = True
+        # atitudinea vine de la FC (NED); vehiculul fals o raporteaza zero
+        self.roll = self.pitch = self.yaw = 0.0
 
 
 def _app_gol():
@@ -402,6 +467,8 @@ def _app_gol():
     app.prev_state = None
     app.prev_t = None
     app.alt_scoring_m = None
+    app.scoring_alt_m = None
+    app.scoring_px = None
     app.pos_scoring = None
     app.pos_touchdown = None
     app.eroare_finala_m = None
@@ -483,16 +550,18 @@ def test_eroarea_si_deriva_se_masoara_din_adevar():
     app = _app_gol()
     app.sm.state = 'DESCEND_TRACK'
     app._track(0.0)
-    # la SCORING_CAPTURE vehiculul e la 8 cm nord de marker, 0.44 m alt
+    # captura de scoring: numarata din EVENIMENT, nu din tranzitia de stare
+    # (§5.51) - poate sa se produca si in FINAL_DESCENT
     app.truth.set('iris_with_gimbal', sim_truth.pose_from_enu(0.0, 0.08, 0.55))
     app.v.alt = 0.45
-    app.sm.state = 'SCORING_CAPTURE'
+    app._on_event('scoring_capture', {'alt': 0.45, 'marker_px': 985.0})
+    app.sm.state = 'FINAL_DESCENT'
     app._track(1.0)
     # la contact, 10 cm nord si 3 cm est
     app.truth.set('iris_with_gimbal', sim_truth.pose_from_enu(0.03, 0.10, 0.20))
     app.sm.state = 'TOUCHDOWN_CONFIRM'
     app._track(2.0)
-    assert abs(app.alt_scoring_m - 0.45) < 1e-9, app.alt_scoring_m
+    assert abs(app.scoring_alt_m - 0.45) < 1e-9, app.scoring_alt_m
     er = app.eroare_finala_m
     assert abs(er - math.hypot(0.10, 0.03)) < 1e-6, er
     dv = app.deriva_m
@@ -733,6 +802,71 @@ def test_contorul_nu_da_ratari_negative():
     app._note_frames(5)          # mai multe detectii decat cadre numarate
     assert app.det_by_alt == [], app.det_by_alt
     return "cadre < detectii -> zero ratari, nu numar negativ"
+
+
+def test_pragul_de_scoring_e_atins_la_orice_rotatie():
+    """8.3.3 se declanseaza pe `marker_px > scoring_px`. Dar markerul nu
+    poate creste oricat: cutia lui de incadrare trebuie sa ramana in cadru
+    (§5.49), deci exista un `marker_px` MAXIM detectabil, care scade cu
+    rotatia.
+
+    Cu pragul implicit de 980 px, captura e fizic imposibila peste ~18 grade
+    de yaw - iar rotatia la handover e intamplatoare. Prima campanie de 10
+    rulari: HANDBACK in toate, captura in NICIUNA."""
+    import math as _m
+    H = 1296
+    limita = 0.95 * H
+
+    def px_maxim(yaw):
+        f = abs(_m.cos(_m.radians(yaw))) + abs(_m.sin(_m.radians(yaw)))
+        return limita / f
+
+    assert px_maxim(0) > 980, "la nadir pragul implicit e atins"
+    assert px_maxim(20) < 980, (
+        f"la 20 grade maximul e {px_maxim(20):.0f} px: 980 e de neatins")
+    assert px_maxim(45) < 980
+    # pragul propus trebuie atins la ORICE rotatie
+    propus = 800.0
+    assert px_maxim(45) > propus, (
+        f"nici {propus:.0f} px nu e atins la 45 grade "
+        f"(maxim {px_maxim(45):.0f})")
+    return (f"980 px: imposibil peste ~18 deg; {propus:.0f} px: atins pana "
+            f"la 45 deg (maxim {px_maxim(45):.0f})")
+
+
+def test_succesul_cere_si_captura_nu_doar_HANDBACK():
+    """Criteriul era `stare_finala == HANDBACK`, care nu poate detecta
+    lipsa capturii. Campania a raportat 100% pe 10 rulari in care 8.3.3 nu
+    a fost indeplinit in niciuna - §5.11, de data asta in criteriul de
+    succes al campaniei, nu intr-un test."""
+    r = batch_sim.row_from(
+        {'idx': 0}, 'x', succes=True,
+        raport={'succes': True, 'scoring_ok': True, 'stare_finala': 'HANDBACK'})
+    assert r['succes'] == 1
+    src = open(os.path.join(REPO, 'tools', 'batch_sim.py')).read()
+    assert "raport.get('scoring_ok')" in src, (
+        "succesul nu verifica captura de scoring")
+    assert 'FARA captura de scoring' in src, (
+        "motivul de esec nu distinge lipsa capturii de o secventa oprita")
+    assert '--scoring-px' in src, "pragul nu e reglabil din campanie"
+    return "HANDBACK fara captura = ESEC, cu motiv distinct"
+
+
+def test_captura_se_numara_din_eveniment_nu_din_stare():
+    """`on_detection` emite `scoring_capture` si in DESCEND_TRACK, si in
+    FINAL_DESCENT, dar schimba starea doar din prima. Cu `no_lateral_alt`
+    ridicat, coborarea intra in FINAL_DESCENT inainte de pragul in pixeli -
+    deci o instrumentare legata de stare raporteaza `None` desi captura se
+    poate produce."""
+    src = open(os.path.join(REPO, 'tools', 'nova_sim.py')).read()
+    assert "nume != 'scoring_capture'" in src, (
+        "captura nu se numara din eveniment")
+    assert "if st == 'SCORING_CAPTURE'" not in src, (
+        "a ramas instrumentarea legata de tranzitia de stare")
+    sm = open(os.path.join(REPO, 'nova', 'state_machine.py')).read()
+    assert 'State.DESCEND_TRACK, State.FINAL_DESCENT' in sm, (
+        "presupunerea testului despre fazele de captura nu mai tine")
+    return "numarata din on_event, in ambele faze"
 
 
 def test_CSV_acopera_ce_produce_randul():
@@ -1147,6 +1281,10 @@ TESTS = [
      test_sub_planul_markerului_nu_exista_adevar),
     ('adevarul e al CAMEREI, nu al vehiculului',
      test_adevarul_e_al_CAMEREI_nu_al_vehiculului),
+    ('yaw-ul vine de la FC, nu din cuaternionul ENU',
+     test_yaw_ul_vine_de_la_FC_nu_din_cuaternionul_ENU),
+    ('range-ul adevarat e pe axa optica, nu vertical',
+     test_range_ul_adevarat_e_pe_axa_optica_nu_vertical),
     ('unghiurile se compara in cadrul corpului',
      test_unghiurile_se_compara_in_cadrul_corpului),
     ('eroarea de range are semn', test_eroarea_de_range_are_semn),
@@ -1196,6 +1334,12 @@ TESTS = [
     ('rata de detectie poate scadea sub 100%',
      test_rata_de_detectie_poate_scadea_sub_100),
     ('contorul nu da ratari negative', test_contorul_nu_da_ratari_negative),
+    ('pragul de scoring e atins la orice rotatie',
+     test_pragul_de_scoring_e_atins_la_orice_rotatie),
+    ('succesul cere si captura, nu doar HANDBACK',
+     test_succesul_cere_si_captura_nu_doar_HANDBACK),
+    ('captura se numara din eveniment, nu din stare',
+     test_captura_se_numara_din_eveniment_nu_din_stare),
     ('CSV acopera ce produce randul', test_CSV_acopera_ce_produce_randul),
     ('nicio suita nu uita sa inregistreze un test',
      test_nicio_suita_nu_uita_sa_inregistreze_un_test),

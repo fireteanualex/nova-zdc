@@ -2470,6 +2470,109 @@ contrarie. 12° de eroare unghiulară și 0.55 cm de eroare de aterizare nu pot
 fi ambele adevărate.
 
 
+### 5.50 Adevărul se compară în cadrul în care măsoară detectorul, nu în NED
+
+Campania de 10 rulări a raportat `eroare unghi p50 = 15.7°` și
+`eroare range p50 = 3.5%` pe un sistem care ateriza cu **0.7 cm**. A doua
+oară aceeași lecție ca §5.49: o cifră care contrazice altă măsurătoare a
+aceluiași sistem e o eroare de măsurare până la proba contrarie.
+
+Reparasem deja o parte (rotația în cadrul corpului), dar incomplet, în două
+feluri:
+
+**1. ENU și NED numără capul din axe diferite.** În Gazebo, `yaw = 0`
+înseamnă nasul spre **est**; în NED, spre **nord**. Derivat din cuaternionul
+ENU, unghiul iese rotit cu 90°, iar „eroarea" raportată devine chiar
+offsetul de convenție. De aceea eroarea urmărea yaw-ul vehiculului în loc
+să fie mică.
+
+Reparat prin eliminarea sursei de ambiguitate, nu prin corectarea ei:
+atitudinea se ia acum din **`ATTITUDE` raportat de FC**, care e NED prin
+definiție. Gazebo rămâne sursă doar pentru poziții.
+
+**2. `range_m` nu e distanța verticală.** `detector_pi` calculează
+`(t·n)/n_z` — distanța pe **axa optică** până la planul markerului. Cu
+vehiculul înclinat, aia e `vertical / cos(înclinare)`:
+
+| înclinare | diferență |
+|---|---|
+| 8.7° (regim, cu `WP_ACC` 1.5) | 1.2% |
+| 15° | **3.5%** |
+
+Exact cât raporta campania. Adevărul folosește acum aceleași formule ca
+detectorul: offsetul se rotește în cadrul corpului cu atitudinea completă
+(3-2-1), iar range-ul se ia pe axa optică.
+
+Trei cazuri verifică reparația, fiecare cu răspuns care nu poate ieși din
+întâmplare: cap nord + marker la nord → **în față**; cap est + același
+marker → **la stânga**; înclinat 15° cu markerul dedesubt → `5/cos(15°)`
+exact. Plus `yaw_deg` și `tilt_deg` în CSV, ca o analiză ulterioară să nu
+mai depindă de ce presupune cine o citește.
+
+### 5.51 100% succes pe rulări care nu îndeplineau 8.3.3
+
+Campania de 10 rulări după reparațiile din §5.48–§5.49: **10 din 10
+reușite**, eroare finală p50 **0.71 cm**, p95 1.22 cm, rată de detecție
+100%. Secvența completă, de fiecare dată.
+
+Și totuși niciuna nu a făcut **captura de scoring**:
+
+```
+>> DESCEND_TRACK -> FINAL_DESCENT   (alt 0.54 m)
+>> FINAL_DESCENT -> TOUCHDOWN_CONFIRM
+```
+
+`SCORING_CAPTURE` nu apare — nici ca stare, nici ca eveniment. Adică 8.3.3,
+cerința care aduce punctele, a eșuat în toate zece, iar campania a raportat
+100%.
+
+**Criteriul de succes nu putea detecta lipsa lucrului măsurat.** Era
+`stare_finala == HANDBACK`. §5.11, de data asta nu într-un test, ci în
+definiția rezultatului unei campanii — cu atât mai periculos, fiindcă
+numărul ăla ar fi ajuns direct în Compliance Matrix.
+
+**Două cauze s-au suprapus.**
+
+1. **`no_lateral_alt = 0.60` a mutat `FINAL_DESCENT` deasupra pragului.**
+   980 px înseamnă range 0.46 m, adică ~0.54 m altitudine — sub pragul de
+   0.60 m la care coborârea devine verticală. Ridicarea care a dus rata de
+   succes de la 39% la 100% a scos tocmai captura din fereastră.
+2. **Pragul de 980 px e fizic de neatins peste ~18° de yaw.** `marker_px`
+   nu poate crește oricât: cutia lui de încadrare trebuie să rămână în cadru
+   (§5.49), deci există un maxim detectabil, care scade cu rotația:
+
+| yaw | `marker_px` maxim detectabil | pragul 980 atins? |
+|---|---|---|
+| 0° | 1231 | da |
+| 15° | 1005 | da |
+| **20°** | **961** | **nu** |
+| 30° | 901 | nu |
+| 45° | 871 | nu |
+
+Iar rotația la handover e întâmplătoare. A doua cauză ar fi lovit oricum,
+independent de prima.
+
+**Reparat, în trei locuri:**
+
+- **Captura se numără din EVENIMENT, nu din tranziția de stare.**
+  `on_detection` emite `scoring_capture` și în `DESCEND_TRACK`, și în
+  `FINAL_DESCENT`, dar schimbă starea doar din prima. O instrumentare legată
+  de stare raportează `None` deși captura s-ar putea produce.
+- **Succesul cere și captura**, cu motiv distinct în CSV: `HANDBACK dar
+  FARA captura de scoring (8.3.3)` nu se mai confundă cu o secvență oprită.
+- **`--scoring-px` e reglabil** din campanie. La **800 px** captura e atinsă
+  până la 45° de yaw (maxim detectabil acolo: 871 px), iar range-ul
+  corespunzător e 0.56 m — adică deasupra pragului de coborâre verticală,
+  deci se produce în `DESCEND_TRACK`.
+
+**Ce rămâne de decis, nu de reglat:** 980 e valoarea implicită din
+`SequenceConfig`, aleasă în §6/8.3.3 din amprenta camerei la contact, fără
+să știe de limita de încadrare la rotație. Coborârea ei la ~800 e o
+schimbare de cod validat — element deschis 32. Alternativa e alinierea de
+yaw cu markerul înainte de coborâre, care rezolvă și §5.49, dar e logică
+nouă în mașina de stări.
+
+
 ---
 
 ## 6. Cerințe care constrâng software-ul
@@ -2790,6 +2893,7 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 22b | **Campania nu a rulat niciodată.** O secvență a mers; `batch_sim.py` cu N rulări și condiții variate nu a fost pornit, deci nu există distribuții. Mediul de dezvoltare nu poate rula Gazebo (`libEGL: failed to create dri2 screen`), deci rulează operatorul | I4, 8.4.2 |
 | 23 | Cifrele I4 (eroare finală, derivă, eroare de range și unghi, latență) — **nicio măsurătoare încă**: prima secvență reușită a fost oprită înainte să-și scrie raportul (§5.47, reparat) | 8.4.2, Safety Case |
 | 24 | Distanța de frânare la 0.8 și 1.5 m/s, pentru `PROFIL_RAPID` (blocat până atunci) | 15.2.9, I5 |
+| 32 | `SequenceConfig.scoring_px = 980` e de neatins peste ~18° de yaw: markerul iese din cadru înainte să crească atât (§5.51). Campania îl poate regla la 800; valoarea din cod cere atingerea unui fișier validat. Alternativa — aliniere de yaw cu markerul înainte de coborâre — rezolvă și §5.49, dar e logică nouă | **8.3.3** |
 | 31 | **Plafonul de 12 m al porții e mai conservator decât măsurătoarea.** §8 l-a ales din estimarea „la 20 m markerul are 22 px, prea puțin"; măsurat sintetic cu calibrarea curentă, detecția merge până la **17 m** la orice rotație, iar la 20 m pică doar la yaw 45°. La 15 m `raza_max` crește de la 4.5 la 5.7 m, deci pilotul are mai multă libertate. Costă însă timp de coborâre (+10 s la 0.5 m/s de la 15 m față de 10 m) contra celor 40 de puncte de timp, iar eroarea de range la 30–35 px e 1–5% (§5.23) exact unde ArduPilot o folosește pentru încetinire. Propus de utilizator (altitudine aleatoare 5–15 m în campanie); cere întâi ridicarea plafonului porții, cod validat | 15.2.3, 8.4.2 |
 | 30 | **`MAX_TILT_DEG = 30°` e peste limita camerei în tot regimul care contează.** La 1 m și 10 cm eroare laterală markerul iese din cadru la 19.5°; supervizorul nu reacționează până la 30°, deci monitorul de înclinare nu poate proteja niciodată detecția — se declanșează întâi cel de vârstă a detecției, iar atunci încercarea e pierdută. Sunt două praguri distincte care împart un număr: integritatea vehiculului (30°, constantă) și limita camerei (funcție de altitudine și eroare laterală, inexistentă în cod). Propus de utilizator; de implementat după campania de 10 rulări | 15.2.9, 8.3.2 |
 | 29 | `SequenceConfig.no_lateral_alt_m = 0.40` e sub pragul la care rotația markerului omoară detecția (~0.60 m, §5.49). Campania îl ridică din linia de comandă; valoarea din cod cere atingerea unui fișier validat | 8.3.3 |
