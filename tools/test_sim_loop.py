@@ -739,6 +739,32 @@ def test_rularea_se_opreste_dupa_handback():
     return f"implicit {m.group(1)} s dupa HANDBACK"
 
 
+def test_statisticile_se_iau_doar_pe_fazele_care_conduc_controlul():
+    """Eroarea detectorului e o masura a SISTEMULUI doar acolo unde detectia
+    conduce controlul. Cadrele din `IDLE` - de dinainte de handover, cu
+    vehiculul zburand spre punct si markerul mult in afara axei - au p95 de
+    14.6 grade, fata de 2.3 in `DESCEND_TRACK`. Incluse, mutau statistica
+    intregii campanii si aratau ca o problema de detector (§5.52).
+
+    Lista e POZITIVA (§5.25): o faza noua nu intra in statistici din
+    greseala, la fel ca `DETECTION_MONITORED_PHASES` din supervizor."""
+    import importlib
+    mod = importlib.import_module('nova_sim')
+    faze = set(mod.FAZE_MASURATE)
+    assert 'DESCEND_TRACK' in faze and 'FINAL_DESCENT' in faze, faze
+    for afara in ('IDLE', 'ASCENT', 'HANDBACK', 'HANDOVER_CHECK', 'REJECT',
+                  'ACQUIRE', 'TOUCHDOWN_CONFIRM'):
+        assert afara not in faze, f"{afara} nu conduce controlul prin detectie"
+    # si lista chiar filtreaza, nu e doar declarata
+    src = open(os.path.join(REPO, 'tools', 'nova_sim.py')).read()
+    assert 'self.sm.state in FAZE_MASURATE' in src, (
+        "lista e declarata dar nu filtreaza nimic")
+    assert 'if masurabil:' in src
+    # iar CSV-ul pastreaza TOATE cadrele, ca analiza sa poata vedea si restul
+    assert 'self.rows.append(rand)' in src
+    return f"{len(faze)} faze masurate; CSV-ul pastreaza tot"
+
+
 def test_adevarul_tacut_e_semnalat_nu_ignorat():
     """§5.33 aplicat pozelor: abonarea la un topic inexistent REUSESTE.
 
@@ -1327,6 +1353,8 @@ TESTS = [
      test_raportul_se_scrie_si_la_oprire_din_afara),
     ('rularea se opreste dupa handback',
      test_rularea_se_opreste_dupa_handback),
+    ('statisticile se iau doar pe fazele care conduc controlul',
+     test_statisticile_se_iau_doar_pe_fazele_care_conduc_controlul),
     ('adevarul tacut e semnalat, nu ignorat',
      test_adevarul_tacut_e_semnalat_nu_ignorat),
     ('fara adevar nu se inventeaza cifre',

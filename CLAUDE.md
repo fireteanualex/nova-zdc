@@ -2573,6 +2573,74 @@ yaw cu markerul înainte de coborâre, care rezolvă și §5.49, dar e logică
 nouă în mașina de stări.
 
 
+### 5.52 Campania cu pragul coborât: 19/20 — și prima măsurătoare validă
+
+`--scoring-px 800`, 20 de rulări: **19 reușite, 1 eșec** — iar eșecul e
+tocmai cel pe care criteriul nou îl poate vedea: *„HANDBACK dar FARA captura
+de scoring (8.3.3)"*. Înainte ar fi fost raportat ca succes.
+
+| metrică | p50 | p95 |
+|---|---|---|
+| eroare finală | **0.64 cm** | 1.46 cm |
+| derivă captură → contact | 0.69 cm | 1.54 cm |
+| altitudinea capturii | 0.65 m | 0.67 m |
+| durata secvenței | 36.3 s | 40.1 s |
+| rată de detecție 3–12 m | 100% | 100% |
+
+Captura se produce la 0.65 m, adică în `DESCEND_TRACK`, deasupra pragului de
+coborâre verticală — exact cum prezicea calculul din §5.51.
+
+#### Cifrele de detecție erau contaminate de fazele în care nu contează
+
+Raportul inițial dădea `eroare unghi p50 = 1.8°` față de un prag de 0.5°.
+Defalcat pe faze, tabloul e altul:
+
+| fază | cadre | unghi p50 | unghi p95 | range p95 |
+|---|---|---|---|---|
+| `DESCEND_TRACK` | 11979 | 0.42° | 2.26° | 1.47% |
+| `IDLE` | 1675 | 0.46° | **14.63°** | 1.73% |
+| `ASCENT` | 1830 | 0.21° | 0.53° | **6.31%** |
+
+Coada venea din `IDLE` — cadre de **dinainte de handover**, cu vehiculul
+zburând spre punct și markerul mult în afara axei — și din `ASCENT`, unde
+urcă și markerul redevine mic. În niciuna detecția nu conduce controlul,
+deci eroarea ei nu spune nimic despre sistem.
+
+Filtrul e acum o **listă pozitivă** (`FAZE_MASURATE`), ca
+`DETECTION_MONITORED_PHASES` din supervizor și din același motiv (§5.25): o
+fază nouă nu intră în statistici din greșeală. CSV-ul păstrează toate
+cadrele, ca o analiză ulterioară să poată vedea și restul.
+
+#### Și un tabel care se citea greșit, inclusiv de mine
+
+Coloanele „eroare range" și „eroare unghi" din rezumatul campaniei conțin
+deja un **p95 pe cadrele unei rulări**, iar tabelul aplică peste ele încă un
+p50/p95 **peste rulări**. Deci `p50 = 2.8%` însemna „rularea mediană, la
+percentila 95 a ei" — o coadă, nu o valoare tipică. Valoarea tipică reală,
+pe cadre, e **0.48%**.
+
+Le-am citit greșit prima dată exact ca oricine altcineva ar fi făcut-o.
+Etichetele spun acum `p95/rul`, iar rezumatul explică ce e dedesubt. Un
+număr agregat de două ori fără să scrie asta e o afirmație falsă cu formă de
+tabel.
+
+#### Ce rămâne nelămurit, și nu inventez o explicație
+
+Pe `DESCEND_TRACK`, eroarea unghiulară e p50 **0.42°** (sub pragul I4 de
+0.5°) dar p95 **2.26°**. Am verificat două ipoteze și niciuna nu ține:
+
+| ipoteză | verificare | rezultat |
+|---|---|---|
+| decalaj de timp între adevăr și cadru | eroarea vs **rata** de înclinare | **infirmată** — p95 e cel mai mare tocmai la rata cea mai mică |
+| efect de înclinare | eroarea vs **magnitudinea** înclinării | corelație reală, p50 0.31° → 0.69° |
+
+Deci înclinarea contează, dar nu prin schimbarea ei în timp. Rămâne de
+lămurit ce anume — nu scriu o cauză pentru că se potrivesc cifrele, greșeala
+din §5.45. Ce se poate spune ferm: eroarea de range trece pragul de 3% la
+p95 (2.88% agregat, 1.47% pe `DESCEND_TRACK`), iar cea unghiulară trece la
+p50 și nu la p95.
+
+
 ---
 
 ## 6. Cerințe care constrâng software-ul
@@ -2891,7 +2959,7 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 21 | Paritatea OpenCV 4.10 verificată pe x86-64; Pi-ul e aarch64 (§5.24) | E2 |
 | 22 | ~~Bucla închisă în Gazebo nu a rulat niciodată cap-coadă~~ — secvență completă la 21.09.2026 (§4b). Rămâne: campanie de rulări, nu o singură condiție | I4 |
 | 22b | **Campania nu a rulat niciodată.** O secvență a mers; `batch_sim.py` cu N rulări și condiții variate nu a fost pornit, deci nu există distribuții. Mediul de dezvoltare nu poate rula Gazebo (`libEGL: failed to create dri2 screen`), deci rulează operatorul | I4, 8.4.2 |
-| 23 | Cifrele I4 (eroare finală, derivă, eroare de range și unghi, latență) — **nicio măsurătoare încă**: prima secvență reușită a fost oprită înainte să-și scrie raportul (§5.47, reparat) | 8.4.2, Safety Case |
+| 23 | ~~Cifrele I4 — nicio măsurătoare~~ măsurate pe 20 de rulări (§5.52). Rămâne: coada erorii unghiulare pe `DESCEND_TRACK` (p95 2.26° față de pragul de 0.5°), cauză nelămurită; și latența, care se măsoară pe Pi, nu aici | 8.4.2, Safety Case |
 | 24 | Distanța de frânare la 0.8 și 1.5 m/s, pentru `PROFIL_RAPID` (blocat până atunci) | 15.2.9, I5 |
 | 32 | `SequenceConfig.scoring_px = 980` e de neatins peste ~18° de yaw: markerul iese din cadru înainte să crească atât (§5.51). Campania îl poate regla la 800; valoarea din cod cere atingerea unui fișier validat. Alternativa — aliniere de yaw cu markerul înainte de coborâre — rezolvă și §5.49, dar e logică nouă | **8.3.3** |
 | 31 | **Plafonul de 12 m al porții e mai conservator decât măsurătoarea.** §8 l-a ales din estimarea „la 20 m markerul are 22 px, prea puțin"; măsurat sintetic cu calibrarea curentă, detecția merge până la **17 m** la orice rotație, iar la 20 m pică doar la yaw 45°. La 15 m `raza_max` crește de la 4.5 la 5.7 m, deci pilotul are mai multă libertate. Costă însă timp de coborâre (+10 s la 0.5 m/s de la 15 m față de 10 m) contra celor 40 de puncte de timp, iar eroarea de range la 30–35 px e 1–5% (§5.23) exact unde ArduPilot o folosește pentru încetinire. Propus de utilizator (altitudine aleatoare 5–15 m în campanie); cere întâi ridicarea plafonului porții, cod validat | 15.2.3, 8.4.2 |

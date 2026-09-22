@@ -64,6 +64,19 @@ from nova.state_machine import (LandingStateMachine,        # noqa: E402
                                 SequenceConfig)
 from nova.vehicle import Vehicle                            # noqa: E402
 
+#: Fazele in care detectia CHIAR conduce controlul, deci singurele in care
+#: eroarea ei e o masura a sistemului.
+#:
+#: Lista e pozitiva, ca `DETECTION_MONITORED_PHASES` din supervizor (§5.25):
+#: o faza noua nu intra in statistici din greseala.
+#:
+#: De ce conteaza: masurat pe 19 rulari, cadrele din `IDLE` - de dinainte de
+#: handover, cu vehiculul zburand spre punct si markerul mult in afara
+#: axei - au p95 de **14.6 grade**, fata de 2.3 in `DESCEND_TRACK`. Incluse,
+#: mutau statistica intregii campanii si aratau ca o problema de detector
+#: (§5.52).
+FAZE_MASURATE = ('DESCEND_TRACK', 'SCORING_CAPTURE', 'FINAL_DESCENT')
+
 CSV_HEADER = [
     'sim_t', 'state', 'alt_m', 'detected', 'marker_px',
     'det_range_m', 'truth_range_m', 'range_rel',
@@ -389,12 +402,14 @@ class SimApp:
     def _record(self, det, now):
         n_lt = self.v.n_lt
         err = None
+        masurabil = self.sm.state in FAZE_MASURATE
         if self.truth is not None:
             # Atitudinea vine de la FC (NED), nu din cuaternionul Gazebo
             # (ENU): yaw = 0 inseamna EST acolo si NORD aici (§5.50).
             err = self.truth.error_vs(det, roll=self.v.roll,
                                       pitch=self.v.pitch, yaw=self.v.yaw)
-            self.errors.append(err)
+            if masurabil:
+                self.errors.append(err)
         alt = self.v.alt
         self.det_by_alt.append((alt, True))
         # latenta cadru -> LANDING_TARGET: cat trece de la CAPTURA pana cand
@@ -462,6 +477,7 @@ class SimApp:
 
         return {
             'n_detectii': s.get('n', 0),
+            'faze_masurate': list(FAZE_MASURATE),
             'n_cadre': self._prev_frames,
             'range_p50': s.get('range_p50'), 'range_p95': s.get('range_p95'),
             'angle_p50': s.get('angle_p50'), 'angle_p95': s.get('angle_p95'),

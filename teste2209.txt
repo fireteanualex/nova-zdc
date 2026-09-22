@@ -1,0 +1,180 @@
+
+  plan: 10 rulari, samanta 0
+    marker in lume: 4.7-15.0 m de punctul de decolare
+    zbor pana la handover: 6.1-15.9 m (vehiculul ajunge in miscare, nu planand)
+    offset la handover: pana la 3.35 m de marker (medie 1.77), plafonat de cadrul camerei
+    handover: 5.2-11.1 m
+    vant: 0.6-5.1 m/s, turbulenta 1-15
+    soare: az 14-355 deg, el 20-75 deg
+    roughness: [0.3, 0.9]
+    EXPERIMENT: scoring_px, no_lateral_alt
+    ATENTIE: 2 variabile schimbate odata. Un rezultat diferit nu se va putea atribui niciuneia (§5.40).
+
+  --- rularea 1/10 (idx 0) ---
+    lume: run_000/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+
+  oprit de utilizator; rezumat pe ce s-a rulat:
+
+  --- 0 rulari: 0 reusite, 0 esecuri ---
+
+    metrica                     p50        p95   (n)
+
+    p50 si p95, nu media: media ascunde coada care decide daca o
+    incercare pica. Evidenta A - Analysis pentru 8.4.2.
+
+  CSV: /home/fireteanualex/nova-zdc/data/batch/20260922-133911/runs.csv
+
+
+  plan: 20 rulari, samanta 0
+    marker in lume: 5.0-13.6 m de punctul de decolare
+    zbor pana la handover: 3.7-14.6 m (vehiculul ajunge in miscare, nu planand)
+    offset la handover: pana la 2.99 m de marker (medie 2.13), plafonat de cadrul camerei
+    handover: 5.8-11.8 m
+    vant: 0.1-5.8 m/s, turbulenta 0-15
+    soare: az 10-346 deg, el 18-71 deg
+    roughness: [0.3, 0.9]
+    EXPERIMENT: scoring_px, no_lateral_alt
+    ATENTIE: 2 variabile schimbate odata. Un rezultat diferit nu se va putea atribui niciuneia (§5.40).
+
+  --- rularea 1/20 (idx 0) ---
+    lume: run_000/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 2/20 (idx 1) ---
+    lume: run_001/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 3/20 (idx 2) ---
+    lume: run_002/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 4/20 (idx 3) ---
+    lume: run_003/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> ESEC: HANDBACK dar FARA captura de scoring (8.3.3)
+
+  --- rularea 5/20 (idx 4) ---
+    lume: run_004/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 6/20 (idx 5) ---
+    lume: run_005/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 7/20 (idx 6) ---
+    lume: run_006/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 8/20 (idx 7) ---
+    lume: run_007/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 9/20 (idx 8) ---
+    lume: run_008/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 10/20 (idx 9) ---
+    lume: run_009/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 11/20 (idx 10) ---
+    lume: run_010/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 12/20 (idx 11) ---
+    lume: run_011/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 13/20 (idx 12) ---
+    lume: run_012/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 14/20 (idx 13) ---
+    lume: run_013/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 15/20 (idx 14) ---
+    lume: run_014/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 16/20 (idx 15) ---
+    lume: run_015/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 17/20 (idx 16) ---
+    lume: run_016/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 18/20 (idx 17) ---
+    lume: run_017/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 19/20 (idx 18) ---
+    lume: run_018/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- rularea 20/20 (idx 19) ---
+    lume: run_019/worlds/nova_marker.sdf
+    Gazebo pornit, astept cadre...
+    SITL pornit, decolez...
+    -> REUSIT: ok
+
+  --- 20 rulari: 19 reusite, 1 esecuri ---
+    rata de succes: 95%
+    motive de esec:
+        1x  HANDBACK dar FARA captura de scoring (8.3.3)
+
+    metrica                     p50        p95   (n)
+    eroare finala (cm)        0.640      1.456   (19)
+    deriva (cm)               0.690      1.539   (19)
+    alt captura (m)           0.650      0.671   (19)
+    durata (s)               36.260     40.097   (19)
+    rata detectie             1.000      1.000   (19)
+    eroare range              0.028      0.034   (19)
+    eroare unghi (deg)        1.799      2.505   (19)
+    latenta p99 (ms)          0.000      0.000   (19)
+
+    p50 si p95, nu media: media ascunde coada care decide daca o
+    incercare pica. Evidenta A - Analysis pentru 8.4.2.
+
+  CSV: /home/fireteanualex/nova-zdc/data/batch/20260922-133928/runs.csv
+

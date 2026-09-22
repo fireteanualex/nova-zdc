@@ -634,8 +634,8 @@ def print_summary(s):
         ('scoring_px', 'captura (px)'),
         ('t_total_s', 'durata (s)'),
         ('rata_detectie', 'rata detectie'),
-        ('range_p95', 'eroare range'),
-        ('angle_p95', 'eroare unghi (deg)'),
+        ('range_p95', 'eroare range p95/rul'),
+        ('angle_p95', 'eroare unghi p95/rul'),
         ('lat_p99_ms', 'latenta p99 (ms)'),
     ]
     for k, et in etichete:
@@ -647,6 +647,10 @@ def print_summary(s):
         print(f"    {et:<20} {p50:>10} {p95:>10}   ({d['n']})")
     print("\n    p50 si p95, nu media: media ascunde coada care decide daca o")
     print("    incercare pica. Evidenta A - Analysis pentru 8.4.2.")
+    print("\n    ATENTIE la ultimele doua: valoarea dintr-o rulare e deja un")
+    print("    p95 pe cadrele ei, iar coloanele de mai sus sunt p50 si p95")
+    print("    PESTE RULARI. Deci 'p50' acolo inseamna 'rularea mediana, la")
+    print("    percentila 95 a ei' - o coada, nu o valoare tipica.")
 
 
 # --- CLI --------------------------------------------------------------------
