@@ -28,10 +28,18 @@ poate face nu are voie sa blocheze pornirea - blocarea o decide apelantul,
 si doar cand stie sigur.
 """
 
+import glob
 import os
 import subprocess
 
 SERVICE_NAME = 'nova-monitor'
+
+#: Serviciul de UTILIZATOR din pi/nova-bringup.service (pornirea automata cu
+#: fereastra). Tine si /dev/serial0, si camera. Pe vehicul, pornit la login,
+#: a facut ca un `pi/bringup.sh` rulat de mana sa gaseasca portul ocupat si
+#: camera luata ("Pipeline handler in use by another process") - iar
+#: --stop-service oprea doar serviciul de SISTEM de mai sus, nu pe acesta.
+USER_SERVICE_NAME = 'nova-bringup'
 DEFAULT_PORT = '/dev/serial0'
 
 
@@ -65,6 +73,51 @@ def service_active(name=SERVICE_NAME, runner=_run):
         return out == 'activating'
     # 'unknown' sau unitate inexistenta
     return None
+
+
+def user_service_active(name=USER_SERVICE_NAME, runner=_run):
+    """True/False/None, ca `service_active`, dar pentru serviciul de UTILIZATOR."""
+    rc, out = runner(['systemctl', '--user', 'is-active', name])
+    if rc is None:
+        return None
+    if out == 'active' or out == 'activating':
+        return True
+    if out in ('inactive', 'failed', 'unknown'):
+        return False
+    return None
+
+
+def _ppid(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            # campul 4; numele (campul 2) poate contine spatii, deci dupa ')'
+            return int(f.read().rsplit(')', 1)[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def in_user_service(name=USER_SERVICE_NAME, runner=_run, pid=None):
+    """Suntem chiar procesul serviciului (sau un descendent al lui)?
+
+    Fara asta, `nova_pi.py` pornit DE serviciu s-ar vedea pe sine ca
+    "serviciul ocupa portul" si ar refuza sa porneasca. Se urca pe arborele
+    de procese pana la MainPID-ul serviciului - mai robust decat o variabila
+    de mediu, pe care o pot mosteni si terminale pornite altfel."""
+    rc, out = runner(['systemctl', '--user', 'show', '-p', 'MainPID',
+                      '--value', name])
+    if rc != 0 or not (out or '').strip().isdigit():
+        return False
+    main = int(out.strip())
+    if main <= 1:
+        return False
+    p = os.getpid() if pid is None else pid
+    for _ in range(64):                  # adancime maxima rezonabila
+        if p == main:
+            return True
+        if p <= 1:
+            return False
+        p = _ppid(p)
+    return False
 
 
 def holders(port=DEFAULT_PORT, runner=_run):
@@ -115,6 +168,37 @@ def holders(port=DEFAULT_PORT, runner=_run):
     return rezultat
 
 
+def camera_holders(runner=_run, paths=None):
+    """[(pid, cmdline)] pentru procesele care tin camera deschisa.
+
+    libcamera accepta un singur proces pe camera. Al doilea primeste
+    "Pipeline handler in use by another process" urmat de "Camera __init__
+    sequence did not complete" - adica CE, nu si CINE. Nodurile /dev/media*
+    si /dev/video* sunt cele pe care le tine procesul care a luat-o."""
+    if paths is None:
+        paths = sorted(glob.glob('/dev/media*')) + sorted(glob.glob('/dev/video*'))
+    gasiti = {}
+    for p in paths:
+        for pid, cmd in holders(p, runner=runner):
+            gasiti[pid] = cmd
+    return sorted(gasiti.items())
+
+
+def describe_camera_conflict(runner=_run, paths=None):
+    """Mesaj cu CINE tine camera, sau None daca nu se vede nimeni."""
+    if (user_service_active(runner=runner)
+            and not in_user_service(runner=runner)):
+        return (f"camera e luata de pornirea automata ({USER_SERVICE_NAME}).\n"
+                f"        systemctl --user stop {USER_SERVICE_NAME}")
+    ocupanti = camera_holders(runner=runner, paths=paths)
+    if ocupanti:
+        linii = '\n'.join(f"        PID {pid}: {cmd[:70]}"
+                          for pid, cmd in ocupanti)
+        return (f"camera e deja deschisa de alt proces:\n{linii}\n"
+                f"        Opreste-l (kill <PID>) si reia.")
+    return None
+
+
 def describe_conflict(port=DEFAULT_PORT, service=SERVICE_NAME, runner=_run):
     """Mesajul de eroare, sau None daca portul pare liber.
 
@@ -125,6 +209,15 @@ def describe_conflict(port=DEFAULT_PORT, service=SERVICE_NAME, runner=_run):
                 f"        sudo systemctl stop {service}\n"
                 f"        (sau porneste cu --stop-service, care o face "
                 f"singur)")
+    if (user_service_active(runner=runner)
+            and not in_user_service(runner=runner)):
+        return (f"pornirea automata ({USER_SERVICE_NAME}) ruleaza deja si "
+                f"tine {port} SI camera.\n"
+                f"        systemctl --user stop {USER_SERVICE_NAME}\n"
+                f"        (sau porneste cu --stop-service, care o face "
+                f"singur;\n"
+                f"         o repornesti cu: systemctl --user start "
+                f"{USER_SERVICE_NAME})")
     ocupanti = holders(port, runner=runner)
     if ocupanti:
         linii = '\n'.join(f"        PID {pid}: {cmd[:70]}"
@@ -164,6 +257,23 @@ def ensure_port_free(port=DEFAULT_PORT, service=SERVICE_NAME,
     motiv = describe_conflict(port, service, runner=runner)
     if motiv is None:
         return True
+
+    e_utilizator = (bool(user_service_active(runner=runner))
+                    and not in_user_service(runner=runner))
+    if e_utilizator and stop_service_ok:
+        # Fara sudo: e al utilizatorului curent. Si fara confirmare in plus:
+        # nu opreste nimic in afara sesiunii lui, iar cine a dat
+        # --stop-service a cerut exact asta.
+        printer(f"[serial] opresc pornirea automata ({USER_SERVICE_NAME}) - "
+                f"tine portul si camera")
+        rc, out = runner(['systemctl', '--user', 'stop', USER_SERVICE_NAME],
+                         timeout=20.0)
+        if rc == 0 and not user_service_active(runner=runner):
+            printer(f"[serial] {USER_SERVICE_NAME} oprit. Il repornesti cu: "
+                    f"systemctl --user start {USER_SERVICE_NAME}")
+            return True
+        raise PortBusy(f"nu am putut opri {USER_SERVICE_NAME}: {out}\n"
+                       f"        {motiv}", service=USER_SERVICE_NAME)
 
     e_serviciul = bool(service_active(service, runner=runner))
     if e_serviciul and stop_service_ok:

@@ -71,6 +71,18 @@ for arg in "$@"; do
 done
 
 mkdir -p "$LOG_DIR"
+
+# Pornirea automata (pi/install.sh) tine camera si portul. Proba de coborare
+# are nevoie de amandoua - inclusiv preflight-ul, care deschide camera
+# INAINTEA aplicatiei. Deci se opreste aici, explicit si spus, nu lasat pe
+# seama lui --stop-service din nova_pi.py, care vine prea tarziu.
+if command -v systemctl >/dev/null \
+   && systemctl --user is-active --quiet nova-bringup 2>/dev/null; then
+  printf '\n\033[1m[coborare]\033[0m opresc pornirea automata (nova-bringup): '
+  printf 'tine camera si portul.\n'
+  printf '  o repornesti dupa proba cu: systemctl --user start nova-bringup\n'
+  systemctl --user stop nova-bringup || die "nu am putut opri nova-bringup"
+fi
 [[ -x "$VENV/bin/python" ]] || die "nu gasesc venv-ul la $VENV"
 PY="$VENV/bin/python"
 PROBLEME=0

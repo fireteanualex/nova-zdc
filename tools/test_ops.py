@@ -45,6 +45,100 @@ def runner_for(is_active=None, fuser=None, stop_ok=True):
     return run
 
 
+def runner_utilizator(activ=True, main_pid=4242, fuser_pe=None):
+    """Fals pentru serviciul de UTILIZATOR nova-bringup + fuser pe noduri."""
+    stare = {'activ': activ, 'opriri': 0}
+    fuser_pe = fuser_pe or {}
+
+    def run(cmd, timeout=3.0):
+        if cmd[:3] == ['systemctl', '--user', 'is-active']:
+            return (0 if stare['activ'] else 3), (
+                'active' if stare['activ'] else 'inactive')
+        if cmd[:3] == ['systemctl', '--user', 'show']:
+            return 0, str(main_pid if stare['activ'] else 0)
+        if cmd[:3] == ['systemctl', '--user', 'stop']:
+            stare['activ'] = False
+            stare['opriri'] += 1
+            return 0, ''
+        if cmd[:2] == ['systemctl', 'is-active']:
+            return 3, 'inactive'                   # nova-monitor oprit
+        if cmd[0] == 'fuser':
+            out = fuser_pe.get(cmd[1])
+            return (0, out) if out else (1, '')
+        return None, ''
+    run.stare = stare
+    return run
+
+
+def test_serviciul_de_utilizator_e_numit_si_nu_se_refuza_pe_sine():
+    """Pe vehicul, dupa pi/install.sh: `pi/bringup.sh` pornit de mana peste
+    pornirea automata a gasit camera luata si portul ocupat, iar ce a vazut
+    a fost "Camera __init__ sequence did not complete".
+
+    Trei lucruri:
+      - de mana, peste serviciu: conflictul e numit, cu comanda de oprire;
+      - CHIAR serviciul (MainPID = noi): NU e conflict - altfel nova_pi.py
+        pornit de serviciu s-ar refuza pe sine si pornirea automata n-ar
+        merge niciodata;
+      - --stop-service opreste si serviciul de utilizator, nu doar
+        nova-monitor (asta promitea ghidul, si nu era adevarat)."""
+    import os as _os
+
+    # 1. de mana, serviciul ruleaza sub alt PID
+    run = runner_utilizator(activ=True, main_pid=999999)
+    motiv = sg.describe_conflict('/dev/serial0', runner=run)
+    assert motiv and sg.USER_SERVICE_NAME in motiv, motiv
+    assert 'systemctl --user stop' in motiv, "fara comanda de oprire"
+
+    # 2. suntem chiar serviciul
+    run2 = runner_utilizator(activ=True, main_pid=_os.getpid())
+    assert sg.in_user_service(runner=run2) is True
+    assert sg.describe_conflict('/dev/serial0', runner=run2) is None, (
+        "serviciul se vede pe sine drept conflict - pornirea automata "
+        "s-ar refuza la fiecare boot")
+
+    # un descendent al serviciului (nova_pi.py pornit de bringup.sh) la fel
+    run3 = runner_utilizator(activ=True, main_pid=_os.getppid())
+    assert sg.in_user_service(runner=run3) is True, (
+        "un proces pornit DE serviciu nu e recunoscut ca parte din el")
+
+    # 3. --stop-service il opreste
+    run4 = runner_utilizator(activ=True, main_pid=999999)
+    mesaje = []
+    assert sg.ensure_port_free('/dev/serial0', stop_service_ok=True,
+                               runner=run4, printer=mesaje.append) is True
+    assert run4.stare['opriri'] == 1, "--stop-service nu a oprit nova-bringup"
+    assert any('start' in m for m in mesaje), (
+        "nu spune cum se reporneste pornirea automata")
+
+    # fara --stop-service: refuz, nu oprire din inertie
+    run5 = runner_utilizator(activ=True, main_pid=999999)
+    try:
+        sg.ensure_port_free('/dev/serial0', runner=run5)
+        raise AssertionError("a trecut peste serviciu fara --stop-service")
+    except sg.PortBusy:
+        pass
+    assert run5.stare['opriri'] == 0
+    return "numit de mana; nu se refuza pe sine; --stop-service il opreste"
+
+
+def test_camera_ocupata_e_numita():
+    """libcamera spune CE ("Pipeline handler in use by another process"),
+    nu CINE. Garda numeste procesul care tine nodurile camerei, ca la
+    §5.27 pentru portul serial."""
+    import os as _os
+    import tempfile as _tf
+    nod = _os.path.join(_tf.mkdtemp(), 'media0')
+    open(nod, 'w').close()
+    pid = _os.getppid()                    # un PID real, cu cmdline citibil
+    run = runner_utilizator(activ=False, fuser_pe={nod: f"{nod}: {pid}"})
+    msg = sg.describe_camera_conflict(runner=run, paths=[nod])
+    assert msg and f"PID {pid}" in msg, msg
+    assert sg.describe_camera_conflict(
+        runner=runner_utilizator(activ=False), paths=[nod]) is None
+    return f"PID {pid} numit ca ocupant al camerei"
+
+
 # --- H2 ---------------------------------------------------------------------
 
 def test_H2_serviciul_activ_e_identificat():
@@ -875,6 +969,9 @@ def test_FLIGHT_deleaga_catre_race_mode():
 
 
 TESTS = [
+    ('serviciul de utilizator e numit si nu se refuza pe sine',
+     test_serviciul_de_utilizator_e_numit_si_nu_se_refuza_pe_sine),
+    ('camera ocupata e numita', test_camera_ocupata_e_numita),
     ('H2: serviciul activ e identificat', test_H2_serviciul_activ_e_identificat),
     ('H2: port liber trece', test_H2_port_liber_trece),
     ('H2: SITL nu are conflict', test_H2_SITL_nu_are_conflict),

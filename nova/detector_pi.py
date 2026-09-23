@@ -799,7 +799,18 @@ class PiCameraSource(FrameSource):
 
         self.verbose = verbose
         self.size = tuple(size)
-        self.picam2 = Picamera2()
+        try:
+            self.picam2 = Picamera2()
+        except RuntimeError as e:
+            # libcamera spune CE ("Camera __init__ sequence did not
+            # complete"), nu CINE. Pe vehicul: a doua instanta a aplicatiei,
+            # pornita peste serviciul de pornire automata. Se numeste
+            # ocupantul inainte de a lasa eroarea sa urce.
+            from . import serial_guard
+            cine = serial_guard.describe_camera_conflict()
+            if cine:
+                raise RuntimeError(f"{e}\n  {cine}") from e
+            raise
         self.video_cfg = self.picam2.create_video_configuration(
             main={'size': self.size, 'format': 'YUV420'},
             controls={'FrameRate': float(fps)},

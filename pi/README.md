@@ -240,6 +240,10 @@ ls -t ~/nova-logs/ | head                 # logurile de rulare
 
 > Nu porni în același timp `nova-monitor.service` (cel de sistem, fără
 > ecran): se bat pe `/dev/serial0` (§5.27).
+>
+> Și nici `pi/bringup.sh` de mână peste pornirea automată: serviciul ține
+> portul **și camera**. Scriptul refuză acum, cu comanda de oprire:
+> `systemctl --user stop nova-bringup`.
 
 ---
 

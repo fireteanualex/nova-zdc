@@ -59,6 +59,26 @@ done
 
 mkdir -p "$LOG_DIR"
 
+# --- 0. o singura instanta -------------------------------------------------
+# Serviciul de pornire automata (pi/install.sh) ruleaza chiar scriptul asta.
+# Pornit si de mana peste el, a doua copie gaseste camera luata ("Pipeline
+# handler in use by another process") si portul ocupat - iar doua procese
+# pe acelasi UART isi fura octetii unul altuia: HEARTBEAT-ul trece, citirile
+# de parametri se pierd. Asa s-a intamplat prima data pe vehicul.
+#
+# Cand scriptul E serviciul, PID-ul lui e chiar MainPID-ul serviciului.
+if command -v systemctl >/dev/null \
+   && systemctl --user is-active --quiet nova-bringup 2>/dev/null; then
+  MAIN_PID="$(systemctl --user show -p MainPID --value nova-bringup 2>/dev/null)"
+  if [[ "$MAIN_PID" != "$$" ]]; then
+    die "pornirea automata (nova-bringup) ruleaza deja - tine camera si portul.
+    Vezi ce face:        journalctl --user -u nova-bringup -f
+    Opreste-o ca sa rulezi de mana:
+                         systemctl --user stop nova-bringup
+    Si apoi o repornesti: systemctl --user start nova-bringup"
+  fi
+fi
+
 # --- 1. mediul -------------------------------------------------------------
 say "mediul"
 [[ -x "$VENV/bin/python" ]] || die "nu gasesc venv-ul la $VENV (ruleaza tools/setup_pi.sh)"
@@ -97,18 +117,28 @@ fi
 
 # Cine tine portul (§5.27): raspunsul e util doar daca e dat INAINTE de a
 # incerca sa-l deschizi. `Errno 16` spune CE, nu spune CINE.
-NOVA_REPO="$REPO" "$PY" - "$CONN" <<'EOF' || true
+# Un port ocupat OPRESTE scriptul. Prima varianta doar avertiza si mergea
+# mai departe, in preflight si intr-un al doilea monitor - adica exact in
+# conflictul pe care tocmai il detectase.
+set +e
+NOVA_REPO="$REPO" "$PY" - "$CONN" <<'EOF'
 import os, sys
 sys.path.insert(0, os.environ['NOVA_REPO'])
 from nova import serial_guard
 motiv = serial_guard.describe_conflict(sys.argv[1])
-if motiv:
-    print("  ATENTIE: portul e ocupat")
-    for linie in str(motiv).splitlines():
-        print(f"    {linie}")
-else:
-    print(f"  OK    nimeni altcineva nu tine {sys.argv[1]}")
+cam = serial_guard.describe_camera_conflict()
+if motiv or cam:
+    for m in (motiv, cam):
+        if m:
+            for linie in str(m).splitlines():
+                print(f"    {linie}")
+    raise SystemExit(3)
+print(f"  OK    nimeni altcineva nu tine {sys.argv[1]} sau camera")
 EOF
+OCUPAT=$?
+set -e
+[[ $OCUPAT -eq 3 ]] && die "portul sau camera sunt luate de alt proces - vezi mai sus"
+
 
 # --- 3. calibrarea camerei -------------------------------------------------
 say "calibrarea camerei"

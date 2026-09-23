@@ -3193,6 +3193,34 @@ status`, și nu s-ar vedea nimic pe ecran. Cere autologin pe desktop.
 Pentru vehicul, fără ecran, rămâne `systemd/nova-monitor.service`, care e de
 sistem. **Nu se pornesc amândouă**: se bat pe `/dev/serial0` (§5.27).
 
+#### A doua instanță: camera spune CE, nu CINE — iar portul nu se blochează
+
+Primul lucru după `pi/install.sh` pe vehicul: `pi/bringup.sh` pornit de mână
+peste pornirea automată. Serviciul ținea deja camera și portul.
+
+- **Camera:** libcamera acceptă un singur proces. Al doilea primește
+  `Pipeline handler in use by another process`, apoi `Camera __init__
+  sequence did not complete` — adică CE, nu CINE. Aceeași problemă ca
+  §5.27, mutată de pe port pe cameră. `PiCameraSource` numește acum
+  ocupantul (`serial_guard.describe_camera_conflict`, pe nodurile
+  `/dev/media*` și `/dev/video*`).
+- **Portul:** Linux **nu blochează** un tty între procese, iar pyserial îl
+  deschide neexclusiv. Două procese pe același UART își fură octeții:
+  `HEARTBEAT` a trecut, citirile de parametri s-au pierdut, iar
+  `check_params` a ieșit cu 1 fără să spună de ce. Nicio eroare de „port
+  ocupat" — doar date lipsă.
+- **Scriptul detectase conflictul și mersese mai departe.** Avertiza, apoi
+  intra în preflight și pornea un al doilea monitor. Acum se oprește.
+- **`--stop-service` oprea doar `nova-monitor`** (serviciul de sistem), nu
+  `nova-bringup` (cel de utilizator) — iar ghidul spunea că „se ocupă
+  singur". Acum le oprește pe amândouă; `descent_test.sh` oprește pornirea
+  automată explicit, *înaintea* preflight-ului care deschide camera.
+
+Capcana de evitat: serviciul rulează chiar `bringup.sh`, deci o gardă
+naivă „serviciul e activ → conflict" ar face serviciul să se refuze pe
+sine la fiecare boot. Garda urcă pe arborele de procese până la `MainPID`-ul
+serviciului; în `bringup.sh`, `MainPID == $$`.
+
 
 ### 5.60 Primul preflight pe vehicul: două verificări care măsurau altceva
 

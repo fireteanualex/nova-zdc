@@ -1456,6 +1456,39 @@ def test_uneltele_din_ghiduri_se_pot_rula_direct():
     return "toate uneltele-punct-de-intrare sunt 100755 in git"
 
 
+def test_scripturile_nu_pornesc_o_a_doua_instanta():
+    """Pe vehicul, cu pornirea automata activa, `pi/bringup.sh` rulat de mana
+    a DETECTAT ca portul e ocupat - si a mers mai departe, in preflight si
+    intr-un al doilea monitor. Camera: "Pipeline handler in use by another
+    process"; parametrii: citiri pierdute, fiindca doua procese pe acelasi
+    UART isi fura octetii.
+
+    - bringup.sh se opreste daca serviciul ruleaza si nu e chiar el
+      (MainPID == $$), si se opreste la orice conflict de port/camera;
+    - descent_test.sh opreste pornirea automata INAINTEA preflight-ului,
+      care deschide camera inaintea aplicatiei."""
+    b = open(os.path.join(REPO, 'pi', 'bringup.sh')).read()
+    assert 'MainPID' in b and '"$$"' in b, (
+        "bringup.sh nu deosebeste 'sunt serviciul' de 'rulez peste el'")
+    i_serv = b.find('systemctl --user is-active --quiet nova-bringup')
+    i_pre = b.find('tools/preflight_check.py')
+    assert -1 < i_serv < i_pre, "verificarea de instanta vine dupa preflight"
+    assert 'describe_camera_conflict' in b, "camera ocupata nu e verificata"
+    assert 'die "portul sau camera sunt luate' in b, (
+        "un conflict detectat doar avertizeaza - scriptul merge mai departe "
+        "in exact conflictul pe care l-a vazut")
+
+    d = open(os.path.join(REPO, 'pi', 'descent_test.sh')).read()
+    i_stop = d.find('systemctl --user stop nova-bringup')
+    i_pre = d.find('tools/preflight_check.py')
+    assert -1 < i_stop < i_pre, (
+        "descent_test.sh nu opreste pornirea automata inaintea preflight-ului "
+        "- preflight-ul ar gasi camera luata")
+    assert 'systemctl --user start nova-bringup' in d, (
+        "nu spune cum se reporneste pornirea automata dupa proba")
+    return "bringup se opreste la conflict; descent_test elibereaza camera"
+
+
 def test_install_refuza_sudo():
     """Rulat cu sudo pe vehicul, pi/install.sh a pus unitatea in configul lui
     ROOT, cu ExecStart spre /root/nova-zdc, iar `systemctl --user` nu a
@@ -1597,6 +1630,8 @@ TESTS = [
     ('bringup: unitatea de boot', test_bringup_unitatea_de_boot),
     ('uneltele din ghiduri se pot rula direct',
      test_uneltele_din_ghiduri_se_pot_rula_direct),
+    ('scripturile nu pornesc o a doua instanta',
+     test_scripturile_nu_pornesc_o_a_doua_instanta),
     ('install refuza sudo', test_install_refuza_sudo),
     ('bringup: nu e un al doilea cablaj',
      test_bringup_nu_e_un_al_doilea_cablaj),

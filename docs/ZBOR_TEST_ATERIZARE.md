@@ -273,9 +273,15 @@ journalctl --user -u nova-bringup -f
 systemctl --user stop nova-bringup      # INAINTE de testul de aterizare
 ```
 
-> **Important:** serviciul ține `/dev/serial0`. Oprește-l înainte de
-> `descent_test.sh`, sau lasă scriptul să o facă (`--stop-service`, e deja
-> în comandă). Două procese pe același port = §5.27.
+> **Important:** serviciul ține `/dev/serial0` **și camera**. O a doua
+> copie pornită peste el primește „Camera __init__ sequence did not
+> complete", iar două procese pe același UART își fură octeții: heartbeat-ul
+> trece, citirile de parametri se pierd.
+>
+> - `descent_test.sh` îl **oprește singur**, înainte de preflight, și îți
+>   spune cum îl repornești (`systemctl --user start nova-bringup`)
+> - `bringup.sh` rulat de mână peste el **refuză** și îți spune să-l oprești
+> - pentru orice altceva: `systemctl --user stop nova-bringup`
 
 Autoboot-ul pornește **monitorul**, nu coborârea: detector activ, zero
 comenzi. Testul de aterizare se pornește de mână, deliberat.
