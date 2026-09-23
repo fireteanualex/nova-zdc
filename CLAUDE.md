@@ -364,6 +364,20 @@ peste ~1173 px, adică **sub 0.38 m**.
 Fără acest fix: `SCORING_CAPTURE` se declanșa la 0.19 m cu 2344 px
 (fizic imposibil), iar takeoff-ul rămânea blocat după aterizare.
 
+> **Cifra de 0.38 m are trei calificative, adăugate pe rând, fiecare
+> plătit cu o rundă de depanare.** E valabilă doar la nadir, cu eroare
+> laterală zero **și** cu markerul nerotit în cadru:
+>
+> | ce lipsea | cât mută pragul | unde |
+> |---|---|---|
+> | înclinarea vehiculului și eroarea laterală | 0.38 → ~1 m | §5.45 |
+> | rotația markerului în cadru (cutia, nu latura) | ×1.41 la 45° | §5.49 |
+> | `frame_h_px` derivat din VFOV, nu pixelii reali | ~5% | §5.57 |
+>
+> Detectorul folosește acum `fill` — cutia colțurilor față de cadrul real —
+> deci verificarea nu mai depinde de niciunul dintre cele trei. Formula de
+> mai sus rămâne pentru intuiție, nu ca criteriu.
+
 ### 5.3 Telemetrul derivat din viziune
 
 Camera **este** rangefinder-ul: `solvePnP` dă distanța din dimensiunea
@@ -2814,6 +2828,187 @@ de cadre înseamnă 90 MB din RAM-ul Pi-ului. Se pornește explicit, cu
 aplicația o **spune** la pornire în loc să tacă și să nu producă nimic.
 
 
+
+### 5.56 Campania măsura o configurație pe care vehiculul nu ar fi zburat-o
+
+Trei lucruri găsite privind raportul unei campanii de 10 rulări care
+arăta perfect: **10/10, eroare finală p50 0.555 cm, rată de detecție
+1.000, imagini 8.3.3 în toate.** Primele două cifre sunt reale. A treia nu
+măsura nimic.
+
+**1. `rata_detectie` raporta 1.000 în orice condiții.** `_note_frames`
+citea contorul cu `getattr(detector, 'n_frames', None)`. Contorul stă pe
+`ArucoMarkerDetector`; detectorul primit e un `PiDetector`, care nu îl
+expunea. Deci `getattr` întorcea `None`, funcția ieșea din prima
+instrucțiune, iar `det_by_alt` primea numai `True`.
+
+A patra oară aceeași formă ca §5.39 — și cea mai perfidă, pentru că
+**testul care trebuia să o prindă exista și trecea.** Își injecta un obiect
+fals cu `n_frames`:
+
+```python
+class _Det:
+    n_frames = 0
+app.detector = _Det()
+```
+
+Deci verifica aritmetica lui `_note_frames` pe o clasă care nu zboară
+nicăieri. §5.40 spunea „condiția care declanșează cazul negativ se
+**injectează**, nu se speră" — aici injectarea a fost chiar problema:
+obiectul fals avea atributul pe care cel real nu îl avea.
+
+Reparat cu o proprietate delegată pe `PiDetector` plus un test care se
+uită la **clasa din producție**, nu la un dublu.
+
+> **Semnul care trebuia citit:** `n_cadre = 0` scris lângă
+> `rata_detectie = 1.000`, în același raport. Zero cadre procesate și 100%
+> detecție nu pot fi ambele adevărate. Aceeași regulă ca §5.49: o cifră
+> care contrazice altă cifră a aceluiași sistem e o eroare de măsurare
+> până la proba contrarie.
+
+**2. `lat_p99 = 0.000 ms`, raportat lângă un criteriu de 150 ms.** În sim
+se măsoară `now - det.t`, ambele pe ceasul de simulare. Când detectorul
+ține pasul cu randarea, ceasul nu a avansat între capturare și consumare,
+deci iese exact 0. Aia e **întârziere de coadă**, nu latența de calcul
+cerută de E1.4 — care se măsoară pe Pi 4 și nu are cum să fie zero.
+
+Un `0.0` pus sub o coloană numită „latență" e o afirmație de conformitate
+pe care simularea nu o poate susține. §5.29 aplicat unui raport: `-` și
+`0` sunt lucruri diferite.
+
+**3. Campania rula alte praguri decât vehiculul.**
+`batch_sim.NO_LATERAL_ALT_M = 0.60` suprascria cei 0.40 m din
+`SequenceConfig`. `tools/nova_pi.py` construiește `SequenceConfig(conv=...)`
+— doar implicite. Deci **toate** cifrele din §5.52 și §5.54 descriu o
+configurație pe care bordul nu ar fi zburat-o niciodată.
+
+Nu era o valoare greșită. Era o valoare care exista doar în campanie.
+Constanta a fost eliminată; knob-ul rămâne, dar trebuie dat explicit — și
+atunci campania îl anunță ca experiment (§5.40). Un test compară acum
+implicitele celor două.
+
+**Tiparul comun al celor trei:** fiecare producea o cifră care arăta a
+succes. Un test picat se repară în zece minute; o metrică moartă intră în
+Compliance Matrix.
+
+### 5.57 Un prag fix în pixeli nu putea fi corect la nicio valoare
+
+Trei runde am reglat același număr — 980 → 800 → 700 — și de fiecare dată
+marja se subția în același loc. Motivul e că numărul măsura altceva decât
+condiția care contează.
+
+`marker_px` e **latura**. Ce trebuie să încapă în cadru e **cutia de
+încadrare**, mai mare cu `|cos θ| + |sin θ|` — până la 41% la 45° (§5.49).
+Iar θ e rotația markerului în cadru, adică orientarea vehiculului la
+handover: **o dă pilotul, nu o alegem noi.**
+
+| prag | marjă până la pierderea detecției, la 0° / 41° |
+|---|---|
+| 980 px | de neatins peste ~18° (§5.51) |
+| 800 px | +48% / **−5%** — o captură pierdută din 10 (§5.54) |
+| 700 px | +69% / +8% |
+
+Marja nu se subțiază puțin: se **prăbușește**, exact la rotațiile mari.
+
+**Soluția nu e alt număr, e altă mărime.** `Detection` poartă acum `fill`:
+cât din cadru ocupă cutia markerului, luată din **colțuri**. Colțurile
+includ rotația, perspectiva și distorsiunea așa cum sunt, nu cum ar fi la
+un pătrat ideal văzut de sus.
+
+```
+SCORING_FILL = 0.62   captura 8.3.3        marjă ≥ 1.33× la ORICE rotație
+FINAL_FILL   = 0.72   coborâre verticală
+SCORING_PX   = 700    rezervă, când fill lipsește
+NO_LATERAL_ALT_M = 0.50   plasă, nu criteriu
+```
+
+Verificat pe 0–45°, secvență completă la fiecare: captura se produce de
+fiecare dată, `fill` la captură e **0.63 constant**, iar `marker_px` la
+captură merge 814 → 578. Cu prag fix de 700 px, jumătate din rotații ar fi
+ratat captura.
+
+**Ordinea celor două praguri e acum o proprietate, nu un noroc.** Captura
+și trecerea la coborâre verticală se măsoară pe **același** criteriu, deci
+nu se pot încrucișa. Când erau două mărimi diferite — pixeli și metri —
+ordinea lor depindea de rotație, iar când s-a inversat, 8.3.3 a eșuat în
+toate cele 10 rulări cu campania raportând 100% (§5.51).
+
+**`None` nu înseamnă zero.** Un detector care nu raportează încadrarea
+trimite `None` și consumatorul cade pe pragul în pixeli. Un `0.0` implicit
+ar spune „markerul e mic" tocmai când e pe cale să iasă din cadru — §5.53
+aplicat unui câmp de date.
+
+**Ce rămâne nemăsurat:** `fill` nu egalizează marja complet. La 41°
+randarea reală pierde markerul la `fill` 0.826, față de 0.914 la nadir —
+deci rămâne o împrăștiere de 1.11×, față de 1.56× la pragul în pixeli.
+Cauza celor 9% e aceeași bănuială ca în §5.54 (marginea colii, filtrarea
+texturii), neconfirmată. Nu scriu o explicație pentru că se potrivesc
+cifrele.
+
+#### Bugetul de înclinare al camerei nu e pragul de integritate
+
+Elementul 30, rezolvat pe jumătate — partea care se poate decide.
+`safety.MAX_TILT_DEG = 30°` și limita camerei împărțeau un număr și nu
+sunt același lucru:
+
+| | ce e | formă |
+|---|---|---|
+| integritate | peste asta coborârea nu mai e controlată | **constantă**, 30° |
+| cameră | peste asta markerul iese din cadru | **funcție** de altitudine și eroare laterală |
+
+`CameraModel.tilt_budget_deg(alt, lateral)` reproduce exact cifrele
+măsurate: 14.0° la 7.17 m cu 2.95 m lateral (§5.48, unde tranzitoriul a
+atins 19.3° și markerul a ieșit cu 72.7 cm) și 19.5° la 1 m cu 10 cm.
+
+| alt | 0 cm | 10 cm | 30 cm |
+|---|---|---|---|
+| 0.5 m | 12.1° | 0.8° | 0° |
+| 1.0 m | 24.4° | 19.5° | 8.8° |
+| 2.0 m | 29.9° | 27.7° | 23.0° |
+| 12 m | 34.0° | 33.7° | 33.0° |
+
+Sub ~2 m bugetul e mereu sub 30°, deci monitorul de înclinare **nu poate
+proteja detecția**: până ajunge la prag, markerul a ieșit demult și a
+declanșat monitorul de vârstă a detecției.
+
+**Dar nu e o scăpare de reglat coborând pragul la 20°.** Un BRAKE pe
+bugetul camerei ar anula un tranzitoriu recuperabil, și ar lovi exact când
+controlerul face ce trebuie: se înclină ca să corecteze lateral. Bugetul se
+apără **preventiv**, în trei locuri care există deja: `WP_ACC = 1.5`
+(8.7° în regim), `final_fill` (iese din fazele supravegheate înainte ca
+bugetul să se prăbușească sub 1 m), și poarta, când se face J4.
+
+Deci bugetul se **măsoară**, nu se acționează pe el: `tilt_budget_deg` și
+`tilt_margin_deg` per cadru în `frames.csv`. În Safety Case intră relația,
+nu o singură cifră (§6/15.2.9).
+
+### 5.58 `LANDING_TARGET` în IDLE: descoperit în runda 7, reparat în J5
+
+§5.43 l-a găsit și l-a lăsat deliberat, sub freeze-ul rundei 7.
+`on_detection` trimitea `LANDING_TARGET` **și** `DISTANCE_SENSOR`
+necondiționat, în toate stările — deci și în `IDLE`, adică în tot zborul
+pilotului.
+
+Filtrul e o **listă pozitivă** (§5.25): `ACQUIRE`, `DESCEND_TRACK`,
+`SCORING_CAPTURE`, `FINAL_DESCENT`. O fază nouă nu emite până nu o adaugă
+cineva deliberat.
+
+Două decizii care nu sunt evidente:
+
+- **`ACQUIRE` e înăuntru.** PLND e deja armat, iar estimatorul primește
+  măsurători înainte ca FC-ul să confirme LAND.
+- **`TOUCHDOWN_CONFIRM` și `ASCENT` nu sunt.** Vehiculul e pe sol și apoi
+  urcă, iar acolo un telemetru care raportează sub ținta de decolare e
+  exact cazul măsurat în §5.9: `NAV_TAKEOFF` respins cu `result=4`, fără
+  niciun `STATUSTEXT`. Cu `WP_RFND_USE = 0` efectul nu se manifestă, dar a
+  depinde de asta e gratuit când lista poate fi corectă.
+
+**Detecția se înregistrează în continuare în orice stare.** Se filtrează
+doar emisia: poarta de handover și monitorul de vârstă a detecției depind
+de `last_det` în `IDLE`, iar un filtru pus prea sus le-ar face oarbe. Un
+test verifică ambele direcții — zero mesaje în `IDLE`, dar emisie în
+`DESCEND_TRACK`, altfel filtrul ar rupe secvența fără ca nimic să spună.
+
 ---
 
 ## 6. Cerințe care constrâng software-ul
@@ -3119,17 +3314,34 @@ imaginii conține pixel de pe suprafața markerului.
 480 mm. Se vede sub un sfert din el — juriul nu poate măsura nimic.
 
 **Soluția (fără modificări mecanice):** stare `SCORING_CAPTURE` care
-declanșează captura pe **dimensiunea markerului în pixeli**, nu pe
-altitudine, plus ring buffer cu ultimele cadre. Se predau **două** imagini,
-amândouă scoase din același ring după timestamp-ul capturii: cea de scoring
+declanșează captura pe **cât din cadru ocupă markerul**, nu pe altitudine,
+plus ring buffer cu ultimele cadre. Se predau **două** imagini, amândouă
+scoase din același ring după timestamp-ul capturii: cea de scoring
 (markerul se vede întreg) și cea de contact (litera cerinței).
 
-Implementat în `nova/scoring.py` + `nova/frame_ring.py` (§5.55). Pragul în
-pixeli nu mai e 980: acela e de neatins peste ~18° de yaw (§5.51), iar
-criteriul potrivit e marja de încadrare, nu o dimensiune fixă — element
-deschis 33.
+Implementat în `nova/scoring.py` + `nova/frame_ring.py` (§5.55).
 
-Deriva laterală între captură și contact: **maxim 1.2 cm pe 13 rulări**.
+**Criteriul nu mai e o dimensiune în pixeli** (§5.57). `marker_px` e
+latura; ce trebuie să încapă în cadru e cutia de încadrare, mai mare cu
+`|cos θ| + |sin θ|`, iar θ — rotația markerului în cadru — o dă orientarea
+vehiculului la handover. Un prag fix are deci o marjă care se prăbușește
+exact la rotațiile mari: 980 px e de neatins peste ~18° (§5.51), 800 px a
+pierdut o captură din 10 la 41° (§5.54).
+
+`Detection.fill` măsoară direct condiția care contează, din **colțurile**
+detectate:
+
+| | valoare | ce garantează |
+|---|---|---|
+| `SCORING_FILL` | 0.62 | marjă ≥ 1.33× până la pierdere, la **orice** rotație |
+| `FINAL_FILL` | 0.72 | coborârea devine verticală; > `SCORING_FILL` prin construcție |
+| `SCORING_PX` | 700 | rezervă, pentru un detector care nu raportează încadrarea |
+
+Verificat pe 0–45°: captura se produce la fiecare rotație, `fill` la
+captură e **0.63 constant**, iar `marker_px` la captură merge 814 → 578.
+
+Deriva laterală între captură și contact: **maxim 1.2 cm pe 13 rulări**
+(Faza 1); p50 0.375 cm, p95 0.786 cm pe ultimele 10 în Gazebo.
 
 ### 6.2.1.30 — loguri
 
@@ -3163,15 +3375,16 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 22b | **Campania nu a rulat niciodată.** O secvență a mers; `batch_sim.py` cu N rulări și condiții variate nu a fost pornit, deci nu există distribuții. Mediul de dezvoltare nu poate rula Gazebo (`libEGL: failed to create dri2 screen`), deci rulează operatorul | I4, 8.4.2 |
 | 23 | ~~Cifrele I4 — nicio măsurătoare~~ măsurate pe 20 de rulări (§5.52). Rămâne: coada erorii unghiulare pe `DESCEND_TRACK` (p95 2.26° față de pragul de 0.5°), cauză nelămurită; și latența, care se măsoară pe Pi, nu aici | 8.4.2, Safety Case |
 | 24 | Distanța de frânare la 0.8 și 1.5 m/s, pentru `PROFIL_RAPID` (blocat până atunci) | 15.2.9, I5 |
-| 33 | Captura de scoring se declanșează pe o dimensiune fixă în pixeli, dar intenția e „cea mai mare imagine disponibilă înainte de a pierde markerul". Pragul fix e sensibil la rotație, pe care nu o controlăm: măsurat, 759 px la yaw 41° față de 873 teoretic (§5.54). Criteriu pe marja de încadrare, nu pe px | 8.3.3 |
-| 32 | `SequenceConfig.scoring_px = 980` e de neatins peste ~18° de yaw: markerul iese din cadru înainte să crească atât (§5.51). Campania îl poate regla la 800; valoarea din cod cere atingerea unui fișier validat. Alternativa — aliniere de yaw cu markerul înainte de coborâre — rezolvă și §5.49, dar e logică nouă | **8.3.3** |
+| 34 | **Criteriul pe încadrare nu a rulat încă o campanie în Gazebo.** Pragurile (0.62 / 0.72 / 0.50) sunt derivate din geometrie plus două puncte măsurate de pierdere a detecției (§5.49, §5.54), și verificate pe o baleiere sintetică 0–45° care dă captură la fiecare rotație. Dar cifrele de eroare finală, derivă și rată de succes sunt încă cele de la pragul în pixeli. De rulat: `batch_sim.py --n 10`, cu `scoring_fill` și `tilt_margin_deg` în CSV | 8.3.3, 8.4.2 |
+| 33 | ~~Captura pe o dimensiune fixă în pixeli~~ **REZOLVAT** (§5.57): criteriul e acum `Detection.fill` — cât din cadru ocupă cutia markerului, luată din colțuri. Marja e ≥ 1.33× la orice rotație, față de −5% la 41° cu pragul în pixeli. Rămâne: `fill` nu egalizează complet (0.826 la 41° față de 0.914 la nadir); cauza celor 9% e nemăsurată | 8.3.3 |
+| 32 | ~~`scoring_px = 980` de neatins peste ~18° de yaw~~ **REZOLVAT** de 33: pragul în pixeli a devenit rezervă (700), iar criteriul e încadrarea. Alinierea de yaw cu markerul nu mai e necesară pentru 8.3.3 | 8.3.3 |
 | 31 | **Plafonul de 12 m al porții e mai conservator decât măsurătoarea.** §8 l-a ales din estimarea „la 20 m markerul are 22 px, prea puțin"; măsurat sintetic cu calibrarea curentă, detecția merge până la **17 m** la orice rotație, iar la 20 m pică doar la yaw 45°. La 15 m `raza_max` crește de la 4.5 la 5.7 m, deci pilotul are mai multă libertate. Costă însă timp de coborâre (+10 s la 0.5 m/s de la 15 m față de 10 m) contra celor 40 de puncte de timp, iar eroarea de range la 30–35 px e 1–5% (§5.23) exact unde ArduPilot o folosește pentru încetinire. Propus de utilizator (altitudine aleatoare 5–15 m în campanie); cere întâi ridicarea plafonului porții, cod validat | 15.2.3, 8.4.2 |
-| 30 | **`MAX_TILT_DEG = 30°` e peste limita camerei în tot regimul care contează.** La 1 m și 10 cm eroare laterală markerul iese din cadru la 19.5°; supervizorul nu reacționează până la 30°, deci monitorul de înclinare nu poate proteja niciodată detecția — se declanșează întâi cel de vârstă a detecției, iar atunci încercarea e pierdută. Sunt două praguri distincte care împart un număr: integritatea vehiculului (30°, constantă) și limita camerei (funcție de altitudine și eroare laterală, inexistentă în cod). Propus de utilizator; de implementat după campania de 10 rulări | 15.2.9, 8.3.2 |
-| 29 | `SequenceConfig.no_lateral_alt_m = 0.40` e sub pragul la care rotația markerului omoară detecția (~0.60 m, §5.49). Campania îl ridică din linia de comandă; valoarea din cod cere atingerea unui fișier validat | 8.3.3 |
+| 30 | **Două praguri distincte împărțeau un număr** — separate (§5.57): integritatea rămâne `MAX_TILT_DEG = 30°`, constantă; limita camerei e `CameraModel.tilt_budget_deg(alt, lateral)`, care reproduce cifrele măsurate (14.0° la 7.17 m / 2.95 m; 19.5° la 1 m / 10 cm). Decizia luată: bugetul se **măsoară** (`tilt_margin_deg` în `frames.csv`), nu se comandă BRAKE pe el — ar anula un tranzitoriu recuperabil exact când controlerul corectează. Apărat preventiv de `WP_ACC 1.5`, `final_fill` și, când se face J4, de poartă. Rămâne: relația în Safety Case, din campania următoare | 15.2.9, 8.3.2 |
+| 29 | ~~`no_lateral_alt_m = 0.40` sub pragul la care rotația omoară detecția~~ **REZOLVAT** (§5.57): trecerea la coborâre verticală se decide pe `FINAL_FILL`, nu pe altitudine. Pragul a rămas ca **plasă** la 0.50 m, sub altitudinea la care încadrarea ar declanșa oricum (0.565 m la rotație zero), ca să nu preia și să taie captura | 8.3.3 |
 | 28 | Poarta acceptă 6.5 m lateral la orice altitudine, dar 6.5 m nu e recuperabil la niciuna: bugetul de înclinare dă 4.5 m la 12 m și 1.7 m la 5 m (§5.48). Pragul ar trebui să fie funcție de altitudine | 15.2.3, 8.3.2 |
 | 27 | Nimic nu trebuie să atârne în conul camerei de pe vehiculul real; zona liniștită de 60 mm e sub un modul ArUco și nu iartă umbre sau ocluzii parțiale (§5.46) | 8.3.3, E2 |
 | 26 | Fereastra de încadrare se închide la ~1 m cu erori realiste, nu la 0.38 m (§5.45). De decis: `FINAL_DESCENT` mai sus, limitare de înclinare, sau criteriu care include eroarea laterală | 8.3.3, 15.2.9 |
-| 25 | `on_detection()` emite `LANDING_TARGET` și `DISTANCE_SENSOR` în **toate** stările, inclusiv `IDLE`/`RACE_MONITOR`, contrar §8. Filtru pe listă pozitivă de faze; cere atingerea unui fișier validat (§5.43) | 15.2.3, Compliance Matrix |
+| 25 | ~~`on_detection()` emite în toate stările, inclusiv `IDLE`~~ **REZOLVAT** în J5 (§5.58): `EMITTING_PHASES` e o listă pozitivă — `ACQUIRE`, `DESCEND_TRACK`, `SCORING_CAPTURE`, `FINAL_DESCENT`. Detecția se înregistrează în continuare în orice stare, altfel poarta și monitorul de vârstă ar rămâne oarbe | 15.2.3, Compliance Matrix |
 | 7 | ~~Măsurare latență override~~ 150 ms în SITL; deadband de măsurat pe emițătorul de concurs | 15.3.1 |
 | 8 | Mail organizatori: imagine scoring la 0.45 m | 8.3.3 |
 | 9 | Model SDF cu inerția reală (avem tensorul din Onshape) | fidelitate sim |
@@ -3210,8 +3423,8 @@ IDLE
          │              sau manșă în afara neutrului; iese doar cu AUX jos
          └→ ACQUIRE     LAND cerut de companion, așteaptă confirmarea FC
              └→ DESCEND_TRACK      LANDING_TARGET @ 20 Hz
-                 └→ SCORING_CAPTURE    marker_px > 980, captură full-res
-                     └→ FINAL_DESCENT  vertical, fără corecții laterale
+                 └→ SCORING_CAPTURE    fill > 0.62, captură full-res
+                     └→ FINAL_DESCENT  fill > 0.72, vertical, fără corecții
                          └→ TOUCHDOWN_CONFIRM   contact + ≥1 s stabil
                              └→ ASCENT          ≥5 m AGL
                                  └→ HANDBACK
@@ -3234,6 +3447,11 @@ Safety Case.
 | Plafon AGL | `CEILING_AGL_M` 30.0 m | RTL | tot segmentul autonom |
 | Rată de coborâre | `MAX_DESCENT_RATE_MS` 2.0 m/s, 0.5 s | BRAKE | tot segmentul autonom |
 | Înclinare | `MAX_TILT_DEG` 30°, 0.3 s | BRAKE | tot segmentul autonom |
+
+Pragul de înclinare e al **integrității vehiculului**, nu al camerei. Cel
+al camerei e o funcție de altitudine și eroare laterală
+(`CameraModel.tilt_budget_deg`), e sub 30° în tot regimul de sub ~2 m, și
+se **măsoară** în loc să declanșeze BRAKE — vezi §5.57.
 
 Trei proprietăți care nu sunt evidente din tabel:
 
@@ -3301,10 +3519,24 @@ Plafonul de 12 m la handover e mai strict decât regulamentul (20 m),
 deliberat: la 20 m markerul are 22 px, prea puțin pentru detecție 4×4
 fiabilă. La 12 m are 37 px.
 
-**Sub 0.4 m nu se mai fac corecții laterale.** Autoritatea de corecție
-acolo e 2–4 cm; precizia se decide la 0.5–1.0 m. Coborârea finală e
+**Coborârea devine verticală când markerul e pe cale să iasă din cadru**
+(`FINAL_FILL = 0.72`), nu la o altitudine fixă. Autoritatea de corecție
+acolo e oricum 2–4 cm; precizia se decide la 0.5–1.0 m. Coborârea finală e
 verticală și lentă, ceea ce elimină și forfecarea de rolling shutter
 (care e `v_lateral × T_readout`, deci ~15 mm la 0.5 m/s).
+
+Ce face de fapt `FINAL_DESCENT`: **iese din fazele în care supervizorul
+cere detecție validă.** Nu oprește corecțiile laterale — alea se opresc
+singure când detectorul nu mai publică. Deci pragul decide când pierderea
+markerului încetează să mai fie o defecțiune, iar asta trebuie să se
+întâmple **înainte** ca fizica să o producă (§5.57).
+
+**Detecțiile ajung pe MAVLink doar în `EMITTING_PHASES`** — `ACQUIRE`,
+`DESCEND_TRACK`, `SCORING_CAPTURE`, `FINAL_DESCENT`. Listă pozitivă
+(§5.25, §5.58). În rest companion-ul nu trimite nimic către FC, ceea ce e
+chiar afirmația din Compliance Matrix pentru 15.2.3. Înregistrarea
+detecției continuă în toate stările: poarta și monitorul de vârstă depind
+de ea.
 
 ### Paritate sim ↔ hardware
 

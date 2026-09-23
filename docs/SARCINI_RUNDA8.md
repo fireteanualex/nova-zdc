@@ -98,19 +98,34 @@ predată corespunde momentului capturii, nu celui în care s-a scris fișierul.
 
 ---
 
-## J3 — praguri care au acum o măsurătoare în spate
+## J3 ✔ REZOLVAT — praguri cu o măsurătoare în spate
 
-Trei schimbări de o linie, fiecare cu cifra ei. Merg împreună pentru că
-interacționează.
+**Rezultat: niciunul dintre cele trei nu era o reglare de număr.**
 
-| ce | de la | la | de ce |
-|---|---|---|---|
-| `SequenceConfig.scoring_px` | 980 | ~800 | 980 e de neatins peste ~18° de yaw: cutia de încadrare a markerului iese din cadru înainte (§5.51) |
-| `SequenceConfig.no_lateral_alt_m` | 0.40 | de rulat separat | 0.60 a fost necesar cu pragul de 980; cu 800 captura e la 0.65 m, deci s-ar putea să nu mai fie (§5.49) |
-| prag de înclinare al camerei | nu există | funcție de altitudine | `MAX_TILT_DEG = 30°` e peste limita camerei în tot regimul care contează (§5.48, element 30) |
+| ce | s-a făcut | de ce |
+|---|---|---|
+| `scoring_px` | înlocuit de `SCORING_FILL = 0.62` | un prag în pixeli nu putea fi corect la **nicio** valoare: `marker_px` e latura, dar ce iese din cadru e cutia, mai mare cu până la 41% la 45° — iar rotația o dă pilotul (§5.57) |
+| `no_lateral_alt_m` | 0.40 → **0.50, ca plasă**; criteriul e `FINAL_FILL = 0.72` | campania nu l-a măsurat niciodată: în toate cele 10 rulări trecerea a fost declanșată de captură, nu de altitudine |
+| prag de înclinare al camerei | `CameraModel.tilt_budget_deg(alt, lateral)`, **măsurat** nu acționat | un BRAKE pe bugetul camerei ar anula un tranzitoriu recuperabil exact când controlerul corectează (§5.57) |
 
-**Al doilea rând cere o campanie cu o singură variabilă schimbată.** Cele
-două au fost schimbate odată; rezultatul e bun dar nu se poate atribui.
+Verificat pe 0–45°: captura la fiecare rotație, `fill` 0.63 constant,
+`marker_px` 814 → 578. Cu prag fix de 700 px, jumătate ar fi ratat.
+
+**Și trei metrici care raportau sănătate** (§5.56), găsite verificând
+cifrele pe care J3 trebuia să se sprijine:
+
+- `rata_detectie` raporta **1.000 în orice condiții** — contorul de cadre
+  era citit de pe clasa greșită. Testul care trebuia să o prindă își
+  injecta un obiect fals *care avea* atributul.
+- `lat_p99 = 0.000 ms` lângă un criteriu E1.4 de 150 ms — în sim se
+  măsoară întârzierea de coadă, nu latența de calcul.
+- **Campania rula alte praguri decât vehiculul**: `batch_sim` suprascria
+  `no_lateral_alt` cu 0.60 peste cei 0.40 din cod, deci cifrele din §5.52
+  și §5.54 descriu o configurație pe care bordul nu ar fi zburat-o.
+
+Rămâne: **o campanie cu criteriul nou** (element deschis 34). Pragurile
+sunt derivate și verificate sintetic; cifrele de eroare finală și rată de
+succes sunt încă cele de la pragul în pixeli.
 
 ---
 
@@ -130,16 +145,22 @@ Două lucruri, ambele în `nova/handover.py`:
 
 ---
 
-## J5 — `LANDING_TARGET` și `DISTANCE_SENSOR` se emit și în `IDLE`
+## J5 ✔ REZOLVAT — `LANDING_TARGET` și `DISTANCE_SENSOR` se emiteau și în `IDLE`
 
-§8 spune despre `RACE_MONITOR`: *„detector activ, ZERO comenzi"*. Verificat
-direct: 5 detecții în `IDLE` → 5 `LANDING_TARGET` și 5 `DISTANCE_SENSOR`.
+`EMITTING_PHASES` e o listă **pozitivă** (§5.25): `ACQUIRE`,
+`DESCEND_TRACK`, `SCORING_CAPTURE`, `FINAL_DESCENT`. În rest companion-ul
+nu trimite nimic către FC — ceea ce e chiar afirmația din Compliance
+Matrix pentru 15.2.3.
 
-`LANDING_TARGET` e inert (PLND e 0), dar `DISTANCE_SENSOR` nu: FC-ul are
-telemetru în tot zborul pilotului, iar §5.9 arată măsurat ce schimbă asta.
-Filtru pe **listă pozitivă** de faze (§5.25), nu pe negație.
+Detecția se **înregistrează** în continuare în orice stare: poarta și
+monitorul de vârstă a detecției depind de ea. Se filtrează doar emisia, iar
+testul verifică ambele direcții — zero mesaje în `IDLE`, dar emisie în
+`DESCEND_TRACK`, altfel filtrul ar rupe secvența fără ca nimic să spună.
 
-Rândul din Compliance Matrix pentru 15.2.3 nu e susținut de cod până atunci.
+`TOUCHDOWN_CONFIRM` și `ASCENT` sunt deliberat afară: acolo un telemetru
+care raportează sub ținta de decolare e exact cazul măsurat în §5.9
+(`NAV_TAKEOFF` respins cu `result=4`, fără niciun `STATUSTEXT`). Detalii în
+§5.58.
 
 ---
 
@@ -183,7 +204,11 @@ cauză pentru că se potrivesc cifrele — greșeala din §5.45, plătită o dat
 
 ## Ordinea propusă
 
-**J1 → J2 → J3 → J5 → J4 → J6 → J7**, cu J0 la început.
+**J1 ✔ → J2 ✔ → J3 ✔ → J5 ✔ → J4 → J6 → J7**, cu J0 la început.
+
+Rămase: **J4** (poarta — praguri care descriu ce se poate recupera),
+**J6** (distanța de frânare pe fiecare treaptă) și **J7** (coada erorii
+unghiulare). Plus elementul 34: campania care măsoară criteriul nou.
 
 Motivul ordinii: J1 poate cere hardware (termen de livrare); J2 e singurul
 livrabil lipsă din 8.3.3; J3 și J5 sunt ieftine și fac configurația să fie
