@@ -50,7 +50,8 @@ from nova.handover import HandoverGate
 from nova.scoring import ScoringRecorder                     # noqa: E402
 from nova.rc import OverrideMonitor                        # noqa: E402
 from nova.safety import SafetySupervisor                   # noqa: E402
-from nova.state_machine import (LandingStateMachine,       # noqa: E402
+from nova.state_machine import (AUX_CHANNEL,               # noqa: E402
+                                LandingStateMachine,
                                 SequenceConfig, run_loop)
 from nova.vehicle import Vehicle                           # noqa: E402
 
@@ -216,6 +217,12 @@ def main():
     p.add_argument('--scoring-dir', default='data/scoring',
                    help='unde se scriu imaginea de scoring, cea de contact '
                         'si evidenta lor (6.2.1.30)')
+    p.add_argument('--aux-channel', type=int, default=AUX_CHANNEL,
+                   metavar='N',
+                   help=f'canalul RC pe care pilotul CERE segmentul autonom, '
+                        f'pe frontul crescator (implicit {AUX_CHANNEL}). '
+                        f'Modul LAND NU declanseaza nimic - intrarea e doar '
+                        f'prin canalul asta')
     p.add_argument('--no-ascent', action='store_true',
                    help='opreste urcarea de dupa contact (15.2.7). Secventa '
                         'se incheie pe sol. Pentru primele coborari de test, '
@@ -328,7 +335,11 @@ def main():
     if ring is None:
         print("[bord] ATENTIE: detectorul nu are ring buffer; 8.3.3 NU va "
               "avea imagine. Vezi --ring-frames.")
-    seq = SequenceConfig(conv=a.conv, do_ascent=not a.no_ascent)
+    seq = SequenceConfig(conv=a.conv, do_ascent=not a.no_ascent,
+                         aux_channel=a.aux_channel)
+    if a.aux_channel != AUX_CHANNEL:
+        print(f"[bord] handover pe canalul RC {a.aux_channel} "
+              f"(implicit {AUX_CHANNEL})")
     if a.no_ascent:
         # 15.2.7 oprit: secventa se incheie pe sol, fara NAV_TAKEOFF. Pentru
         # PRIMA coborare autonoma pe un vehicul real asta e ce vrei - o

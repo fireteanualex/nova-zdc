@@ -195,12 +195,13 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   └── worlds/nova_marker.sdf  # derivată din iris_runway.sdf
 ├── docs/
 │   ├── CHECKLIST_TEREN.md    # checklist + tabel simptom → cauză → fix
-│   ├── ZBOR_FINAL.md         # segmentul autonom in concurs (pilot + operator)
+│   ├── ZBOR_TEST_ATERIZARE.md # test rapid de aterizare: MP, autoboot, zbor
 │   ├── LIMITE_SIM.md         # ce NU poate spune Gazebo (I6)
 │   └── DIAGNOSTIC_OSCILATIE.md  # oscilatia de pendul, un parametru pe rulare (I5)
 ├── pi/                       # bring-up pe hardware (Pi 4 + Pixhawk 6C)
 │   ├── README.md             # runbook cu comenzile ssh, cap-coada
 │   ├── setup_uart.sh         # GPIO 14/15: miniUART -> PL011, consola, dialout
+│   ├── deploy.sh             # trimite codul pe Pi (se ruleaza de pe desktop)
 │   ├── bringup.sh            # verificari + monitor cu fereastra fullscreen
 │   ├── descent_test.sh       # proba de coborare autonoma pe vehiculul de test
 │   ├── install.sh            # serviciul de utilizator, pornit la fiecare boot

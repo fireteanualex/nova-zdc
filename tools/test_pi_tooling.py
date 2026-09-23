@@ -875,6 +875,42 @@ def test_proba_de_coborare_cere_caile_de_abort():
     return "cere FLTMODE_CH si confirmare tastata; fara urcare implicit"
 
 
+def test_canalul_de_handover_e_reglabil_si_LAND_nu_declanseaza():
+    """Intrarea in segment e frontul crescator al unui canal AUX, nu modul
+    LAND (§8).
+
+    Intrebarea vine natural - LAND e modul de aterizare, deci pare sa fie
+    declansatorul. Nu e: companion-ul COMANDA LAND dupa ce poarta accepta.
+    Daca pilotul pune LAND de mana, ArduPilot face o aterizare normala,
+    fara precision landing, fiindca PLND_ENABLED e 0 pana la handover.
+
+    De ce un canal dedicat: poarta trebuie sa poata REFUZA cu motiv. Un mod
+    de zbor nu are unde sa intoarca un refuz."""
+    from nova import state_machine as sm_mod
+    from nova.state_machine import SequenceConfig
+
+    src = open(os.path.join(REPO, 'nova', 'state_machine.py')).read()
+    cod = '\n'.join(l for l in src.splitlines()
+                    if not l.lstrip().startswith('#'))
+    # nicio tranzitie declansata de faptul ca vehiculul E in LAND
+    assert 'mode == MODE_LAND' not in cod.replace('self.v.mode == MODE_LAND',
+                                                  'CONFIRMARE'), (
+        "o tranzitie pare sa porneasca pe modul LAND al pilotului")
+
+    # canalul e reglabil, nu ingropat
+    assert SequenceConfig().aux_channel == sm_mod.AUX_CHANNEL
+    assert SequenceConfig(aux_channel=6).aux_channel == 6
+
+    pi_src = open(os.path.join(REPO, 'tools', 'nova_pi.py')).read()
+    assert '--aux-channel' in pi_src, "canalul nu e expus in aplicatie"
+    assert 'aux_channel=a.aux_channel' in pi_src, (
+        "flagul exista dar nu ajunge in SequenceConfig")
+
+    dt = open(os.path.join(REPO, 'pi', 'descent_test.sh')).read()
+    assert '--aux-channel' in dt, "proba de coborare nu poate schimba canalul"
+    return f"canal implicit {sm_mod.AUX_CHANNEL}, reglabil; LAND nu declanseaza"
+
+
 def test_no_ascent_ajunge_in_SequenceConfig():
     """Flagul trebuie sa schimbe chiar comportamentul, nu doar sa existe."""
     from nova.state_machine import SequenceConfig
@@ -1095,6 +1131,8 @@ TESTS = [
      test_proba_de_coborare_nu_ridica_singura_E0),
     ('proba de coborare cere caile de abort',
      test_proba_de_coborare_cere_caile_de_abort),
+    ('canalul de handover e reglabil si LAND nu declanseaza',
+     test_canalul_de_handover_e_reglabil_si_LAND_nu_declanseaza),
     ('--no-ascent ajunge in SequenceConfig',
      test_no_ascent_ajunge_in_SequenceConfig),
     ('pragul de calibrare ridicat doar la bringup',

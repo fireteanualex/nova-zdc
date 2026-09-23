@@ -50,6 +50,9 @@ MAX_RMS="${NOVA_MAX_RMS:-1.0}"
 CHECK_ONLY=0
 FULL_SEQ=0
 ASSUME_YES=0
+# Canalul pe care pilotul CERE segmentul autonom, pe frontul crescator.
+# Modul LAND nu declanseaza nimic: intrarea e doar prin canalul asta (§8).
+AUX_CH="${NOVA_AUX_CH:-7}"
 
 say()  { printf '\n\033[1m[coborare]\033[0m %s\n' "$*"; }
 ok()   { printf '  \033[32mOK\033[0m    %s\n' "$*"; }
@@ -60,6 +63,7 @@ die()  { printf '\n\033[31m[coborare] OPRIT:\033[0m %s\n\n' "$*" >&2; exit 1; }
 for arg in "$@"; do
   case "$arg" in
     --check)         CHECK_ONLY=1 ;;
+    --aux-channel=*) AUX_CH="${arg#*=}" ;;
     --full-sequence) FULL_SEQ=1 ;;
     --yes)           ASSUME_YES=1 ;;
     -h|--help)       sed -n '2,8p' "$0"; exit 0 ;;
@@ -130,7 +134,7 @@ EOF
 # --- 3. caile de abort -----------------------------------------------------
 say "caile de abort"
 set +e
-NOVA_REPO="$REPO" "$PY" - "$CONN" "$BAUD" <<'EOF'
+NOVA_REPO="$REPO" NOVA_AUX_CH="$AUX_CH" "$PY" - "$CONN" "$BAUD" <<'EOF'
 import os, sys, time
 sys.path.insert(0, os.environ['NOVA_REPO'])
 from nova.vehicle import Vehicle
@@ -144,7 +148,8 @@ except Exception as e:                                        # noqa: BLE001
     raise SystemExit(3)
 
 t0 = time.monotonic()
-for nume in ('FLTMODE_CH', 'RC7_OPTION', 'FENCE_ENABLE', 'FENCE_ACTION'):
+aux_ch = int(os.environ.get('NOVA_AUX_CH', '7'))
+for nume in ('FLTMODE_CH', f'RC{aux_ch}_OPTION', 'FENCE_ENABLE'):
     v.request_param(nume)
 while time.monotonic() - t0 < 4.0:
     v.pump()
@@ -166,13 +171,13 @@ else:
     print(f"  OK    FLTMODE_CH = {int(ch)} (abort hardware, ocoleste Pi-ul)")
 
 # 2. AUX 7: singura cale de INTRARE in segment (§8).
-opt = p.get('RC7_OPTION')
+opt = p.get(f'RC{aux_ch}_OPTION')
 if opt is not None and int(opt) != 0:
-    print(f"  ATENTIE: RC7_OPTION = {int(opt)}. Canalul 7 are deja o functie")
-    print(f"           in ArduPilot; poarta il citeste oricum din RC_CHANNELS,")
-    print(f"           dar verifica sa nu faca si altceva la comutare.")
+    print(f"  ATENTIE: RC{aux_ch}_OPTION = {int(opt)}. Canalul are deja o")
+    print(f"           functie in ArduPilot; poarta il citeste oricum din")
+    print(f"           RC_CHANNELS, dar verifica sa nu faca si altceva.")
 else:
-    print("  OK    RC7_OPTION = 0 (canalul 7 e liber pentru handover)")
+    print(f"  OK    RC{aux_ch}_OPTION = 0 (canalul {aux_ch} e liber)")
 
 # 3. Heartbeat: monitorul de legatura al supervizorului depinde de el.
 iv = v.heartbeat_interval() if hasattr(v, 'heartbeat_interval') else None
@@ -231,7 +236,7 @@ fi
 
 # --- briefing si confirmare ------------------------------------------------
 ARGS=(--conn "$CONN" --baud "$BAUD" --stop-service --yes --max-rms "$MAX_RMS"
-      --no-authority)
+      --no-authority --aux-channel "$AUX_CH")
 if [[ $FULL_SEQ -eq 0 ]]; then
   ARGS+=(--no-ascent)
 fi
@@ -246,7 +251,7 @@ cat <<FIN
      1. decolezi si aduci vehiculul la 5-12 m DEASUPRA markerului,
         in raza de 6.5 m lateral, in LOITER
      2. manse libere, in neutru, ~1 s (poarta masoara in fereastra asta)
-     3. ridici AUX 7
+     3. ridici comutatorul de pe canalul RC $AUX_CH
      4. MANA PE COMUTATORUL DE MOD pana se termina
 
    Ce face vehiculul:
