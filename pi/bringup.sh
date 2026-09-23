@@ -72,7 +72,7 @@ if command -v systemctl >/dev/null \
   MAIN_PID="$(systemctl --user show -p MainPID --value nova-bringup 2>/dev/null)"
   if [[ "$MAIN_PID" != "$$" ]]; then
     die "pornirea automata (nova-bringup) ruleaza deja - tine camera si portul.
-    Vezi ce face:        journalctl --user -u nova-bringup -f
+    Vezi ce face:        journalctl --user-unit nova-bringup -f
     Opreste-o ca sa rulezi de mana:
                          systemctl --user stop nova-bringup
     Si apoi o repornesti: systemctl --user start nova-bringup"

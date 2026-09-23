@@ -232,11 +232,30 @@ Cere autologin: `sudo raspi-config` → System Options → Boot / Auto Login →
 
 ```bash
 systemctl --user status nova-bringup      # starea
-journalctl --user -u nova-bringup -f      # logul, in timp real
+journalctl --user-unit nova-bringup -f      # logul, in timp real
 systemctl --user restart nova-bringup
 systemctl --user stop nova-bringup
 ls -t ~/nova-logs/ | head                 # logurile de rulare
 ```
+
+> **Unde sunt logurile.** Pe Raspberry Pi OS jurnalul stă implicit în
+> memorie (`/run/log/journal`), iar în modul ăsta serviciile de utilizator
+> nu au fișiere proprii: `journalctl --user -u ...` spune „No journal files
+> were found" deși logurile există. Sunt în jurnalul de **sistem**:
+>
+> ```bash
+> journalctl --user-unit nova-bringup -f      # filtreaza serviciul nostru
+> ```
+>
+> Dacă dă „Permission denied", pune `sudo` în față. Și, independent de
+> jurnal, fiecare rulare scrie în `~/nova-logs/` — ultima:
+>
+> ```bash
+> tail -f "$(ls -t ~/nova-logs/bringup-*.log | head -1)"
+> ```
+>
+> Fișierul apare doar după ce monitorul pornește; un eșec timpuriu (port
+> ocupat, calibrare lipsă) e doar în jurnal.
 
 > Nu porni în același timp `nova-monitor.service` (cel de sistem, fără
 > ecran): se bat pe `/dev/serial0` (§5.27).
@@ -461,5 +480,5 @@ verifică explicit că fișierul din repo e în starea închisă.
 Pentru diagnostic în timp real:
 
 ```bash
-journalctl --user -u nova-bringup -f
+journalctl --user-unit nova-bringup -f
 ```

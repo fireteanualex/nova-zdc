@@ -104,7 +104,7 @@ cat <<FIN
       systemctl --user status nova-bringup
       systemctl --user restart nova-bringup
       systemctl --user stop nova-bringup
-      journalctl --user -u nova-bringup -f
+      journalctl --user-unit nova-bringup -f
 
   Loguri de rulare (si dupa repornire):
       ls -t ~/nova-logs/ | head

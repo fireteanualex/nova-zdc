@@ -269,9 +269,28 @@ eșuează, iar `systemctl status` arată verde fără nimic pe monitor (§5.28).
 
 ```bash
 systemctl --user status nova-bringup
-journalctl --user -u nova-bringup -f
+journalctl --user-unit nova-bringup -f
 systemctl --user stop nova-bringup      # INAINTE de testul de aterizare
 ```
+
+> **Unde sunt logurile.** Pe Raspberry Pi OS jurnalul stă implicit în
+> memorie (`/run/log/journal`), iar în modul ăsta serviciile de utilizator
+> nu au fișiere proprii: `journalctl --user -u ...` spune „No journal files
+> were found" deși logurile există. Sunt în jurnalul de **sistem**:
+>
+> ```bash
+> journalctl --user-unit nova-bringup -f      # filtreaza serviciul nostru
+> ```
+>
+> Dacă dă „Permission denied", pune `sudo` în față. Și, independent de
+> jurnal, fiecare rulare scrie în `~/nova-logs/` — ultima:
+>
+> ```bash
+> tail -f "$(ls -t ~/nova-logs/bringup-*.log | head -1)"
+> ```
+>
+> Fișierul apare doar după ce monitorul pornește; un eșec timpuriu (port
+> ocupat, calibrare lipsă) e doar în jurnal.
 
 > **Important:** serviciul ține `/dev/serial0` **și camera**. O a doua
 > copie pornită peste el primește „Camera __init__ sequence did not

@@ -1489,6 +1489,23 @@ def test_scripturile_nu_pornesc_o_a_doua_instanta():
     return "bringup se opreste la conflict; descent_test elibereaza camera"
 
 
+def test_comanda_de_log_merge_pe_raspberry_pi_os():
+    """Pe vehicul, `journalctl --user -u nova-bringup -f` a raspuns "No
+    journal files were found". Raspberry Pi OS tine jurnalul in memorie
+    (/run/log/journal), iar in modul asta serviciile de utilizator nu au
+    fisiere proprii - logurile sunt in jurnalul de SISTEM, citite cu
+    `--user-unit`. Comanda gresita aparea in cinci locuri."""
+    import glob as _g
+    fisiere = (_g.glob(os.path.join(REPO, 'pi', '*')) +
+               _g.glob(os.path.join(REPO, 'docs', '*.md')))
+    gresite = [os.path.relpath(f, REPO) for f in fisiere
+               if os.path.isfile(f) and 'journalctl --user -u' in open(f).read()]
+    assert not gresite, (
+        f"`journalctl --user -u` nu gaseste nimic pe Raspberry Pi OS: "
+        f"{', '.join(gresite)}. Foloseste `journalctl --user-unit`.")
+    return "peste tot --user-unit"
+
+
 def test_install_refuza_sudo():
     """Rulat cu sudo pe vehicul, pi/install.sh a pus unitatea in configul lui
     ROOT, cu ExecStart spre /root/nova-zdc, iar `systemctl --user` nu a
@@ -1632,6 +1649,8 @@ TESTS = [
      test_uneltele_din_ghiduri_se_pot_rula_direct),
     ('scripturile nu pornesc o a doua instanta',
      test_scripturile_nu_pornesc_o_a_doua_instanta),
+    ('comanda de log merge pe Raspberry Pi OS',
+     test_comanda_de_log_merge_pe_raspberry_pi_os),
     ('install refuza sudo', test_install_refuza_sudo),
     ('bringup: nu e un al doilea cablaj',
      test_bringup_nu_e_un_al_doilea_cablaj),
