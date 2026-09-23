@@ -19,6 +19,51 @@ detectat, și care citește telemetria de la Pixhawk — fără să comande nimi
 
 ---
 
+## Ordinea până la primul zbor
+
+Cinci etape. Fiecare se termină cu ceva măsurat, nu cu „pare în regulă".
+Doar ultima ridică vehiculul de la sol.
+
+| | etapă | unde | ce dovedește |
+|---|---|---|---|
+| **A** | bring-up pe masă | pașii 1–8 de mai jos | UART-ul ține 921600, camera dă 30 fps, latența p99 pe Pi |
+| **B** | emițătorul | `check_rc_override.py`, `calibrate_sticks.py` | FC-ul raportează RC înapoi; deadband-ul e măsurat, nu presupus |
+| **C** | **E2** pe masă | `tools/run_e2.py` | detectorul vede markerul tipărit, eroarea de distanță sub 5% |
+| **D** | poarta, cu **elicele demontate** | vezi mai jos | poarta e vie și refuză corect |
+| **E** | zborul | `pi/descent_test.sh` | coborârea autonomă |
+
+Etapele A–D nu ridică vehiculul de la sol. Dacă ai o zi, fă A–D într-una și
+zborul în următoarea — E2 și calibrarea consumă mai mult decât pare.
+
+### Etapa D — poarta, cu elicele demontate
+
+Cea mai ieftină verificare din tot lanțul, și singura care arată că poarta
+e **vie** înainte să conteze.
+
+Cu `autonomy_enabled = true`, elicele **demontate**, vehiculul pe masă:
+
+```bash
+pi/descent_test.sh          # porneste si ramane pornit
+# armezi, lasi mansele libere ~1 s, ridici AUX 7
+```
+
+Poarta trebuie să **REFUZE**, cu motiv:
+
+```
+!! HANDOVER REFUZAT: altitudine in afara ferestrei: 0.1 m
+```
+
+Asta dovedește, dintr-o singură apăsare, că: AUX 7 ajunge de la emițător la
+FC și de acolo la companion, poarta îl vede pe frontul crescător, citește
+altitudinea, și refuză cu un motiv care se citește. Dacă nu se întâmplă
+nimic când ridici AUX 7, **nu ai o problemă de zbor — ai o problemă de
+cablaj RC**, și ai aflat-o pe masă.
+
+Repetă cu manșele mișcate: motivul trebuie să se schimbe în „manșă în afara
+neutrului".
+
+---
+
 ## Cablajul — 3 fire, nu 5
 
 | Pixhawk 6C TELEM2 | | Raspberry Pi 4 |
@@ -295,6 +340,49 @@ coborâre cu PLND       → LANDING_TARGET la 20 Hz
 încadrarea la 0.72     → coborâre verticală
 contact                → pauză pe sol → STOP
 ```
+
+### Cum decurge zborul
+
+`descent_test.sh` rulează **tot timpul**, deci se pornește **înainte** de
+decolare, prin SSH, și se lasă pornit:
+
+```bash
+ssh pi@<ip-pi>
+cd ~/nova-zdc && pi/descent_test.sh
+# trece prin verificari, cere `ZBOR`, apoi ramane pornit si asteapta
+```
+
+Apoi, la manșe:
+
+1. **Un LAND manual întâi.** Înainte de orice coborâre autonomă, aterizează
+   o dată manual pe marker. Dacă vehiculul nu aterizează curat singur, PLND
+   nu are ce repara.
+2. Decolezi și aduci vehiculul la **6–8 m deasupra markerului**. Fereastra
+   porții e 5–12 m; pe la 7 m ai și marjă de recuperare, și markerul bine în
+   cadru.
+3. Lateral, **sub ~2 m** de marker. Poarta acceptă 6.5 m, dar geometria nu:
+   la 7 m altitudine bugetul de înclinare dă ~2.6 m (§5.48). Mai aproape e
+   mai bine.
+4. **LOITER**, manșe libere, ~1 s. Poarta măsoară amplitudinea în fereastra
+   asta — dacă tremuri, refuză.
+5. Ridici **AUX 7**. Ori ACCEPT și pornește, ori REJECT cu motiv.
+6. **Mâna pe comutatorul de mod** până se termină. ~30 s.
+
+Ce vezi în log, dacă merge:
+
+```
+>> IDLE -> HANDOVER_CHECK   (AUX sus, alt 7.2 m)
+>> HANDOVER_CHECK -> ACQUIRE
+>> ACQUIRE -> DESCEND_TRACK
+>> DESCEND_TRACK -> SCORING_CAPTURE   (incadrare 0.63)
+>> SCORING_CAPTURE -> FINAL_DESCENT   (incadrare 0.72)
+>> FINAL_DESCENT -> TOUCHDOWN_CONFIRM
+```
+
+Fără `--full-sequence` se oprește aici și ArduPilot dezarmează.
+
+**Prima încercare, pe iarbă sau pământ moale.** Eroarea în simulare e sub
+1 cm, dar asta e simulare — pe hardware nu ai încă nicio cifră.
 
 ### Abort, în ordinea încrederii
 
