@@ -390,24 +390,30 @@ def test_calibrarea_provizorie_e_sim_only():
 
 
 def test_pragul_de_rms_nu_se_schimba_pentru_zbor():
-    """0.85 px depaseste pragul. Ridicat global, ar slabi si calea de zbor."""
+    """Pragul global e o DECIZIE, nu o valoare care aluneca.
+
+    Garda initiala (§5.34) cerea 0.5 si pica la orice ridicare, cu mesajul
+    "fara ca cineva sa decida asta". Pe 23.09.2026 echipa a decis 0.85:
+    calibrarea reala a camerei da 0.829 px. Testul fixeaza acum valoarea
+    decisa - o schimbare viitoare trebuie sa fie tot o decizie, cu motiv in
+    comentariul din detector_pi.py - si verifica ca peste prag tot se
+    refuza, iar ridicarea pentru O rulare ramane posibila."""
     from nova.detector_pi import MAX_REPROJ_ERR_PX
-    assert MAX_REPROJ_ERR_PX == 0.5, (
-        f"pragul global e {MAX_REPROJ_ERR_PX}; ridicat, detectorul de bord ar "
-        f"accepta calibrari mai proaste fara ca cineva sa decida asta")
+    assert MAX_REPROJ_ERR_PX == 0.85, (
+        f"pragul global e {MAX_REPROJ_ERR_PX}, nu 0.85 cat a decis echipa. "
+        f"Daca e deliberat, schimba si comentariul cu motivul")
 
     tmp = tempfile.mkdtemp()
-    slaba = calib_file(tmp, rms=0.85)
+    slaba = calib_file(tmp, rms=0.90)
     try:
         mc.load_intrinsics(slaba)
-        raise AssertionError('rms 0.85 acceptat la pragul implicit')
+        raise AssertionError('rms 0.90 acceptat la pragul implicit de 0.85')
     except ValueError:
         pass
     # ridicat DOAR pentru aceasta rulare
-    intr, _c = mc.load_intrinsics(slaba, max_rms=0.9)
+    intr, _c = mc.load_intrinsics(slaba, max_rms=0.95)
     assert intr['w'] == 2304
-    return "prag global 0.5 neatins; --max-rms 0.9 ridica doar rularea curenta"
-
+    return "prag global 0.85 (decizie); 0.90 refuzat; --max-rms ridica doar rularea"
 
 
 def test_measure_rtf_refuza_daca_ruleaza_alt_gz():

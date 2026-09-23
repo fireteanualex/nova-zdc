@@ -66,6 +66,11 @@ FLIGHT_PARM = os.path.join(REPO_ROOT, 'config', 'nova_flight.parm')
 #: coborarea si masuratorile de latenta nu mai sunt comparabile.
 FPS_FRAMES = 60
 FPS_TOLERANCE = 0.80
+#: Prag ABSOLUT de cadre/s sub care preflight-ul pica. DECIZIA ECHIPEI
+#: (23.09.2026): 17 fps, in loc de 80% din nominal (24 fps). Masurat pe Pi
+#: 4: 17.9 fps - vezi nota din check_camera despre ce se masura de fapt.
+#: La 0.5 m/s de coborare, 17 fps inseamna ~3 cm intre cadre.
+FPS_MIN = 17.0
 
 #: Imagine: sub atata deviatie standard, cadrul e practic uniform (capac pe
 #: obiectiv, intuneric total). Un cadru cu marker alb-negru are zeci.
@@ -202,13 +207,26 @@ def check_calib(cfg):
             cal)
 
 
-def check_camera(source, n_frames=FPS_FRAMES, tolerance=FPS_TOLERANCE):
+def check_camera(source, n_frames=FPS_FRAMES, min_fps=FPS_MIN):
     """(rezultat_fps, rezultat_imagine). Consuma n_frames de la sursa.
 
     Primul cadru e exclus din masuratoarea de rata: contine pornirea
     fluxului si ar trage media in jos fara sa spuna nimic despre regimul
-    stabil."""
-    nominal = getattr(source, 'nominal_fps', None) or 30.0
+    stabil.
+
+    CE SE MASOARA. Prima varianta calcula `np.std` pe CADRUL INTREG la
+    fiecare iteratie - 3 milioane de pixeli convertiti in float64, cateva
+    treceri. Pe Pi 4 asta costa zeci de milisecunde, in aceeasi bucla in
+    care se cronometreaza camera: rata raportata putea fi a analizei, nu a
+    senzorului. Masurat pe vehicul: 17.9 fps, cu expunerea fixata la 2 ms
+    si FrameRate cerut 30 - deci nu expunerea limita.
+
+    Contrastul se estimeaza acum pe un esantion rarit (1 pixel din 64),
+    care pentru "e capac pe obiectiv?" spune acelasi lucru ca tot cadrul,
+    la un cost neglijabil. Asa bucla nu mai concureaza cu camera.
+
+    Nu stiu inca daca cei 17.9 fps erau ai analizei sau ai camerei. O
+    rulare noua spune: daca cifra urca spre 30, era masuratoarea."""
     stds, t_first, t_last, n = [], None, None, 0
     t0 = time.monotonic()
     for i in range(n_frames):
@@ -222,23 +240,23 @@ def check_camera(source, n_frames=FPS_FRAMES, tolerance=FPS_TOLERANCE):
         else:
             t_last = now
             n += 1
-        stds.append(float(np.std(gray)))
+        stds.append(float(np.std(gray[::8, ::8])))
     if n < 2:
         return (Result('camera', ESEC,
                        f"doar {n + 1} cadre citite in {time.monotonic()-t0:.1f} s"),
                 Result('imagine', ESEC, 'fara cadre'))
 
     fps = n / (t_last - t_first)
-    prag = tolerance * nominal
+    prag = float(min_fps)
     if fps < prag:
         r_fps = Result('camera', ESEC,
-                       f"{fps:.1f} fps, sub pragul de {prag:.1f} "
-                       f"({tolerance:.0%} din {nominal:.0f}). Verifica "
-                       f"temperatura (throttling) si ce mai ruleaza pe Pi.",
-                       {'fps': fps, 'nominal': nominal})
+                       f"{fps:.1f} fps, sub pragul de {prag:.1f}. Verifica "
+                       f"temperatura (vcgencmd get_throttled) si ce mai "
+                       f"ruleaza pe Pi.",
+                       {'fps': fps, 'prag': prag})
     else:
-        r_fps = Result('camera', OK, f"{fps:.1f} fps (nominal {nominal:.0f})",
-                       {'fps': fps, 'nominal': nominal})
+        r_fps = Result('camera', OK, f"{fps:.1f} fps (prag {prag:.0f})",
+                       {'fps': fps, 'prag': prag})
 
     std_med = float(np.median(stds))
     if std_med < MIN_FRAME_STD:

@@ -393,5 +393,5 @@ nu:
 | **15.2.5** — fără GNSS în segment | `nova/ekf_source.py` merge și e măsurat în sim, dar **nu e cablat în `nova_pi.py`**. Pe vehicul, EKF-ul primește GNSS tot segmentul (element 36) |
 | **15.2.4** — geofence 10 m în firmware | `nova/fence.py` validat în SITL, **cablat nicăieri**. Rămân monitoarele din supervizor, care rulează pe Pi (element 35) |
 | **E2** | nefăcut. Până atunci, cifrele din Gazebo sunt pregătire, nu înlocuitor |
-| calibrarea camerei | rms 0.829, peste pragul de zbor de 0.5 |
+| calibrarea camerei | rms 0.829 — acceptat (prag 0.85, decizia echipei), dar peste 0.2–0.5 cât dă de obicei o calibrare bună. E2 spune dacă ajunge |
 | `STICK_DEADBAND_PWM` | 80, provizoriu — măsurat pe un gamepad, nu pe emițătorul real |

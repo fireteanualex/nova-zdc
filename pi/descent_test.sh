@@ -45,7 +45,6 @@ CONN="${NOVA_CONN:-/dev/serial0}"
 BAUD="${NOVA_BAUD:-921600}"
 LOG_DIR="${NOVA_LOG_DIR:-$HOME/nova-logs}"
 CONFIG="$REPO/config/nova.json"
-MAX_RMS="${NOVA_MAX_RMS:-1.0}"
 
 CHECK_ONLY=0
 FULL_SEQ=0
@@ -112,23 +111,23 @@ fi
 
 # --- 2. calibrarea ---------------------------------------------------------
 say "calibrarea camerei"
-NOVA_REPO="$REPO" NOVA_MAX_RMS="$MAX_RMS" "$PY" - <<'EOF' || true
+NOVA_REPO="$REPO" "$PY" - <<'EOF' || true
 import os, sys
 sys.path.insert(0, os.environ['NOVA_REPO'])
 from nova.detector_pi import CameraCalibration, MAX_REPROJ_ERR_PX
 cale = os.path.join(os.environ['NOVA_REPO'], 'config', 'camera_pi.yaml')
 try:
-    cal = CameraCalibration.load(cale, require_real=True,
-                                 max_rms=float(os.environ['NOVA_MAX_RMS']))
+    # acelasi prag ca zborul: MAX_REPROJ_ERR_PX (0.85, decizia echipei)
+    cal = CameraCalibration.load(cale, require_real=True)
 except Exception as e:                                        # noqa: BLE001
     print(f"  LIPSA calibrare utilizabila: {e}")
     raise SystemExit(0)
 print(f"  OK    fy={cal.fy:.1f} px  VFOV={cal.vfov_deg():.1f} deg  "
       f"rms={cal.rms:.3f} px")
-if cal.rms and cal.rms > MAX_REPROJ_ERR_PX:
-    print(f"  ATENTIE: rms peste pragul de zbor ({MAX_REPROJ_ERR_PX} px).")
-    print(f"           Distanta masurata de solvePnP e cu atat mai putin")
-    print(f"           de incredere - iar ea comanda coborarea.")
+if cal.rms and cal.rms > 0.5:
+    print(f"  NOTA: rms {cal.rms:.3f} px - acceptat (prag {MAX_REPROJ_ERR_PX}),")
+    print(f"        dar peste 0.2-0.5 cat da o calibrare buna. Distanta din")
+    print(f"        solvePnP comanda coborarea: urmareste-o fata de altimetru.")
 EOF
 
 # --- 3. caile de abort -----------------------------------------------------
@@ -216,7 +215,7 @@ NOTA
 # --- 5. preflight ----------------------------------------------------------
 say "preflight"
 set +e
-NOVA_MAX_RMS="$MAX_RMS" "$PY" "$REPO/tools/preflight_check.py" \
+"$PY" "$REPO/tools/preflight_check.py" \
   --conn "$CONN" --baud "$BAUD"
 [[ $? -eq 0 ]] || nu_e_gata "preflight-ul nu a trecut integral"
 set -e
@@ -235,7 +234,7 @@ if [[ $CHECK_ONLY -eq 1 ]]; then
 fi
 
 # --- briefing si confirmare ------------------------------------------------
-ARGS=(--conn "$CONN" --baud "$BAUD" --stop-service --yes --max-rms "$MAX_RMS"
+ARGS=(--conn "$CONN" --baud "$BAUD" --stop-service --yes
       --no-authority --aux-channel "$AUX_CH")
 if [[ $FULL_SEQ -eq 0 ]]; then
   ARGS+=(--no-ascent)

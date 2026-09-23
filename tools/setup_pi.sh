@@ -188,8 +188,13 @@ def _aruco():
 
 def _pymavlink():
     from pymavlink import mavutil
+    # `mavutil` se importa si FARA pyserial: il cere abia la deschiderea unui
+    # port serial. Asa a trecut verificarea asta pe un Pi pe care
+    # /dev/serial0 nu se putea deschide deloc. Se verifica explicit.
+    import serial
+    assert hasattr(serial, 'Serial'), 'pyserial incomplet'
     mavutil.mavlink.MAVLINK_MSG_ID_LANDING_TARGET
-    return "OK  LANDING_TARGET prezent"
+    return f"OK  LANDING_TARGET prezent, pyserial {serial.__version__}"
 
 check('import picamera2', _picamera2)
 check('import libcamera', _libcamera)

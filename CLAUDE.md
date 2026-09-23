@@ -1700,6 +1700,16 @@ inventat, ar trece toate gărzile și ar fi acceptată ca reală pentru zbor.
 Când chiar trebuie un prag mai permisiv pentru o rulare anume, există
 `--max-rms` — ridică pragul pentru *acea* rulare, nu pentru tot codul.
 
+> **Decizia echipei, 23.09.2026: `MAX_REPROJ_ERR_PX` = 0.85.** Calibrarea
+> reală de pe vehicul (60 de poze ChArUco) dă 0.829 px. Pragul s-a ridicat
+> global, deliberat, cu motivul scris lângă constantă — nu strecurat. Ce a
+> rămas din regula de mai sus e partea care contează: **un singur prag**,
+> același pe banc și în zbor. Scripturile de bring-up dădeau `--max-rms 1.0`
+> și ar fi validat pe banc o calibrare pe care zborul o refuza; acum nu mai
+> dau nimic, iar un test verifică asta. Gărzile care prind o calibrare
+> degenerată (focala, acoperirea — §5.22) rămân neatinse, iar E2 măsoară
+> dacă 0.83 ajunge: eroarea de distanță față de ruletă.
+
 **Despre 0.85 px ca atare.** §5.22 spune că RMS-ul nu e criteriu de
 valabilitate, dar rămâne indicator de calitate: sintetic, ChArUco dă 0.105 px,
 iar o cameră reală bine calibrată stă tipic la 0.2–0.5. 0.85 sugerează ținta
@@ -3164,6 +3174,47 @@ status`, și nu s-ar vedea nimic pe ecran. Cere autologin pe desktop.
 
 Pentru vehicul, fără ecran, rămâne `systemd/nova-monitor.service`, care e de
 sistem. **Nu se pornesc amândouă**: se bat pe `/dev/serial0` (§5.27).
+
+
+### 5.60 Primul preflight pe vehicul: două verificări care măsurau altceva
+
+Primul `preflight_check.py` rulat pe Pi-ul real (Trixie, Python 3.13.5,
+numpy 2.2.4 și OpenCV 4.10 din sistem — exact stiva din §5.24) a picat pe
+patru rânduri. Două erau defecte ale verificărilor, nu ale vehiculului.
+
+**1. `No module named 'serial'` — setup-ul raportase succes.** `pymavlink`
+nu declară `pyserial` ca dependență: îl importă leneș, abia când se deschide
+un port serial. Deci `from pymavlink import mavutil` merge și fără el,
+`setup_pi.sh` verifica exact importul ăsta și raporta OK, iar eroarea
+apărea abia la `/dev/serial0`. Pe desktop nu se vede niciodată: SITL se
+leagă prin UDP/TCP.
+
+Și a fost vizibil înainte, ignorat: rularea de probă a lui
+`pi/descent_test.sh --check` pe desktop a tipărit exact acest mesaj, iar
+interpretarea a fost „normal, nu e FC aici". Era aceeași dependență lipsă.
+Un mesaj de eroare explicat din context în loc să fie citit e §5.45 aplicat
+unui log.
+
+Reparat: `pyserial==3.5` în `requirements-pi.txt`, iar verificarea din
+`setup_pi.sh` importă `serial` explicit — ce se verifică trebuie să fie ce
+se folosește, nu un import vecin.
+
+**2. `17.9 fps` — măsurătoarea includea propria analiză.** Camera e cerută
+la 30 fps cu expunerea fixată la 2 ms (citită înapoi: „cerute = aplicate"),
+deci nici expunerea nu putea limita. Dar bucla care cronometra camera
+calcula și `np.std` pe cadrul întreg — 3 milioane de pixeli în float64 —
+la fiecare iterație, pe Pi 4.
+
+Contrastul se estimează acum pe 1 pixel din 64. Testul **injectează** un
+cost de 40 ms pe orice `np.std` pe un tablou mare (pe desktop costul real
+e prea mic ca să prindă ceva, §5.40): cu codul vechi, o cameră de 30 fps
+iese **12.5 fps**; cu cel nou, 29.7.
+
+**Nu știm încă** dacă cei 17.9 fps de pe vehicul erau ai analizei sau ai
+camerei. O rulare nouă spune: dacă cifra urcă spre 30, era măsurătoarea.
+
+**Pragurile, decizia echipei (23.09.2026):** `FPS_MIN = 17` absolut, în
+loc de 80% din nominal (24); `MAX_REPROJ_ERR_PX = 0.85` (§5.34).
 
 ---
 

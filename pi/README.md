@@ -7,15 +7,11 @@ detectat, și care citește telemetria de la Pixhawk — fără să comande nimi
 > **Calibrarea e deja în repo.** `config/camera_pi.yaml` — ChArUco, 60 de
 > poze, `fy = 1038.7 px`, HFOV 96.0° / VFOV 63.9°.
 >
-> **Are `rms = 0.829 px`, peste pragul de zbor de 0.5.** Detectorul o
-> refuză în configurația de zbor; bring-up-ul o acceptă cu `--max-rms`, o
-> rulare pe rând, și o spune de fiecare dată. **De refăcut înainte de E2.**
-> O cameră bine calibrată stă la 0.2–0.5; 0.83 sugerează țintă neplană,
-> poze mișcate sau colțuri neacoperite (§5.34).
->
-> Pragul din cod **nu** a fost ridicat: e citit de garda care decide dacă se
-> zboară, iar un test verifică faptul că nici `start_flight.sh`, nici modul
-> de cursă nu primesc `--max-rms`.
+> **Are `rms = 0.829 px`.** Pragul `MAX_REPROJ_ERR_PX` e **0.85**, ridicat
+> de la 0.5 prin decizia echipei (23.09.2026) — deci calibrarea trece, pe
+> banc și în zbor, cu **același** prag. O cameră bine calibrată stă de
+> obicei la 0.2–0.5; 0.83 sugerează țintă neplană sau poze mișcate (§5.34).
+> E2 spune dacă ajunge: eroarea de distanță față de ruletă.
 
 ---
 
@@ -195,11 +191,11 @@ tools/calibrate_camera.py --help      # ~24 poze, apoi scrie config/camera_pi.ya
 Fereastra e **fullscreen** la uneltele de banc — ai nevoie de detaliu, iar
 ecranul Pi-ului e mic (§5.28). Ieșire pe `q` sau `Escape`.
 
-> **Nu ridica pragul de RMS ca să treacă.** `MAX_REPROJ_ERR_PX = 0.5` e citit
-> de detectorul de bord; ridicat global, slăbește tăcut exact garda care
-> decide dacă se zboară. Pentru o rulare anume există `--max-rms` (§5.34).
-> Și RMS-ul nu e criteriu de valabilitate: 24 de poze identice dau RMS 0.061
-> cu `fx` greșit cu +754% (§5.22).
+> **Pragul se schimbă doar ca decizie, cu motiv.** `MAX_REPROJ_ERR_PX`
+> (acum 0.85) e citit de detectorul de bord, deci de garda care decide dacă
+> se zboară. Două teste îl fixează la valoarea decisă, ca o schimbare să nu
+> se strecoare. Și RMS-ul nu e criteriu de valabilitate: 24 de poze
+> identice dau RMS 0.061 cu `fx` greșit cu +754% (§5.22).
 
 ### 6. Verifică tot, fără să pornești nimic
 

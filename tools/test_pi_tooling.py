@@ -703,9 +703,10 @@ def test_G4_NEGATIV_fps_mic_si_capac_pe_obiectiv():
         def close(self):
             pass
 
+    # ~14 fps: sub pragul absolut FPS_MIN (17, decizia echipei)
     bune = marker_frames([5.0] * 8)
-    r_fps, r_img = pf.check_camera(Lenta(bune, 0.05), n_frames=8)   # ~20 fps
-    assert r_fps.status == pf.ESEC, f"20 fps acceptat: {r_fps.detail}"
+    r_fps, r_img = pf.check_camera(Lenta(bune, 0.07), n_frames=8)
+    assert r_fps.status == pf.ESEC, f"14 fps acceptat: {r_fps.detail}"
     assert r_img.status == pf.OK
 
     negre = [np.zeros((240, 320), np.uint8) for _ in range(8)]
@@ -714,6 +715,51 @@ def test_G4_NEGATIV_fps_mic_si_capac_pe_obiectiv():
     assert r_img2.status == pf.ESEC, "cadre negre acceptate ca valide"
     return (f"{r_fps.data['fps']:.0f} fps -> ESEC; cadre uniforme -> ESEC "
             f"(desi rata e buna)")
+
+
+def test_rata_camerei_nu_include_costul_analizei():
+    """Masurat pe vehicul: 17.9 fps, cu expunerea fixata la 2 ms si 30 fps
+    ceruti. Bucla de masurare calcula `np.std` pe cadrul INTREG la fiecare
+    iteratie - pe Pi 4, zeci de milisecunde in aceeasi bucla in care se
+    cronometreaza camera. Deci rata putea fi a analizei, nu a senzorului.
+
+    Costul se INJECTEAZA aici, nu se spera (§5.40): pe desktop np.std pe un
+    cadru intreg e rapid si testul ar trece si cu bug-ul. Orice apel pe un
+    tablou mare costa artificial 40 ms - daca verificarea il mai face pe
+    cadrul intreg, rata masurata cade sub 20 fps."""
+    import numpy as np
+    import time as _t
+
+    class Camera30:
+        nominal_fps = 30.0
+        def __init__(self, n):
+            self.n, self.i = n, 0
+            self.cadru = np.random.default_rng(0).integers(
+                0, 255, (1296, 2304), dtype=np.uint8)
+        def read(self):
+            if self.i >= self.n:
+                return None
+            _t.sleep(1.0 / 30.0)
+            self.i += 1
+            return self.cadru, _t.monotonic()
+        def close(self):
+            pass
+
+    std_real = pf.np.std
+    def std_lent(a, *k, **kw):
+        if np.asarray(a).size > 100_000:
+            _t.sleep(0.040)
+        return std_real(a, *k, **kw)
+    pf.np.std = std_lent
+    try:
+        r_fps, r_img = pf.check_camera(Camera30(20), n_frames=20)
+    finally:
+        pf.np.std = std_real
+    assert r_fps.data['fps'] > 25.0, (
+        f"{r_fps.data['fps']:.1f} fps de la o camera de 30: masuratoarea "
+        f"include costul analizei pe cadrul intreg")
+    assert r_img.status == pf.OK, "contrastul nu mai e detectat pe esantion"
+    return f"{r_fps.data['fps']:.1f} fps masurat de la o camera de 30"
 
 
 def test_G4_NEGATIV_rezolutie_nepotrivita():
@@ -1062,37 +1108,33 @@ def test_no_ascent_ajunge_in_SequenceConfig():
     return "--no-ascent -> SequenceConfig.do_ascent"
 
 
-def test_pragul_de_calibrare_ridicat_doar_la_bringup():
-    """§5.34: pragul de reproiectie nu se ridica global.
+def test_pragul_de_calibrare_e_decizia_echipei_si_acelasi_peste_tot():
+    """`MAX_REPROJ_ERR_PX` = 0.85, ridicat de la 0.5 prin DECIZIA ECHIPEI
+    (23.09.2026): calibrarea reala a camerei da 0.829 px.
 
-    `MAX_REPROJ_ERR_PX = 0.5` e citit de detectorul de bord, adica de garda
-    care decide daca se zboara. Calibrarea reala din repo are rms 0.83, deci
-    e tentant sa ridici constanta - si atunci ai slabit tacut exact garda
-    aia, pentru tot codul, pentru totdeauna.
-
-    Ce se face in schimb: `--max-rms` ridica pragul pentru O RULARE, se
-    anunta zgomotos, si e dat doar de bring-up-ul de banc. Calea de ZBOR nu
-    are voie sa il primeasca."""
+    Testul nu interzice valoarea - o fixeaza, ca o schimbare viitoare sa fie
+    tot o decizie, nu un accident. Si verifica proprietatea care conteaza
+    mai mult decat numarul: bancul si zborul folosesc ACELASI prag. Un
+    bring-up mai permisiv decat zborul ar valida o configuratie care nu
+    zboara - exact ce se intampla cand scripturile dadeau `--max-rms 1.0`."""
     from nova import detector_pi
 
-    assert detector_pi.MAX_REPROJ_ERR_PX == 0.5, (
-        f"pragul de zbor a fost schimbat global: "
-        f"{detector_pi.MAX_REPROJ_ERR_PX}")
+    assert detector_pi.MAX_REPROJ_ERR_PX == 0.85, (
+        f"pragul de calibrare s-a schimbat: {detector_pi.MAX_REPROJ_ERR_PX}. "
+        f"Daca e deliberat, actualizeaza testul SI comentariul din "
+        f"detector_pi.py cu motivul")
 
-    bringup = open(os.path.join(REPO, 'pi', 'bringup.sh')).read()
-    assert '--max-rms' in bringup, "bring-up-ul nu poate porni cu calibrarea curenta"
-
-    # Calea de zbor si modul de cursa NU au voie sa ridice pragul.
-    for nume in ('tools/start_flight.sh', 'tools/race_mode.py'):
+    for nume in ('pi/bringup.sh', 'pi/descent_test.sh',
+                 'tools/start_flight.sh', 'tools/race_mode.py'):
         cale = os.path.join(REPO, nume)
         if not os.path.exists(cale):
             continue
         cod = '\n'.join(l for l in open(cale).read().splitlines()
                         if not l.lstrip().startswith('#'))
         assert 'max-rms' not in cod and 'max_rms' not in cod, (
-            f"{nume} ridica pragul de calibrare: zborul ar porni cu o "
-            f"calibrare pe care garda o refuza")
-    return "--max-rms doar la bring-up; pragul de zbor neatins"
+            f"{nume} isi alege propriul prag de calibrare: bancul si zborul "
+            f"ar valida lucruri diferite")
+    return "0.85 (decizie), acelasi prag pe banc si in zbor"
 
 
 def test_calibrarea_din_repo_e_reala_si_pentru_rezolutia_de_lucru():
@@ -1278,8 +1320,8 @@ TESTS = [
      test_canalul_de_handover_e_reglabil_si_LAND_nu_declanseaza),
     ('--no-ascent ajunge in SequenceConfig',
      test_no_ascent_ajunge_in_SequenceConfig),
-    ('pragul de calibrare ridicat doar la bringup',
-     test_pragul_de_calibrare_ridicat_doar_la_bringup),
+    ('pragul de calibrare e decizia echipei si acelasi peste tot',
+     test_pragul_de_calibrare_e_decizia_echipei_si_acelasi_peste_tot),
     ('calibrarea din repo e reala si pentru rezolutia de lucru',
      test_calibrarea_din_repo_e_reala_si_pentru_rezolutia_de_lucru),
     ('bringup: unitatea de boot', test_bringup_unitatea_de_boot),
@@ -1317,6 +1359,8 @@ TESTS = [
     ('G4: totul trece da zero', test_G4_totul_trece_da_zero),
     ('G4 NEGATIV: fps mic si capac pe obiectiv',
      test_G4_NEGATIV_fps_mic_si_capac_pe_obiectiv),
+    ('rata camerei nu include costul analizei',
+     test_rata_camerei_nu_include_costul_analizei),
     ('G4 NEGATIV: rezolutie nepotrivita',
      test_G4_NEGATIV_rezolutie_nepotrivita),
     ('G4 NEGATIV: controale neaplicate',

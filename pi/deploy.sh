@@ -53,8 +53,8 @@ for arg in "$@"; do
 done
 
 [[ -n "$HOST" ]] || die "da gazda: pi/deploy.sh <user@ip>  (sau NOVA_PI=...)"
-# fara user explicit, presupunem utilizatorul implicit de Raspberry Pi OS
-[[ "$HOST" == *@* ]] || HOST="pi@$HOST"
+# fara user explicit: utilizatorul de pe Pi-ul echipei (/home/nova)
+[[ "$HOST" == *@* ]] || HOST="nova@$HOST"
 
 command -v rsync >/dev/null || die "rsync lipseste pe masina asta"
 

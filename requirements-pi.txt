@@ -44,6 +44,13 @@
 
 pymavlink==2.4.49
 
+# pymavlink NU il declara ca dependenta: il importa lenes, abia cand se
+# deschide un port serial. Deci `from pymavlink import mavutil` merge si
+# fara el, setup-ul raporteaza succes, iar eroarea apare abia la
+# /dev/serial0: "ModuleNotFoundError: No module named 'serial'".
+# Pe desktop nu se vede niciodata - SITL se leaga prin UDP/TCP.
+pyserial==3.5
+
 # Folosit de tools/collect_session.py pentru manifestele de sesiune.
 # Nu e importat de codul de zbor: calibrarea se scrie si se citeste prin
 # cv2.FileStorage, nu prin pyyaml.

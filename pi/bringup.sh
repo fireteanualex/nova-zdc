@@ -38,11 +38,9 @@ LOG_DIR="${NOVA_LOG_DIR:-$HOME/nova-logs}"
 
 CHECK_ONLY=0
 WINDOW=1
-# Pragul de reproiectie acceptat DOAR la bring-up. Calibrarea din repo are
-# rms 0.83 px, peste pragul de zbor de 0.5 (§5.34). Pe banc o calibrare
-# provizorie e mai buna decat niciuna - in zbor nu. `tools/start_flight.sh`
-# si modul de cursa NU primesc valoarea asta.
-MAX_RMS="${NOVA_MAX_RMS:-1.0}"
+# Pragul de reproiectie e cel din cod (MAX_REPROJ_ERR_PX, 0.85 - decizia
+# echipei). Bancul si zborul folosesc ACELASI prag: un bring-up mai
+# permisiv decat zborul ar valida o configuratie care nu zboara.
 
 say()  { printf '\n\033[1m[bringup]\033[0m %s\n' "$*"; }
 ok()   { printf '  \033[32mOK\033[0m    %s\n' "$*"; }
@@ -114,7 +112,7 @@ EOF
 
 # --- 3. calibrarea camerei -------------------------------------------------
 say "calibrarea camerei"
-NOVA_REPO="$REPO" NOVA_MAX_RMS="$MAX_RMS" "$PY" - <<'EOF'
+NOVA_REPO="$REPO" "$PY" - <<'EOF'
 import os, sys
 sys.path.insert(0, os.environ['NOVA_REPO'])
 from nova.detector_pi import CameraCalibration
@@ -127,17 +125,17 @@ if not os.path.exists(cale):
     raise SystemExit(0)
 try:
     from nova.detector_pi import MAX_REPROJ_ERR_PX
-    prag = float(os.environ.get('NOVA_MAX_RMS', '1.0'))
-    cal = CameraCalibration.load(cale, require_real=True, max_rms=prag)
+    cal = CameraCalibration.load(cale, require_real=True)
     print(f"  OK    {cale}")
     print(f"        fy={cal.fy:.1f} px  HFOV={cal.hfov_deg():.1f} "
           f"VFOV={cal.vfov_deg():.1f} deg  rms={cal.rms:.3f} px  n={cal.n_images}")
-    if cal.rms and cal.rms > MAX_REPROJ_ERR_PX:
-        print(f"  ATENTIE: rms {cal.rms:.3f} px > pragul de ZBOR "
-              f"{MAX_REPROJ_ERR_PX} px.")
-        print(f"           Acceptata pentru banc, NU pentru zbor. De refacut")
-        print(f"           inainte de E2 (tinta neplana, poze miscate sau")
-        print(f"           colturi neacoperite - vezi §5.34).")
+    # Acceptata (sub pragul de MAX_REPROJ_ERR_PX), dar peste ce da de obicei
+    # o calibrare buna. Nu blocheaza - se spune, ca sa nu se uite.
+    if cal.rms and cal.rms > 0.5:
+        print(f"  NOTA: rms {cal.rms:.3f} px - acceptat (prag "
+              f"{MAX_REPROJ_ERR_PX}, decizia echipei), dar peste 0.2-0.5, cat")
+        print(f"        da de obicei o calibrare buna. E2 spune daca ajunge:")
+        print(f"        eroarea de distanta fata de ruleta.")
 except Exception as e:                                        # noqa: BLE001
     print(f"  ESEC  {cale}: {e}")
 EOF
@@ -170,7 +168,6 @@ say "preflight (camera, legatura, parametri)"
 # spuna ce a gasit preflight-ul e un bring-up care ascunde exact ce ai
 # venit sa afli. Nu blocheaza pornirea - pe masa, jumatate din verificari
 # pica legitim (nu e vehicul armat, nu e GPS) - dar se vede.
-NOVA_MAX_RMS="$MAX_RMS" \
   "$PY" "$REPO/tools/preflight_check.py" --conn "$CONN" --baud "$BAUD" || \
   warn "preflight-ul nu a trecut integral - citeste ce e rosu mai sus"
 
@@ -185,7 +182,7 @@ LOG="$LOG_DIR/bringup-$STAMP.log"
 say "pornesc monitorul (E0 INCHIS: zero comenzi catre vehicul)"
 printf '  log: %s\n' "$LOG"
 
-ARGS=(--conn "$CONN" --baud "$BAUD" --stop-service --yes --max-rms "$MAX_RMS")
+ARGS=(--conn "$CONN" --baud "$BAUD" --stop-service --yes)
 if [[ $WINDOW -eq 1 ]]; then
   if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
     ARGS+=(--fullscreen)

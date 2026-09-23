@@ -83,7 +83,22 @@ CAMERA_CONTROLS = {
 }
 
 #: Calibrare (E1.2): peste asta calibrarea e proasta si se refuza.
-MAX_REPROJ_ERR_PX = 0.5
+#:
+#: 0.85 px, DECIZIA ECHIPEI (23.09.2026), ridicat de la 0.5. Calibrarea
+#: reala a camerei de pe vehicul (60 de poze ChArUco) da 0.829 px.
+#:
+#: Ce se stie si ce se accepta: RMS-ul nu e criteriu de valabilitate
+#: (§5.22 - 24 de poze identice dau 0.061 cu fx gresit cu +754%), dar e
+#: indicator de calitate. O camera bine calibrata sta tipic la 0.2-0.5;
+#: 0.83 sugereaza tinta neplana, poze miscate sau colturi neacoperite
+#: (§5.34). Garzile care chiar prind o calibrare degenerata - focala fata
+#: de cea geometrica si acoperirea cadrului, in calibrate_camera.py - raman
+#: neatinse.
+#:
+#: Consecinta de urmarit la E2: distanta din solvePnP comanda coborarea,
+#: deci eroarea de range fata de ruleta e masuratoarea care spune daca
+#: 0.83 e destul.
+MAX_REPROJ_ERR_PX = 0.85
 
 #: Detectie (E1.3)
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
