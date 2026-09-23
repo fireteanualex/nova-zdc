@@ -1,4 +1,44 @@
-# NOVA - ZDC 2026 - configuratie VEHICUL REAL (CUAV X7+)
+# NOVA - ZDC 2026 - configuratie VEHICUL REAL (Pixhawk 6C)
+#
+# ===========================================================================
+# CERE ArduCopter 4.7.0 SAU MAI NOU
+# ===========================================================================
+#
+# Trei nume din fisierul asta nu exista pe 4.6 si mai vechi - redenumirile
+# au cazut intre 4.6 si 4.7 (verificat in tag-urile ArduPilot):
+#
+#               4.5.x / 4.6.x        aici (4.7.0+)
+#   armare      ARMING_CHECK         ARMING_SKIPCHK
+#   navigatie   WPNAV_ACCEL          WP_ACC
+#               WPNAV_RFND_USE       WP_RFND_USE
+#   telemetru   RNGFND1_MIN_CM       RNGFND1_MIN  (metri, nu cm)
+#
+# Simptomul pe firmware vechi: Mission Planner spune "No matching Params"
+# pe exact numele alea, si scrie restul - deci configuratia iese pe
+# jumatate aplicata, fara ca nimic sa pice.
+#
+# NU traduce numele ca sa incapa pe 4.6. Masca de armare se INVERSEAZA:
+# SKIPCHK listeaza ce sari, CHECK listeaza ce faci. Aceeasi intentie e
+# 32768 aici si 1015294 pe 4.6, iar un 32768 pus in ARMING_CHECK ar
+# insemna "fa DOAR verificarea de telemetru" - fara busola, GPS, INS,
+# baterie, RC. Urca firmware-ul la 4.7.0: e si cel mai apropiat de
+# 4.8.0-dev, adica de versiunea pe care s-a masurat totul in SITL.
+#
+# ===========================================================================
+# ORDINEA DE INCARCARE - NU tot fisierul dintr-o data
+# ===========================================================================
+#
+# PLND_ENABLED si RNGFND1_TYPE sunt declarati cu AP_PARAM_FLAG_ENABLE:
+# restul grupului nu e VIZIBIL pentru o statie de sol cat timp parametrul
+# de activare e 0. Iar aici PLND_ENABLED e 0 deliberat (§5.8), deci
+# sub-parametrii PLND_* nu ar aparea niciodata.
+#
+#   1. RNGFND1_TYPE = 10 si PLND_ENABLED = 1, Write, REBOOT
+#   2. incarca fisierul asta
+#   3. PLND_ENABLED inapoi pe 0     <- se uita usor, si nu da niciun semn
+#
+# In SITL capcana nu se vede: --add-param-file devine --defaults, aplicate
+# inaintea initializarii obiectelor.
 #
 # Perechea de zbor a lui config/nova_sitl.parm. Se incarca prin Mission
 # Planner / QGroundControl si se verifica OBLIGATORIU prin citire inapoi:
