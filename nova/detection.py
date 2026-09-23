@@ -27,6 +27,8 @@ MARKER_SIZE_M = 0.48      # latura zonei codate
 HFOV_DEG = 102.0          # camp vizual orizontal (axa Y corp / dreapta)
 VFOV_DEG = 67.0           # camp vizual vertical  (axa X corp / inainte)
 FOCAL_PX = 933.0          # la rezolutia de lucru 2304x1296
+FRAME_W_PX = 2304.0       # rezolutia de lucru, in pixeli reali
+FRAME_H_PX = 1296.0       # NU `frame_h_px`, care e derivata din VFOV
 CAM_HEIGHT_M = 0.0745     # inaltimea camerei deasupra solului la contact
 
 # 8.3.3 cere doar ca centrul imaginii de touchdown sa contina un pixel de pe
@@ -49,6 +51,25 @@ class Detection:
     range_m     citirea echivalenta de telemetru, NEcorectata de inclinare.
                 ArduPilot inmulteste singur cu cos(tilt), deci aici se pune
                 alt / cos(tilt), nu alt (5.3 din CLAUDE.md).
+    fill        cat din cadru ocupa CUTIA DE INCADRARE a markerului, pe axa
+                mai stramta: max(cutie_lat / latime, cutie_inalt / inaltime).
+                None daca detectorul nu o poate raporta.
+
+`fill` si `marker_px` nu sunt acelasi lucru, si diferenta decide 8.3.3.
+`marker_px` e LATURA; ce trebuie sa incapa in cadru e cutia unui patrat
+rotit, mai mare cu `|cos| + |sin|` - pana la 41% la 45 grade (§5.49). Un
+prag fix in pixeli e deci o conditie a carei marja se prabuseste exact la
+rotatiile pe care nu le controlam: masurat, 980 px e de neatins peste ~18
+grade (§5.51) si 800 px a picat la 41 grade (§5.54).
+
+`fill` nu se calculeaza din `marker_px` si un unghi presupus - se ia din
+colturile detectate, deci include rotatia, perspectiva si distorsiunea asa
+cum sunt, nu cum ar fi la un patrat perfect vazut de sus.
+
+**None inseamna necunoscut, nu zero.** Un detector care nu raporteaza
+incadrarea trimite None si consumatorul cade pe pragul in pixeli; un 0.0
+implicit ar spune "markerul e mic" tocmai cand e pe cale sa iasa din cadru
+(§5.53: un termen lipsa produce refuz, nu acceptare tacuta).
     """
     t: float
     angle_x: float
@@ -56,6 +77,7 @@ class Detection:
     distance_m: float
     marker_px: float
     range_m: float
+    fill: float = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +87,13 @@ class CameraModel:
     hfov_deg: float = HFOV_DEG
     vfov_deg: float = VFOV_DEG
     marker_size_m: float = MARKER_SIZE_M
+    #: Dimensiunea cadrului in PIXELI. Deliberat separata de `frame_h_px`,
+    #: care se deduce din VFOV: la 2304x1296 cele doua difera cu ~5%, pentru
+    #: ca VFOV-ul de fisa tehnica (67 grade) nu e cel geometric al decupajului
+    #: (69.6 grade) - vezi §2. Ce se compara cu o cutie masurata in pixeli
+    #: trebuie sa fie tot in pixeli.
+    width_px: float = FRAME_W_PX
+    height_px: float = FRAME_H_PX
 
     @property
     def frame_h_px(self):
@@ -93,3 +122,41 @@ class CameraModel:
         factor = abs(math.cos(math.radians(yaw_deg))) + \
             abs(math.sin(math.radians(yaw_deg)))
         return marker_px * factor <= self.frame_h_px * 0.95
+
+    def fill_at(self, marker_px, yaw_deg=0.0):
+        """`fill` pentru un patrat IDEAL de latura `marker_px`, rotit cu
+        `yaw_deg` in cadru.
+
+        Pentru detectorul sintetic, care nu are colturi de masurat. Cel real
+        foloseste `fill_from_corners`, care ia forma asa cum e."""
+        factor = abs(math.cos(math.radians(yaw_deg))) + \
+            abs(math.sin(math.radians(yaw_deg)))
+        return max(marker_px * factor / self.width_px,
+                   marker_px * factor / self.height_px)
+
+
+def fill_from_corners(corners, frame_w_px, frame_h_px):
+    """Cat din cadru ocupa cutia de incadrare a colturilor detectate.
+
+    `corners` e orice iterabil de perechi (x, y) in pixeli. Rezultatul e
+    fractia de pe axa mai STRAMTA - cea care se atinge prima:
+
+        max(latime_cutie / frame_w, inaltime_cutie / frame_h)
+
+    Se ia din colturi, nu din `marker_px` si un unghi presupus. Diferenta
+    nu e academica: latura e ce masoara `side_px`, dar ce iese din cadru e
+    cutia, mai mare cu pana la 41% la 45 grade (§5.49). Iar colturile
+    poarta si perspectiva si distorsiunea, pe care un `|cos| + |sin|`
+    aplicat unui patrat ideal nu le vede.
+
+    Intoarce None daca dimensiunile cadrului nu sunt utilizabile: necunoscut
+    nu inseamna zero, iar un 0.0 aici ar spune "markerul e mic" exact cand e
+    pe cale sa iasa din cadru."""
+    if not frame_w_px or not frame_h_px:
+        return None
+    xs = [float(c[0]) for c in corners]
+    ys = [float(c[1]) for c in corners]
+    if not xs or not ys:
+        return None
+    return max((max(xs) - min(xs)) / float(frame_w_px),
+               (max(ys) - min(ys)) / float(frame_h_px))

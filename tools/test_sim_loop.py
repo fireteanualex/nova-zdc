@@ -705,14 +705,61 @@ def test_pragul_de_coborare_verticala_e_reglabil_fara_cod():
     cei 0.40 m impliciti daca eroarea laterala nu e mica. Sa poti incerca
     0.5 sau 0.8 m fara sa atingi masina de stari inseamna un experiment cu
     o singura variabila, nu o modificare de cod validat."""
-    from nova.state_machine import SequenceConfig
-    c = SequenceConfig()
-    assert c.no_lateral_alt_m == 0.40, c.no_lateral_alt_m
+    from nova import state_machine as sm_mod
+    c = sm_mod.SequenceConfig()
+    # valoarea nu se scrie aici: duplicata, ar ramane in urma la prima
+    # reglare si testul ar trece din inertie (§5.40). Ce se verifica e ca
+    # implicitul vine din constanta de modul si ca se poate schimba.
+    assert c.no_lateral_alt_m == sm_mod.NO_LATERAL_ALT_M, c.no_lateral_alt_m
+    assert c.scoring_fill == sm_mod.SCORING_FILL, c.scoring_fill
+    assert c.final_fill == sm_mod.FINAL_FILL, c.final_fill
     c.no_lateral_alt_m = 0.8
     assert c.no_lateral_alt_m == 0.8
     src = open(os.path.join(REPO, 'tools', 'nova_sim.py')).read()
-    assert '--no-lateral-alt' in src, "knob-ul nu e expus in aplicatie"
-    return "reglabil din SequenceConfig si din linia de comanda"
+    for knob in ('--no-lateral-alt', '--scoring-fill', '--final-fill'):
+        assert knob in src, f"knob-ul {knob} nu e expus in aplicatie"
+    return "reglabile din SequenceConfig si din linia de comanda"
+
+
+def test_campania_masoara_ce_zboara():
+    """Campania nu are voie sa porneasca cu alte praguri decat vehiculul.
+
+    A avut: `batch_sim.NO_LATERAL_ALT_M = 0.60` peste cei 0.40 m din
+    `SequenceConfig`. Deci toate cifrele din §5.52 si §5.54 - 19/20, 10/10,
+    eroare finala p50 0.64 cm - descriu o configuratie pe care `nova_pi.py`
+    nu ar fi zburat-o niciodata, fiindca el ia implicitele.
+
+    Nu era o valoare gresita, era o valoare care nu exista decat in campanie.
+    Un rand din Compliance Matrix sprijinit pe ea ar fi afirmat ceva
+    nemasurat despre ce zboara.
+
+    Regula: ce se regleaza dintr-un experiment se da EXPLICIT din linia de
+    comanda, si atunci campania o si anunta ca experiment (§5.40). Implicit,
+    orice knob e None si aplicatia isi ia valoarea din cod."""
+    import argparse
+    import inspect
+
+    # 1. implicitele CLI ale campaniei sunt toate None: nimic suprascris tacit
+    src = inspect.getsource(batch_sim.main)
+    assert "'no_lateral_alt': a.no_lateral_alt" in src, (
+        "campania pune altceva decat valoarea din linia de comanda in "
+        "no_lateral_alt - deci suprascrie pragul vehiculului")
+
+    # 2. si nu a ramas o constanta de campanie care sa umbreasca una de cod
+    assert not hasattr(batch_sim, 'NO_LATERAL_ALT_M'), (
+        "batch_sim are propriul NO_LATERAL_ALT_M: doua surse de adevar "
+        "pentru acelasi prag, iar campania o foloseste pe a ei")
+
+    # 3. aplicatia de bord ia implicitele, deci ele SUNT ce zboara
+    pi_src = open(os.path.join(REPO, 'tools', 'nova_pi.py')).read()
+    assert 'SequenceConfig(conv=a.conv)' in pi_src, (
+        "nova_pi.py nu mai construieste SequenceConfig doar cu implicitele; "
+        "verifica daca pragurile de zbor mai sunt cele masurate")
+    for knob in ('scoring_fill', 'final_fill', 'no_lateral_alt_m'):
+        assert f'seq.{knob}' not in pi_src and f'{knob}=' not in pi_src, (
+            f"nova_pi.py regleaza {knob}: vehiculul zboara alte praguri "
+            f"decat cele masurate in campanie")
+    return "campania si bordul pornesc de la aceleasi praguri"
 
 
 def test_raportul_se_scrie_si_la_oprire_din_afara():
@@ -832,6 +879,42 @@ def test_rata_de_detectie_poate_scadea_sub_100():
     return "10 cadre, 4 detectii -> 40%, nu 100%"
 
 
+def test_detectorul_din_productie_expune_contorul_de_cadre():
+    """Testul de mai sus isi injecteaza un obiect fals cu `n_frames`.
+
+    Deci verifica aritmetica lui `_note_frames`, nu faptul ca detectorul
+    REAL are ce sa-i dea. Intre timp `nova_sim` a trecut de la
+    `ArucoMarkerDetector` (care are contorul) la `PiDetector` (care il
+    tinea ascuns in `self.det`), iar `getattr(detector, 'n_frames', None)`
+    a inceput sa intoarca None. Rezultatul: numararea ratarilor se oprea in
+    prima instructiune, iar campania raporta `rata_detectie = 1.000` in
+    toate cele 10 rulari - inclusiv daca detectorul ar fi fost mort.
+
+    Cazul negativ al testului precedent exista, dar il declansa pe o clasa
+    care nu zboara nicaieri (§5.40). Asta se uita la cea care zboara."""
+    from nova import detector_pi
+
+    assert hasattr(detector_pi.PiDetector, 'n_frames'), (
+        "PiDetector nu expune n_frames, deci _note_frames nu poate numara "
+        "ratarile si rata de detectie iese 100% orice s-ar intampla")
+
+    # si chiar urmareste contorul interior, nu e un zero decorativ
+    d = detector_pi.PiDetector.__new__(detector_pi.PiDetector)
+
+    class _Aruco:
+        n_frames = 0
+    d.det = _Aruco()
+    assert d.n_frames == 0, d.n_frames
+    d.det.n_frames = 7
+    assert d.n_frames == 7, (
+        f"n_frames nu urmareste detectorul interior: {d.n_frames}")
+
+    # ce citeste chiar nova_sim, pe acelasi obiect
+    assert getattr(d, 'n_frames', None) == 7, (
+        "getattr - exact apelul din _note_frames - nu vede contorul")
+    return "PiDetector.n_frames deleaga la ArucoMarkerDetector"
+
+
 def test_contorul_nu_da_ratari_negative():
     """Contorul creste in firul detectorului, deci o detectie poate ajunge
     in bucla inaintea incrementarii lui."""
@@ -867,13 +950,101 @@ def test_pragul_de_scoring_e_atins_la_orice_rotatie():
     assert px_maxim(20) < 980, (
         f"la 20 grade maximul e {px_maxim(20):.0f} px: 980 e de neatins")
     assert px_maxim(45) < 980
-    # pragul propus trebuie atins la ORICE rotatie
-    propus = 800.0
+    # pragul de rezerva trebuie atins la ORICE rotatie
+    from nova import state_machine as sm_mod
+    propus = sm_mod.SCORING_PX
     assert px_maxim(45) > propus, (
         f"nici {propus:.0f} px nu e atins la 45 grade "
         f"(maxim {px_maxim(45):.0f})")
     return (f"980 px: imposibil peste ~18 deg; {propus:.0f} px: atins pana "
             f"la 45 deg (maxim {px_maxim(45):.0f})")
+
+
+def test_incadrarea_nu_se_subtiaza_cu_rotatia():
+    """De ce pragul e pe `fill` si nu pe pixeli.
+
+    Un prag fix in pixeli are o marja care se prabuseste cu rotatia, fiindca
+    ce iese din cadru e CUTIA, nu latura. Pe incadrare marja e aceeasi la
+    orice rotatie, fiindca `fill` e chiar marimea care decide iesirea.
+
+    Cifrele de pierdere sunt masurate in Gazebo (§5.49 la rotatie 0,
+    §5.54 la 41 grade), nu deduse."""
+    import math as _m
+    from nova import state_machine as sm_mod
+
+    H = 1296.0
+    # fill la care s-a pierdut detectia, masurat
+    PIERDERE = {0.0: 1184.0 / H, 41.0: 759.0 * 1.410 / H}
+
+    def k(yaw):
+        return abs(_m.cos(_m.radians(yaw))) + abs(_m.sin(_m.radians(yaw)))
+
+    marje_px, marje_fill = {}, {}
+    for yaw, fill_pierdere in PIERDERE.items():
+        px_pierdere = fill_pierdere * H / k(yaw)
+        marje_px[yaw] = px_pierdere / sm_mod.SCORING_PX
+        marje_fill[yaw] = fill_pierdere / sm_mod.SCORING_FILL
+
+    # pragul in pixeli: marja se strange vizibil cu rotatia
+    assert marje_px[0.0] > 1.5, marje_px
+    assert marje_px[41.0] < 1.15, (
+        f"pragul in px ar trebui sa aiba marja subtire la 41 grade: "
+        f"{marje_px[41.0]:.2f}")
+
+    # pragul pe incadrare: marja ramane utilizabila la ORICE rotatie
+    for yaw, m in marje_fill.items():
+        assert m >= 1.30, (
+            f"marja pe incadrare la {yaw} grade e doar {m:.2f}x")
+
+    # si nu se strange nici macar de doua ori intre cele doua rotatii,
+    # spre deosebire de cea in pixeli
+    #
+    # `fill` NU egalizeaza marja complet: la 41 grade randarea reala pierde
+    # markerul ceva mai devreme decat prezice incadrarea pura (fill 0.826
+    # fata de 0.914 la nadir, §5.54). Deci ramane o imprastiere - doar ca
+    # mult mai mica decat cea a pragului in pixeli, si in partea sigura.
+    imprastiere_px = max(marje_px.values()) / min(marje_px.values())
+    imprastiere_fill = max(marje_fill.values()) / min(marje_fill.values())
+    assert imprastiere_fill < imprastiere_px, (
+        f"incadrarea nu strange deloc imprastierea: px {imprastiere_px:.2f}x, "
+        f"fill {imprastiere_fill:.2f}x")
+    assert imprastiere_fill < 1.25, (
+        f"marja pe incadrare inca variaza cu {imprastiere_fill:.2f}x intre "
+        f"rotatii - prea mult ca sa fie un criteriu independent de rotatie")
+    return (f"marja px {marje_px[0.0]:.2f}x -> {marje_px[41.0]:.2f}x; "
+            f"fill {marje_fill[0.0]:.2f}x -> {marje_fill[41.0]:.2f}x")
+
+
+def test_captura_e_garantat_inaintea_coborarii_verticale():
+    """§5.51: cu o constanta in pixeli si una in metri, ordinea celor doua
+    depinde de rotatie - iar cand s-a inversat, captura 8.3.3 s-a pierdut in
+    TOATE cele 10 rulari, cu campania raportand 100% succes.
+
+    Pe incadrare ordinea e o proprietate a constantelor, nu un noroc de
+    geometrie: acelasi criteriu, doua praguri, deci nu se pot incrucisa."""
+    from nova import state_machine as sm_mod
+    assert sm_mod.SCORING_FILL < sm_mod.FINAL_FILL, (
+        f"captura ({sm_mod.SCORING_FILL}) trebuie sa se declanseze INAINTEA "
+        f"coborarii verticale ({sm_mod.FINAL_FILL})")
+
+    # plasa de altitudine nu are voie sa preia inaintea capturii: sub ea,
+    # FINAL_DESCENT ar porni fara sa se fi facut poza (exact bug-ul din 5.51)
+    from nova.detection import CameraModel, CAM_HEIGHT_M
+    cam = CameraModel()
+    cel_mai_jos = None
+    for yaw in (0.0, 15.0, 30.0, 45.0):
+        import math as _m
+        k = abs(_m.cos(_m.radians(yaw))) + abs(_m.sin(_m.radians(yaw)))
+        px = sm_mod.FINAL_FILL * cam.height_px / k
+        raza = cam.focal_px * cam.marker_size_m / px
+        alt = raza + CAM_HEIGHT_M + 0.01          # 0.01: planul markerului
+        cel_mai_jos = alt if cel_mai_jos is None else min(cel_mai_jos, alt)
+    assert sm_mod.NO_LATERAL_ALT_M < cel_mai_jos, (
+        f"plasa de altitudine ({sm_mod.NO_LATERAL_ALT_M} m) e peste "
+        f"altitudinea la care incadrarea ar declansa oricum "
+        f"({cel_mai_jos:.3f} m): ar taia captura")
+    return (f"captura {sm_mod.SCORING_FILL} < verticala {sm_mod.FINAL_FILL}; "
+            f"plasa {sm_mod.NO_LATERAL_ALT_M} m sub {cel_mai_jos:.2f} m")
 
 
 def test_succesul_cere_si_captura_nu_doar_HANDBACK():
@@ -1423,6 +1594,13 @@ TESTS = [
      test_niciun_pas_din_campanie_nu_asteapta_o_tasta),
     ('copiii nu mostenesc tastatura si nu tamponeaza',
      test_copiii_nu_mostenesc_tastatura_si_nu_tamponeaza),
+    ('campania masoara ce zboara', test_campania_masoara_ce_zboara),
+    ('incadrarea nu se subtiaza cu rotatia',
+     test_incadrarea_nu_se_subtiaza_cu_rotatia),
+    ('captura e garantat inaintea coborarii verticale',
+     test_captura_e_garantat_inaintea_coborarii_verticale),
+    ('detectorul din productie expune contorul de cadre',
+     test_detectorul_din_productie_expune_contorul_de_cadre),
     ('campania nu lasa vehiculul in LOITER fara manse',
      test_campania_nu_lasa_vehiculul_in_LOITER_fara_manse),
     ('codurile de iesire ale decolarii sunt distincte',

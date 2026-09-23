@@ -80,7 +80,7 @@ from nova.vehicle import Vehicle                            # noqa: E402
 FAZE_MASURATE = ('DESCEND_TRACK', 'SCORING_CAPTURE', 'FINAL_DESCENT')
 
 CSV_HEADER = [
-    'sim_t', 'state', 'alt_m', 'detected', 'marker_px',
+    'sim_t', 'state', 'alt_m', 'detected', 'marker_px', 'fill',
     'det_range_m', 'truth_range_m', 'range_rel',
     'angle_deg', 'angle_x_deg', 'angle_y_deg',
     'truth_north_off_m', 'truth_east_off_m', 'yaw_deg', 'tilt_deg',
@@ -144,6 +144,7 @@ class SimApp:
         self.alt_scoring_m = None
         self.scoring_alt_m = None
         self.scoring_px = None
+        self.scoring_fill = None
         self.pos_scoring = None
         self.pos_touchdown = None
         self.eroare_finala_m = None
@@ -202,6 +203,22 @@ class SimApp:
             print(f"[sim] corectii laterale doar peste "
                   f"{args.no_lateral_alt:.2f} m "
                   f"(implicit {SequenceConfig().no_lateral_alt_m:.2f} m)")
+        if args.scoring_fill is not None:
+            seq.scoring_fill = args.scoring_fill
+            print(f"[sim] captura de scoring la incadrare "
+                  f"{args.scoring_fill:.2f} "
+                  f"(implicit {SequenceConfig().scoring_fill:.2f})")
+        if args.final_fill is not None:
+            seq.final_fill = args.final_fill
+            print(f"[sim] coborare verticala la incadrare "
+                  f"{args.final_fill:.2f} "
+                  f"(implicit {SequenceConfig().final_fill:.2f})")
+        if seq.scoring_fill >= seq.final_fill:
+            raise SystemExit(
+                f"[sim] REFUZ: captura la incadrare {seq.scoring_fill:.2f} "
+                f"nu se poate declansa inaintea coborarii verticale la "
+                f"{seq.final_fill:.2f}. Cu ordinea inversata, 8.3.3 esueaza "
+                f"in fiecare rulare, iar campania raporteaza succes (§5.51).")
         # 8.3.3: acelasi ScoringRecorder ca pe bord, ca imaginea predata
         # juriului sa fie produsa de acelasi cod in sim si in zbor (§8).
         self.rec = None
@@ -249,9 +266,12 @@ class SimApp:
             return
         self.scoring_alt_m = info.get('alt')
         self.scoring_px = info.get('marker_px')
+        self.scoring_fill = info.get('fill')
         self.pos_scoring = self._offset_fata_de_marker()
+        incadrare = ('' if self.scoring_fill is None
+                     else f", incadrare {self.scoring_fill:.2f}")
         print(f"  >> captura de scoring la {self.scoring_alt_m:.3f} m, "
-              f"{self.scoring_px:.0f} px")
+              f"{self.scoring_px:.0f} px{incadrare}")
 
     def _on_reject(self, reason):
         print(f"\n!! HANDOVER REFUZAT: {reason}\n")
@@ -444,6 +464,7 @@ class SimApp:
             'sim_t': round(now, 4), 'state': self.sm.state,
             'alt_m': round(alt, 4), 'detected': 1,
             'marker_px': round(det.marker_px, 2),
+            'fill': '' if det.fill is None else round(det.fill, 4),
             'det_range_m': round(det.range_m, 4),
             'lat_ms': round(lat_ms, 3),
         }
@@ -512,6 +533,7 @@ class SimApp:
             'succes': self.sm.state == 'HANDBACK',
             'alt_scoring_m': self.scoring_alt_m,
             'scoring_px': self.scoring_px,
+            'scoring_fill': self.scoring_fill,
             'scoring_ok': self.scoring_alt_m is not None,
             'eroare_finala_cm': (None if self.eroare_finala_m is None
                                  else self.eroare_finala_m * 100.0),
@@ -554,8 +576,22 @@ def print_report(r, praguri=(0.03, 0.5, 0.95)):
               f" din {r['n_in_fereastra']} cadre  (prag {p_d:.0%})  "
               f"{'OK ' if ok else 'SUB PRAG'}")
     if r['lat_p99_ms'] is not None:
-        print(f"    {'latenta cadru->LT':<19}: p50 {r['lat_p50_ms']:.1f} ms  "
-              f"p99 {r['lat_p99_ms']:.1f} ms  (timp de simulare)")
+        # Ce se masoara aici e INTARZIEREA DE COADA in timp de simulare:
+        # cat a stat un cadru intre capturare si consumare. Cand detectorul
+        # tine pasul cu randarea, ceasul de simulare nu a avansat intre cele
+        # doua, deci iese exact 0 - nu "latenta zero", ci "nu exista coada".
+        #
+        # Latenta ceruta de E1.4 (captura -> publicare, p99 < 150 ms) e
+        # timpul de CALCUL al detectorului si se masoara pe Pi 4. A o citi
+        # de aici ar fi o afirmatie de conformitate pe care simularea nu o
+        # poate sustine: desktopul nu e Pi (§5.24).
+        if r['lat_p99_ms'] == 0.0:
+            print(f"    {'intarziere de coada':<19}: 0 ms - detectorul tine "
+                  f"pasul cu randarea (latenta E1.4 se masoara pe Pi)")
+        else:
+            print(f"    {'intarziere de coada':<19}: p50 {r['lat_p50_ms']:.1f}"
+                  f" ms  p99 {r['lat_p99_ms']:.1f} ms  (timp de simulare; "
+                  f"NU e latenta E1.4)")
     print(f"    stare finala       : {r['stare_finala']}")
     im = r.get('imagini')
     if im is not None:
@@ -606,17 +642,23 @@ def main(argv=None):
     p.add_argument('--no-truth', action='store_true')
     p.add_argument('--conv', type=int, default=2, choices=[0, 1, 2, 3])
     p.add_argument('--scoring-px', type=float, default=None,
-                   help='pragul in pixeli pentru captura de scoring '
-                        '(8.3.3). Implicit 980 - de neatins pentru yaw peste '
-                        '~18 grade, fiindca markerul iese din cadru inainte '
-                        'sa creasca atat (§5.51)')
+                   help='prag de REZERVA in pixeli pentru captura de scoring '
+                        '(8.3.3), folosit doar cand detectorul nu raporteaza '
+                        'incadrarea. Criteriul normal e --scoring-fill')
+    p.add_argument('--scoring-fill', type=float, default=None,
+                   help='cat din cadru trebuie sa ocupe cutia markerului ca '
+                        'sa se faca captura 8.3.3. Spre deosebire de un prag '
+                        'in pixeli, marja nu se prabuseste cu rotatia '
+                        'markerului in cadru (§5.49, §5.51, §5.54)')
+    p.add_argument('--final-fill', type=float, default=None,
+                   help='incadrarea la care se trece in FINAL_DESCENT. '
+                        'Trebuie > --scoring-fill, altfel captura nu se mai '
+                        'face niciodata')
     p.add_argument('--no-lateral-alt', type=float, default=None,
-                   help='sub ce altitudine se trece in FINAL_DESCENT, adica '
-                        'coborare verticala fara corectii laterale. '
-                        'Implicit 0.40 m - cifra de NADIR din §5.2. Cu '
-                        'eroare laterala reala fereastra de incadrare se '
-                        'inchide mai sus (§5.45); vezi '
-                        'tools/check_handover_fov.py pentru tabel')
+                   help='PLASA de altitudine sub care se trece in '
+                        'FINAL_DESCENT chiar daca semnalul de incadrare nu '
+                        'vine. Criteriul normal e --final-fill; asta ramane '
+                        'pentru cazul in care detectorul tace')
     p.add_argument('--no-gnss', action='store_true',
                    help='15.2.5: comuta pe EK3_SRC2 (fara GNSS) pe durata '
                         'segmentului autonom si restaureaza la iesire')

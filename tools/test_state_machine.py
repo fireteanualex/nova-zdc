@@ -280,8 +280,16 @@ def test_scoring_capture_exact_o_data():
     n = sum(1 for name, _ in events if name == 'scoring_capture')
     assert n == 1, f"scoring_capture s-a declansat de {n} ori, nu o data"
     info = next(i for name, i in events if name == 'scoring_capture')
-    assert info['marker_px'] > 980, info
-    return f"o singura captura, la {info['alt']:.3f} m / {info['marker_px']:.0f} px"
+    # Pragul se ia din configuratie, nu se scrie aici. Duplicat, ar ramane
+    # in urma la prima reglare si testul ar trece din inertie - a treia
+    # forma a lecției din §5.40, unde o constanta copiata in test l-a facut
+    # sa nu mai verifice nimic.
+    prag_px = sm.cfg.scoring_px
+    assert info['marker_px'] > prag_px, (
+        f"captura la {info['marker_px']:.0f} px, sub pragul de rezerva "
+        f"{prag_px}: {info}")
+    return (f"o singura captura, la {info['alt']:.3f} m / "
+            f"{info['marker_px']:.0f} px (prag {prag_px})")
 
 
 def test_fara_captura_in_afara_coborarii():

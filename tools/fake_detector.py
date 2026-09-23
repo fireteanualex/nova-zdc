@@ -146,9 +146,16 @@ class FakeDetector:
         angle_x, angle_y, dist_3d, raw_range = self._add_noise(
             angle_x, angle_y, dist_3d, raw_range, marker_px)
 
+        # Rotatia markerului IN CADRU: markerul e aliniat cu axele lumii,
+        # deci e chiar capul vehiculului. Detectorul real o citeste din
+        # colturi; aici nu exista colturi, deci se calculeaza din geometrie
+        # - dar marimea raportata e aceeasi, `fill`.
+        yaw_in_frame = math.degrees(self.v.yaw) % 90.0
+        fill = self.cam.fill_at(marker_px, yaw_in_frame)
+
         return Detection(t=now, angle_x=angle_x, angle_y=angle_y,
                          distance_m=dist_3d, marker_px=marker_px,
-                         range_m=raw_range)
+                         range_m=raw_range, fill=fill)
 
     def _add_noise(self, angle_x, angle_y, dist, rng, marker_px):
         sigma_ang = self.noise_px / self.cam.focal_px

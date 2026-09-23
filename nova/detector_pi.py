@@ -41,7 +41,8 @@ import time
 import cv2
 import numpy as np
 
-from .detection import Detection, CameraModel, MARKER_SIZE_M
+from .detection import (Detection, CameraModel, MARKER_SIZE_M,
+                        fill_from_corners)
 from .frame_ring import FrameRing
 
 # --- Camera: rezolutii si controale (E1.1) ---------------------------------
@@ -88,6 +89,12 @@ MAX_REPROJ_ERR_PX = 0.5
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
 MARKER_ID = 26
 ROI_BELOW_M = 5.0
+#: Peste cat din cadru consideram ca markerul nu mai incape (§5.2, pe cutie).
+#: Masurat in Gazebo, detectia tine pana la fill ~0.91 la rotatie zero si
+#: ~0.83 la 41 grade, deci pragul asta nu e cel care leaga - `detectMarkers`
+#: pica primul. Ramane ca garda explicita: o detectie cu markerul pe jumatate
+#: afara nu e o detectie, e o extrapolare a lui solvePnP.
+FILL_MAX = 0.95
 ROI_SIZE_PX = (640, 480)
 
 #: Instrumentare (E1.4): fereastra pe care se calculeaza percentilele.
@@ -341,10 +348,25 @@ class ArucoMarkerDetector:
         self.last_corners = corners
 
         marker_px = self.side_px(corners)
+        # Cat din cadru ocupa CUTIA colturilor. Se ia din forma reala a
+        # cadrului (gray.shape), nu din VFOV-ul de fisa tehnica: cele doua
+        # difera cu ~5% la 2304x1296, iar aici masuram pixeli, nu unghiuri
+        # (§2 - "valoarea care conteaza operational e cea din calibrare").
+        h_px, w_px = gray.shape[:2]
+        fill = fill_from_corners(corners, w_px, h_px)
         # §5.2: markerul trebuie sa incapa INTREG in cadru. Sub ~0.38 m nu
         # mai incape, si atunci detectorul tace, prin constructie - de aici
         # exceptia FINAL_DESCENT din supervizor.
-        if not self.cam.fits_in_frame(marker_px):
+        #
+        # Criteriul se ia din `fill` cand exista, adica din cutia masurata,
+        # nu din latura: un patrat rotit iese din cadru cu pana la 41% mai
+        # devreme decat spune latura lui (§5.49). `fits_in_frame(marker_px)`
+        # ramane pentru cazul in care forma cadrului nu e cunoscuta.
+        if fill is not None:
+            incape = fill <= FILL_MAX
+        else:
+            incape = self.cam.fits_in_frame(marker_px)
+        if not incape:
             self.n_rejected_fit += 1
             self.last_center = None
             return None
@@ -384,7 +406,7 @@ class ArucoMarkerDetector:
         self.last_range_m = range_m
         return Detection(t=t_capture, angle_x=angle_x, angle_y=angle_y,
                          distance_m=distance, marker_px=marker_px,
-                         range_m=range_m)
+                         range_m=range_m, fill=fill)
 
     def stats(self):
         return {
@@ -798,6 +820,23 @@ class PiDetector:
         self.frame_detected = collections.deque(maxlen=STATS_WINDOW)
         self.n_published = 0
         self.n_dropped = 0
+
+    @property
+    def n_frames(self):
+        """Cate cadre au fost PROCESATE, cu sau fara detectie.
+
+        Contorul creste in ArucoMarkerDetector, care vede fiecare cadru.
+        Aici e doar delegat, si asta nu e cosmetic: `nova_sim._note_frames`
+        il cauta prin `getattr(detector, 'n_frames', None)`, iar detectorul
+        pe care il primeste e un PiDetector. Cat timp proprietatea a lipsit,
+        `getattr` intorcea None, numararea ratarilor se oprea din prima
+        instructiune si `rata_detectie` raporta **1.000 in orice conditii**.
+
+        A patra oara aceeasi forma ca §5.39: metrica moarta care raporteaza
+        sanatate. De data asta testul care ar fi trebuit sa o prinda isi
+        injecta un obiect fals cu `n_frames`, deci verifica aritmetica lui
+        `_note_frames` pe o clasa care nu e cea din productie (§5.40)."""
+        return self.det.n_frames
 
     # -- ciclu de viata ----------------------------------------------------
     def start(self):

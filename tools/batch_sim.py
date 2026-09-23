@@ -101,10 +101,15 @@ TILT_BUDGET_DEG = 15.0
 #: detectia pana in FINAL_DESCENT - abortaza. 11 esecuri din 18 in prima
 #: campanie, toate intre 0.46 si 0.56 m, toate cu centrarea perfecta.
 #:
-#: 0.60 m e deasupra pragului de caz cel mai rau (yaw 45 grade -> 0.52 m
-#: range = 0.60 m altitudine). De acolo coborarea e verticala si oarba
-#: prin proiect, iar monitorul de detectie nu se mai aplica (§8).
-NO_LATERAL_ALT_M = 0.60
+#: Campania NU mai suprascrie pragul. Cat timp l-a suprascris (0.60 m fata
+#: de 0.40 m din cod), cifrele masurate descriau o configuratie pe care
+#: vehiculul nu ar fi zburat-o niciodata - iar scopul rundei 8 e exact
+#: invers: ce se masoara sa fie ce zboara. Trecerea in FINAL_DESCENT se
+#: decide acum pe INCADRARE (`SequenceConfig.final_fill`), deci pragul de
+#: altitudine a redevenit ce trebuia sa fie: o plasa, nu criteriul.
+#:
+#: Ramane reglabil din linia de comanda, pentru experimente cu o singura
+#: variabila (§5.40).
 
 #: Cat de departe de punctul de decolare sta markerul. Nu e o limita de
 #: regulament - e lungimea piciorului de zbor dinainte de handover. Destul
@@ -139,6 +144,7 @@ CSV_HEADER = [
     'wind_spd', 'wind_turb', 'sun_az', 'sun_el', 'roughness',
     'succes', 'motiv', 'stare_finala',
     'eroare_finala_cm', 'deriva_cm', 'alt_scoring_m', 'scoring_px',
+    'scoring_fill',
     't_descend_s', 't_final_s', 't_touchdown_s', 't_ascent_s', 't_total_s',
     'rata_detectie', 'range_p95', 'angle_p95', 'lat_p99_ms', 'n_detectii',
     'gnss_conform', 'imagini_8_3_3',
@@ -308,7 +314,8 @@ def handover_cmd(python=sys.executable, after=HANDOVER_AFTER_S):
 
 def nova_sim_cmd(run_dir, calib, seconds, python=sys.executable,
                  no_lateral_alt=None, authority=False, fast_descent=False,
-                 scoring_px=None, no_gnss=False):
+                 scoring_px=None, no_gnss=False, scoring_fill=None,
+                 final_fill=None):
     """Optiunile de experiment se DAU MAI DEPARTE, nu se redeclara aici.
 
     Campania e doar orchestrare; ce se regleaza, se regleaza in aplicatie.
@@ -320,6 +327,10 @@ def nova_sim_cmd(run_dir, calib, seconds, python=sys.executable,
         extra += ['--scoring-px', str(scoring_px)]
     if no_lateral_alt is not None:
         extra += ['--no-lateral-alt', str(no_lateral_alt)]
+    if scoring_fill is not None:
+        extra += ['--scoring-fill', str(scoring_fill)]
+    if final_fill is not None:
+        extra += ['--final-fill', str(final_fill)]
     if no_gnss:
         extra.append('--no-gnss')
     if authority:
@@ -468,6 +479,7 @@ def row_from(cond, motiv, raport=None, succes=False):
             'deriva_cm': _r(raport.get('deriva_cm'), 2),
             'alt_scoring_m': _r(raport.get('alt_scoring_m'), 3),
             'scoring_px': _r(raport.get('scoring_px'), 0),
+            'scoring_fill': _r(raport.get('scoring_fill'), 3),
             't_descend_s': _r(t.get('DESCEND_TRACK'), 2),
             't_final_s': _r(t.get('FINAL_DESCENT'), 2),
             't_touchdown_s': _r(t.get('TOUCHDOWN_CONFIRM'), 2),
@@ -642,11 +654,12 @@ def print_summary(s):
         ('deriva_cm', 'deriva (cm)'),
         ('alt_scoring_m', 'alt captura (m)'),
         ('scoring_px', 'captura (px)'),
+        ('scoring_fill', 'captura (incadrare)'),
         ('t_total_s', 'durata (s)'),
         ('rata_detectie', 'rata detectie'),
         ('range_p95', 'eroare range p95/rul'),
         ('angle_p95', 'eroare unghi p95/rul'),
-        ('lat_p99_ms', 'latenta p99 (ms)'),
+        ('lat_p99_ms', 'coada p99 (ms)'),
     ]
     for k, et in etichete:
         d = s.get(k) or {}
@@ -683,15 +696,19 @@ def main(argv=None):
     p.add_argument('--dry-run', action='store_true',
                    help='genereaza lumile, nu porneste Gazebo')
     p.add_argument('--scoring-px', type=float, default=None,
-                   help='pragul in pixeli pentru captura de scoring. '
-                        'Implicit 980 e de neatins peste ~18 grade de yaw '
-                        '(§5.51); 800 e atins la orice rotatie')
+                   help='prag de REZERVA in pixeli pentru captura, folosit '
+                        'doar cand detectorul nu raporteaza incadrarea')
+    p.add_argument('--scoring-fill', type=float, default=None,
+                   help='cat din cadru trebuie sa ocupe cutia markerului ca '
+                        'sa se faca captura 8.3.3 (§5.49, §5.51, §5.54)')
+    p.add_argument('--final-fill', type=float, default=None,
+                   help='incadrarea la care coborarea devine verticala. '
+                        'Trebuie > --scoring-fill')
     p.add_argument('--no-lateral-alt', type=float, default=None,
-                   help=f'sub ce altitudine coborarea devine verticala, fara '
-                        f'corectii laterale. Implicit {NO_LATERAL_ALT_M} m '
-                        f'in campanie - pragul de 0.40 m din SequenceConfig '
-                        f'e sub nivelul la care rotatia markerului in cadru '
-                        f'omoara detectia (§5.49)')
+                   help='plasa de altitudine sub care coborarea devine '
+                        'verticala chiar fara semnal de incadrare. Implicit '
+                        'cel din SequenceConfig - campania nu il mai '
+                        'suprascrie, ca sa masoare ce zboara')
     p.add_argument('--no-gnss', action='store_true',
                    help='15.2.5: segmentul autonom ruleaza pe setul de surse '
                         'EKF fara GNSS')
@@ -709,8 +726,9 @@ def main(argv=None):
     a = p.parse_args(argv)
 
     sim_opts = {'scoring_px': a.scoring_px, 'no_gnss': a.no_gnss,
-                'no_lateral_alt': (NO_LATERAL_ALT_M if a.no_lateral_alt
-                                   is None else a.no_lateral_alt),
+                'no_lateral_alt': a.no_lateral_alt,
+                'scoring_fill': a.scoring_fill,
+                'final_fill': a.final_fill,
                 'authority': a.authority,
                 'fast_descent': a.fast_descent}
 

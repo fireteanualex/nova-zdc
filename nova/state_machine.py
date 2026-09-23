@@ -57,8 +57,51 @@ from dataclasses import dataclass
 from .vehicle import MODE_GUIDED, MODE_LAND, MODE_RTL
 
 # --- Praguri ale masinii de stari ----------------------------------------
-SCORING_PX = 980          # captura full-res (8.3.3)
-NO_LATERAL_ALT_M = 0.40   # sub asta nu se mai fac corectii laterale
+#
+# Captura de scoring si trecerea la coborare verticala se decid pe
+# INCADRARE (`Detection.fill`: cat din cadru ocupa cutia markerului), nu pe
+# latura in pixeli. Motivul e masurat, nu estetic.
+#
+# Ce trebuie sa incapa in cadru e cutia unui patrat rotit, mai mare cu
+# `|cos| + |sin|` - pana la 41% la 45 grade (§5.49). Un prag fix in pixeli
+# are deci o marja care se prabuseste exact la rotatiile pe care nu le
+# controlam, fiindca rotatia markerului in cadru depinde de capul
+# vehiculului la handover, adica de pilot:
+#
+#   prag    marja pana la pierderea detectiei, la rotatie 0 / 41 grade
+#   980 px  de neatins peste ~18 grade (§5.51)
+#   800 px  +48% / **-5%**  - o rulare din 10 a picat 8.3.3 (§5.54)
+#   700 px  +69% / +8%      - 10/10, dar marja tot se subtiaza cu rotatia
+#
+# Pe incadrare, marja e aceeasi la orice rotatie, fiindca `fill` e chiar
+# marimea care decide daca markerul iese din cadru.
+#
+# Pierderea detectiei, masurata in Gazebo (fill fata de cadrul real, 1296 px):
+#   rotatie  0 grade : 1184 px            -> fill 0.914   (§5.49)
+#   rotatie 41 grade :  759 px x 1.410    -> fill 0.826   (§5.54)
+#
+#: Captura 8.3.3. La 0.62 marja pana la pierdere e >= 1.33x la ORICE rotatie.
+#: Mai jos ar fi si mai sigur, dar markerul ar ocupa mai putin din imaginea
+#: predata juriului; 0.62 inseamna ~62% din inaltimea cadrului.
+SCORING_FILL = 0.62
+#: Coborare verticala. > SCORING_FILL prin constructie, deci captura se face
+#: INTOTDEAUNA inaintea trecerii - ordonare pe care doua constante
+#: independente (una in px, alta in metri) nu o pot garanta. Exact asa s-a
+#: pierdut captura in toate cele 10 rulari din §5.51.
+FINAL_FILL = 0.72
+#: Prag de rezerva, pentru un detector care nu raporteaza incadrarea
+#: (`fill is None`). Necunoscut nu inseamna zero: fara incadrare nu se poate
+#: sti cat de rotit e markerul, deci se ia cazul cel mai prost.
+SCORING_PX = 700
+#: Plasa de altitudine, pentru cazul in care semnalul de incadrare nu vine
+#: deloc. Sub pragul la care `FINAL_FILL` s-ar atinge la rotatie zero
+#: (0.565 m), ca sa nu il preia si sa taie captura.
+#:
+#: Ce face de fapt FINAL_DESCENT: iese din fazele in care supervizorul cere
+#: detectie valida (§8). Deci pragul nu opreste corectii laterale - alea se
+#: opresc singure cand markerul iese din cadru - ci decide cand pierderea
+#: markerului inceteaza sa mai fie o defectiune.
+NO_LATERAL_ALT_M = 0.50
 
 TD_DEBOUNCE_S = 0.20      # cat trebuie mentinute conditiile de contact
 TD_TIMEOUT_S = 8.0        # contact -> comanda de urcare
@@ -113,7 +156,9 @@ class SequenceConfig:
     aux_high_pwm: int = AUX_HIGH_PWM
     send_range: bool = True         # trimite DISTANCE_SENSOR din detectii
     manage_precland: bool = True    # A1: armeaza/dezarmeaza PLND_ENABLED
-    scoring_px: float = SCORING_PX
+    scoring_fill: float = SCORING_FILL      # captura 8.3.3, pe incadrare
+    final_fill: float = FINAL_FILL          # trecere la coborare verticala
+    scoring_px: float = SCORING_PX          # rezerva, cand fill lipseste
     no_lateral_alt_m: float = NO_LATERAL_ALT_M
 
 
@@ -198,6 +243,44 @@ class LandingStateMachine:
         self.takeoff_tries = 0
         self.takeoff_alt_cmd = None
 
+    # -- incadrare: cat din cadru ocupa markerul ---------------------------
+    def _incadrare(self, det, prag, prag_px):
+        """True cand markerul umple cel putin `prag` din cadru.
+
+        `det.fill` e masura buna: cutia markerului fata de cadru, deci
+        include rotatia. Cand detectorul nu o raporteaza (`None`), se cade
+        pe latura in pixeli - conservator prin constructie, fiindca fara
+        incadrare nu se poate sti cat de rotit e markerul.
+
+        Necunoscut nu inseamna zero: `fill = None` NU trebuie sa iasa
+        "markerul e mic", adica exact raspunsul gresit cand e pe cale sa
+        iasa din cadru (§5.53)."""
+        if det is None:
+            return False
+        if det.fill is not None:
+            return det.fill >= prag
+        return det.marker_px > prag_px
+
+    def _gata_de_captura(self, det):
+        return self._incadrare(det, self.cfg.scoring_fill, self.cfg.scoring_px)
+
+    def _gata_de_verticala(self, alt):
+        """(da, motiv) - cand se iese din fazele supravegheate de detectie.
+
+        Doua criterii, in ordinea increderii: incadrarea masurata, apoi
+        plasa de altitudine. A doua exista pentru cazul in care semnalul de
+        incadrare nu mai vine deloc."""
+        det = self.last_det
+        if det is not None and det.fill is not None:
+            if det.fill >= self.cfg.final_fill:
+                return True, f"incadrare {det.fill:.2f}"
+        elif det is not None and det.marker_px > self.cfg.scoring_px:
+            # fara incadrare: pragul in pixeli e tot ce avem
+            return True, f"{det.marker_px:.0f} px"
+        if alt < self.cfg.no_lateral_alt_m:
+            return True, f"alt {alt:.2f} m (plasa de altitudine)"
+        return False, ''
+
     # -- intrare: detectii -------------------------------------------------
     def on_detection(self, det, now=None):
         """Singura cale prin care viziunea intra in control."""
@@ -218,11 +301,11 @@ class LandingStateMachine:
         # cum reset_sequence sterge scoring_shot se intra intr-un ciclu
         # IDLE <-> SCORING_CAPTURE la fiecare cadru. Vazut in SITL la testul A1.
         if (self.scoring_shot is None
-                and det.marker_px > self.cfg.scoring_px
+                and self._gata_de_captura(det)
                 and self.state in (State.DESCEND_TRACK, State.FINAL_DESCENT)):
             self.scoring_shot = (self.v.alt, det.marker_px)
             self._emit('scoring_capture', alt=self.v.alt,
-                       marker_px=det.marker_px, t=det.t)
+                       marker_px=det.marker_px, fill=det.fill, t=det.t)
             # Daca am ajuns deja in FINAL_DESCENT (coborare rapida, pragul de
             # 980 px sarit intre doua cadre), captura tot se face, dar starea
             # nu se intoarce inapoi.
@@ -353,19 +436,16 @@ class LandingStateMachine:
             self.reset_sequence(f"mod schimbat ({self.v.mode})")
             return
 
-        if self.state == State.DESCEND_TRACK:
+        if self.state in (State.DESCEND_TRACK, State.SCORING_CAPTURE):
             if self._contact_detected(now, alt) or self.v.on_ground():
                 self._enter_touchdown(now, alt)
-            elif alt < self.cfg.no_lateral_alt_m:
-                # Markerul nu mai incape in cadru (5.2): fara SCORING_CAPTURE.
-                self.set_state(State.FINAL_DESCENT, f"alt {alt:.2f} m")
-
-        elif self.state == State.SCORING_CAPTURE:
-            # Captura e instantanee; starea exista ca eveniment in log.
-            if self._contact_detected(now, alt) or self.v.on_ground():
-                self._enter_touchdown(now, alt)
-            elif now - self.state_since > 0.1 or alt < self.cfg.no_lateral_alt_m:
-                self.set_state(State.FINAL_DESCENT, f"alt {alt:.2f} m")
+                return
+            # Markerul e pe cale sa iasa din cadru (5.2, 5.49): de aici
+            # incolo pierderea lui nu mai e o defectiune, deci se iese din
+            # fazele supravegheate de monitorul de detectie (§8).
+            gata, motiv = self._gata_de_verticala(alt)
+            if gata:
+                self.set_state(State.FINAL_DESCENT, motiv)
 
         elif self.state == State.FINAL_DESCENT:
             if self._contact_detected(now, alt) or self.v.on_ground():

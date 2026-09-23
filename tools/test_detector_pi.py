@@ -392,9 +392,16 @@ def test_regresie_last_corners_nu_schimba_Detection():
     assert d.last_corners.shape == (4, 2)
     e = float(np.max(np.linalg.norm(d.last_corners - corners, axis=1)))
     assert e < 1.0, f"last_corners la {e:.2f} px de adevar"
-    # campurile Detection sunt cele dinainte
-    assert set(det.__dataclass_fields__) == {
-        't', 'angle_x', 'angle_y', 'distance_m', 'marker_px', 'range_m'}
+    # Ce apara testul asta: colturile NU ajung in contract. Sunt observabile
+    # pentru tools/compare_detectors.py, nu ceva ce consuma masina de stari.
+    campuri = set(det.__dataclass_fields__)
+    for interzis in ('last_corners', 'corners', 'rvec', 'tvec'):
+        assert interzis not in campuri, (
+            f"{interzis} a ajuns in Detection: contractul cu masina de stari "
+            f"creste cu detalii de implementare ale detectorului")
+    # iar ce E in contract e acolo deliberat, nu din inertie
+    assert campuri == {'t', 'angle_x', 'angle_y', 'distance_m', 'marker_px',
+                       'range_m', 'fill'}, campuri
     assert det.t == 3.5
     # dupa un cadru gol, last_corners revine la None
     assert d.detect(np.full((H, W), 110, np.uint8), 4.0) is None
@@ -433,6 +440,50 @@ def test_incadrarea_tine_cont_de_rotatia_markerului():
             f"(x{limite[0]/limite[-1]:.2f})")
 
 
+def test_detectorul_raporteaza_incadrarea_din_colturi():
+    """`Detection.fill` se ia din COLTURI, nu din latura si un unghi presupus.
+
+    Diferenta decide 8.3.3: latura e ce masoara `side_px`, dar ce iese din
+    cadru e cutia, mai mare cu pana la 41% la 45 grade (§5.49). Un prag fix
+    in pixeli are deci o marja care se prabuseste exact la rotatiile pe care
+    nu le controlam - masurat, 980 px e de neatins peste ~18 grade (§5.51),
+    iar 800 px a picat la 41 grade (§5.54)."""
+    import math as _m
+    from nova.detection import fill_from_corners
+
+    cal = synthetic_calibration()
+    d = ArucoMarkerDetector(cal)
+    t = (0.0, 0.0, 2.0)
+    frame, corners = render(cal, R_FLAT, t)
+    det = d.detect(frame, 0.0)
+    assert det is not None, "markerul ar trebui detectat la 2 m"
+    assert det.fill is not None, (
+        "detectorul nu raporteaza incadrarea, deci masina de stari cade pe "
+        "pragul in pixeli chiar si cand ar putea sti mai bine")
+
+    # e chiar cutia colturilor raportate, fata de forma reala a cadrului
+    asteptat = fill_from_corners(d.last_corners, W, H)
+    assert abs(det.fill - asteptat) < 1e-6, (det.fill, asteptat)
+
+    # si creste cu rotatia, la aceeasi distanta - ce un prag pe latura nu vede
+    a = _m.radians(45.0)
+    Rz = np.array([[_m.cos(a), -_m.sin(a), 0.0],
+                   [_m.sin(a), _m.cos(a), 0.0],
+                   [0.0, 0.0, 1.0]])
+    R_rot = Rz @ R_FLAT
+    frame_r, _ = render(cal, R_rot, t)
+    det_r = d.detect(frame_r, 0.0)
+    assert det_r is not None, "markerul rotit la 45 grade ar trebui detectat"
+    assert abs(det_r.marker_px - det.marker_px) / det.marker_px < 0.05, (
+        f"latura nu trebuie sa se schimbe cu rotatia: "
+        f"{det.marker_px:.0f} -> {det_r.marker_px:.0f} px")
+    assert det_r.fill > det.fill * 1.30, (
+        f"incadrarea trebuie sa creasca cu rotatia: "
+        f"{det.fill:.3f} -> {det_r.fill:.3f} (asteptat ~x1.41)")
+    return (f"latura {det.marker_px:.0f} px neschimbata; incadrare "
+            f"{det.fill:.3f} -> {det_r.fill:.3f} la 45 deg")
+
+
 TESTS = [
     ('incadrarea tine cont de rotatia markerului',
      test_incadrarea_tine_cont_de_rotatia_markerului),
@@ -454,6 +505,8 @@ TESTS = [
     ('REGRESIE: meta nu strica calibrarea', test_regresie_meta_nu_strica_calibrarea),
     ('REGRESIE: last_corners nu schimba Detection',
      test_regresie_last_corners_nu_schimba_Detection),
+    ('detectorul raporteaza incadrarea din colturi',
+     test_detectorul_raporteaza_incadrarea_din_colturi),
 ]
 
 
