@@ -135,6 +135,7 @@ class SimApp:
         self.last_det_t = None
         self.n_det_total = 0
         self._prev_frames = 0
+        self._prev_detected = 0
         self.sim_clock_ok = False
         # urmarirea secventei: cat sta in fiecare stare si unde e vehiculul
         # la momentele care conteaza pentru 8.3.3
@@ -453,7 +454,6 @@ class SimApp:
             if masurabil:
                 self.errors.append(err)
         alt = self.v.alt
-        self.det_by_alt.append((alt, True))
         # latenta cadru -> LANDING_TARGET: cat trece de la CAPTURA pana cand
         # mesajul chiar pleaca. Ceasul de simulare pentru captura, cel de
         # perete pentru emisie, ar amesteca doua lumi - deci masuram in
@@ -498,26 +498,48 @@ class SimApp:
         self.rows.append(rand)
         del n_lt
 
-    def _note_frames(self, n_det):
-        """Cadrele PROCESATE de la ultimul ciclu, minus cele cu detectie.
+    def _note_frames(self, n_det=0):
+        """Cadrele procesate de la ultimul ciclu, cu si fara detectie.
 
-        Fara asta, `det_by_alt` primeste numai `True` si rata de detectie
-        raporteaza 100% orice s-ar intampla - o metrica ce nu poate esua nu
-        e metrica (§5.11). Contorul de cadre e al detectorului, nu al
-        buclei: el stie cate a citit din sursa.
+        AMBELE numere vin de la detector, nu unul de la el si altul din
+        bucla. Asta e tot ce conteaza aici, si a costat o campanie.
 
-        Altitudinea atribuita unei ratari e cea de acum, nu cea de la
-        capturarea cadrului ratat. Intre doua cicluri vehiculul face
-        centimetri, iar ferestrele de altitudine sunt de metri."""
+        Varianta veche numara ratarile ca `n_frames_noi - detectii_POLLED`,
+        cu un `max(0, ...)` pentru cazul in care contorul creste dupa ce
+        detectia a ajuns in coada. Dar cele doua marimi sunt pe ceasuri
+        diferite: `n_frames` creste in firul detectorului, `n_det` se vede
+        cand bucla apuca sa faca `poll()`. Intr-un ciclu apare cadrul
+        (`noi = 1`, `n_det = 0`) -> se numara o RATARE; in urmatorul apare
+        detectia (`noi = 0`, `n_det = 1`) -> `max(0, -1)` o inghite.
+        Excursiile pozitive se numara integral, cele negative se arunca.
+
+        Nu se compenseaza: **fiecare detectie primea si o ratare fantoma.**
+        Masurat pe campania din 23.09, fereastra 3-12 m: 659 detectii si
+        661 ratari, raport 0.997. Un detector real nu rateaza exact un
+        cadru pentru fiecare cadru vazut - 1:1 e semnatura dublei numarari,
+        nu a unei detectii de 50%.
+
+        `n_frames` si `n_detected` cresc amandoua in `detect()`, deci sunt
+        consistente intre ele oricand le-ai citi. Diferenta lor e numarul
+        de ratari reale, si nu depinde de cand a apucat bucla sa polleze.
+
+        Altitudinea atribuita e cea de acum, nu cea de la capturarea
+        cadrului. Intre doua cicluri vehiculul face centimetri, iar
+        ferestrele de altitudine sunt de metri."""
+        del n_det                      # deliberat: ceasul buclei nu intra aici
         nf = getattr(self.detector, 'n_frames', None)
-        if nf is None or not self.v.have_pos:
+        nd = getattr(self.detector, 'n_detected', None)
+        if nf is None or nd is None or not self.v.have_pos:
             return
         noi = nf - self._prev_frames
+        noi_det = nd - self._prev_detected
         self._prev_frames = nf
-        # max(0, ...): contorul creste in firul detectorului, deci o detectie
-        # poate ajunge aici inaintea incrementarii lui.
-        for _ in range(max(0, noi - n_det)):
-            self.det_by_alt.append((self.v.alt, False))
+        self._prev_detected = nd
+        alt = self.v.alt
+        for _ in range(max(0, noi_det)):
+            self.det_by_alt.append((alt, True))
+        for _ in range(max(0, noi - noi_det)):
+            self.det_by_alt.append((alt, False))
 
     def report(self):
         s = sim_truth.summarize(self.errors)

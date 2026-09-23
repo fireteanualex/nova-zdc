@@ -490,6 +490,7 @@ def _app_gol():
     app.eroare_finala_m = None
     app.deriva_m = None
     app._prev_frames = 0
+    app._prev_detected = 0
     app.n_det_total = 0
     app.tranzitii = []
     app.v = _V()
@@ -912,18 +913,71 @@ def test_rata_de_detectie_poate_scadea_sub_100():
 
     class _Det:
         n_frames = 0
+        n_detected = 0
     app.detector = _Det()
     app.v.alt = 6.0
 
     # 10 cadre citite, 4 cu detectie
     app.detector.n_frames = 10
-    app._note_frames(4)
-    for _ in range(4):
-        app.det_by_alt.append((6.0, True))
+    app.detector.n_detected = 4
+    app._note_frames()
     rata, n = sim_truth.detection_rate(app.det_by_alt, 3.0, 12.0)
     assert n == 10, f"ar trebui 10 cadre in fereastra, sunt {n}"
     assert abs(rata - 0.4) < 1e-9, rata
     return "10 cadre, 4 detectii -> 40%, nu 100%"
+
+
+def test_rata_nu_numara_o_ratare_fantoma_pentru_fiecare_detectie():
+    """Regresia care a stricat prima campanie cu metrica reparata.
+
+    Ratarile se numarau ca `cadre_noi - detectii_POLLED`, cu `max(0, ...)`
+    pentru cazul in care contorul creste dupa ce detectia a ajuns in coada.
+    Dar cele doua sunt pe ceasuri diferite: intr-un ciclu apare cadrul
+    (fara detectie polata inca) -> RATARE; in urmatorul apare detectia ->
+    `max(0, -1)` o inghite. Excursiile pozitive se numara, cele negative se
+    arunca, si nu se compenseaza.
+
+    Rezultatul masurat, fereastra 3-12 m: 659 detectii, 661 ratari, raport
+    0.997. Un detector care vede markerul pe FIECARE cadru raporta 50%.
+
+    Testul reproduce exact intercalarea, cadru cu cadru."""
+    from nova.detector_pi import ArucoMarkerDetector
+    from nova.detection import Detection
+
+    app = _app_gol()
+    app.det_by_alt = []
+    app.v.alt = 6.0
+
+    # Detectorul REAL, nu un dublu cu contoare puse de mana: exact greseala
+    # care a ascuns bug-ul precedent (§5.40). Doar munca dinauntru e
+    # inlocuita, ca sa nu avem nevoie de pixeli.
+    det = ArucoMarkerDetector.__new__(ArucoMarkerDetector)
+    det._counts = (0, 0)
+    det._detect = lambda gray, t: Detection(
+        t=t, angle_x=0.0, angle_y=0.0, distance_m=6.0,
+        marker_px=90.0, range_m=6.0, fill=0.07)
+    app.detector = det
+
+    # Bucla citeste contoarele de mai multe ori per cadru, si nimereste si
+    # in mijlocul lui detect(). Cu doi intregi actualizati separat, fiecare
+    # citire cazuta acolo producea o ratare fantoma.
+    for i in range(20):
+        app._note_frames()
+        det.detect(None, float(i))
+        app._note_frames()
+        app._note_frames()
+
+    cadre, gasite = det.counts()
+    assert (cadre, gasite) == (20, 20), (cadre, gasite)
+    rata, n = sim_truth.detection_rate(app.det_by_alt, 3.0, 12.0)
+    assert n == 20, f"20 de cadre procesate, numarate {n}"
+    assert rata == 1.0, (
+        f"toate cele 20 de cadre au avut detectie, dar rata iese {rata:.3f} "
+        f"- fiecare detectie a primit si o ratare fantoma")
+
+    # si perechea nu poate fi vazuta niciodata inconsistenta
+    assert det.n_frames >= det.n_detected
+    return "20 de cadre, toate detectate, citite intercalat -> 100%, nu 50%"
 
 
 def test_detectorul_din_productie_expune_contorul_de_cadre():
@@ -970,9 +1024,11 @@ def test_contorul_nu_da_ratari_negative():
 
     class _Det:
         n_frames = 2
+        n_detected = 5           # mai multe detectii decat cadre numarate
     app.detector = _Det()
-    app._note_frames(5)          # mai multe detectii decat cadre numarate
-    assert app.det_by_alt == [], app.det_by_alt
+    app._note_frames()
+    assert all(ok for _, ok in app.det_by_alt), (
+        f"cadre < detectii nu trebuie sa produca ratari: {app.det_by_alt}")
     return "cadre < detectii -> zero ratari, nu numar negativ"
 
 
@@ -1648,6 +1704,8 @@ TESTS = [
      test_incadrarea_nu_se_subtiaza_cu_rotatia),
     ('captura e garantat inaintea coborarii verticale',
      test_captura_e_garantat_inaintea_coborarii_verticale),
+    ('rata nu numara o ratare fantoma pentru fiecare detectie',
+     test_rata_nu_numara_o_ratare_fantoma_pentru_fiecare_detectie),
     ('detectorul din productie expune contorul de cadre',
      test_detectorul_din_productie_expune_contorul_de_cadre),
     ('campania nu lasa vehiculul in LOITER fara manse',

@@ -287,8 +287,20 @@ class ArucoMarkerDetector:
         self.last_corners = None
 
         # contoare
-        self.n_frames = 0
-        self.n_detected = 0
+        #: (cadre procesate, cadre cu detectie), ca o SINGURA valoare.
+        #:
+        #: Doua intregi actualizate separat nu se pot citi consistent: intre
+        #: `n_frames += 1` la intrarea in `detect()` si `n_detected += 1` la
+        #: iesire trece tot calculul, ~4 ms, si orice citire cazuta acolo
+        #: vede un cadru fara detectie care de fapt are una. Bucla din
+        #: `nova_sim` citeste de sute de ori pe secunda, deci cade acolo
+        #: des - si asa fiecare detectie primea o ratare fantoma, cu rata
+        #: raportata la 50% pe un detector care vedea markerul mereu.
+        #:
+        #: Perechea se inlocuieste printr-o singura atribuire, dupa ce
+        #: rezultatul e cunoscut. Cititorul vede ori vechea valoare, ori pe
+        #: cea noua, niciodata o combinatie.
+        self._counts = (0, 0)
         self.n_roi = 0
         self.n_roi_miss = 0
         self.n_rejected_fit = 0
@@ -339,8 +351,16 @@ class ArucoMarkerDetector:
         return float(np.mean(np.linalg.norm(d, axis=1)))
 
     def detect(self, gray, t_capture):
-        """Detection sau None. `gray` e cadrul intreg, uint8, un canal."""
-        self.n_frames += 1
+        """Detection sau None. `gray` e cadrul intreg, uint8, un canal.
+
+        Contoarele se actualizeaza AICI, dupa ce rezultatul e cunoscut, si
+        printr-o singura atribuire - vezi `_counts`."""
+        det = self._detect(gray, t_capture)
+        cadre, gasite = self._counts
+        self._counts = (cadre + 1, gasite + (det is not None))
+        return det
+
+    def _detect(self, gray, t_capture):
         self.last_corners = None
         corners, used_roi = self._find(gray)
         if corners is None:
@@ -401,19 +421,30 @@ class ArucoMarkerDetector:
         if range_m <= 0.0:
             range_m = float(t[2])
 
-        self.n_detected += 1
         self.last_center = tuple(corners.mean(axis=0))
         self.last_range_m = range_m
         return Detection(t=t_capture, angle_x=angle_x, angle_y=angle_y,
                          distance_m=distance, marker_px=marker_px,
                          range_m=range_m, fill=fill)
 
+    def counts(self):
+        """(cadre procesate, cadre cu detectie), citite ATOMIC."""
+        return self._counts
+
+    @property
+    def n_frames(self):
+        return self._counts[0]
+
+    @property
+    def n_detected(self):
+        return self._counts[1]
+
     def stats(self):
+        cadre, gasite = self._counts
         return {
-            'frames': self.n_frames,
-            'detected': self.n_detected,
-            'detection_rate': (self.n_detected / self.n_frames
-                               if self.n_frames else 0.0),
+            'frames': cadre,
+            'detected': gasite,
+            'detection_rate': (gasite / cadre if cadre else 0.0),
             'roi_hits': self.n_roi,
             'roi_misses': self.n_roi_miss,
             'rejected_fit': self.n_rejected_fit,
@@ -837,6 +868,19 @@ class PiDetector:
         injecta un obiect fals cu `n_frames`, deci verifica aritmetica lui
         `_note_frames` pe o clasa care nu e cea din productie (§5.40)."""
         return self.det.n_frames
+
+    @property
+    def n_detected(self):
+        """Cate cadre au produs o detectie.
+
+        Perechea lui `n_frames`, si ASTA e ce conteaza: amandoua cresc in
+        `ArucoMarkerDetector.detect()`, deci sunt consistente intre ele
+        oricand le-ai citi. Diferenta lor e numarul de ratari reale.
+
+        Numarul de detectii POLLED de bucla nu e acelasi lucru: intre
+        `detect()` si `poll()` trece coada, deci o detectie poate fi
+        numarata intr-un ciclu si consumata in urmatorul."""
+        return self.det.n_detected
 
     @property
     def cam(self):
