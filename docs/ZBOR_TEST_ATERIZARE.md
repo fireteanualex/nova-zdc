@@ -90,12 +90,70 @@ Altfel `deploy.sh` cere parola de două-trei ori pe rulare.
 
 Conectează-te la FC **pe USB** (nu pe TELEM2, îl configurăm chiar acum).
 
-### 1.1 Încarcă fișierul de parametri
+### 1.0 Verifică ÎNTÂI versiunea de firmware
 
-`Config` → `Full Parameter List` → **Load from file** →
-`config/nova_flight.parm` → **Write Params**.
+`Help` → versiunea apare la conectare, sau în bara de jos a HUD-ului.
 
-Sunt 28 de parametri. Dacă preferi să-i pui de mână, ăștia sunt și de ce:
+`config/nova_flight.parm` e scris pentru **4.7.0 sau mai nou**. Pe 4.6 și
+mai vechi, trei nume nu există:
+
+| | 4.5.x / 4.6.x | **4.7.0+** |
+|---|---|---|
+| | `ARMING_CHECK` | `ARMING_SKIPCHK` |
+| | `WPNAV_ACCEL` | `WP_ACC` |
+| | `WPNAV_RFND_USE` | `WP_RFND_USE` |
+| | `RNGFND1_MIN_CM` / `_MAX_CM` | `RNGFND1_MIN` / `_MAX` (metri) |
+
+Dacă Mission Planner îți spune **`No matching Params`** pe exact numele
+astea, ești pe 4.6 sau mai vechi.
+
+> **Recomandare: urcă firmware-ul la 4.7.0.** E stabil, are toate numele
+> din fișier, și e cel mai apropiat de 4.8.0-dev — adică de versiunea pe
+> care s-a măsurat totul în SITL. O configurație tradusă într-o versiune
+> pe care nu a testat-o nimeni e o variabilă în plus fix unde nu o vrei.
+
+Dacă rămâi pe 4.6, traducerea numelor nu e de ajuns: **masca de armare se
+inversează.** `ARMING_SKIPCHK` listează verificările pe care le **sari**;
+`ARMING_CHECK` pe cele pe care le **faci**.
+
+| intenție | 4.7+ | 4.5 / 4.6 |
+|---|---|---|
+| sari doar verificarea de telemetru | `ARMING_SKIPCHK = 32768` | `ARMING_CHECK = 1015294` |
+
+Un `32768` pus în `ARMING_CHECK` pe 4.6 ar însemna „fă **doar**
+verificarea de telemetru" — fără busolă, GPS, INS, baterie, RC. Exact
+invers, și trece orice audit pe valoare: parametrul există și are numărul
+cerut (§5.10).
+
+### 1.1 Încarcă parametrii — ordinea contează
+
+**Nu încărca fișierul dintr-o dată.** `PLND_*` și `RNGFND1_*` sunt ascunse
+până când parametrul lor de activare e non-zero **și s-a repornit** —
+sunt declarați cu `AP_PARAM_FLAG_ENABLE`. Iar fișierul nostru are
+`PLND_ENABLED = 0` deliberat (companion-ul îl aprinde doar în segment),
+deci sub-parametrii `PLND_*` nu ar apărea **niciodată**.
+
+```
+1.  Full Parameter List:  RNGFND1_TYPE = 10
+                          PLND_ENABLED = 1     <-- temporar
+    Write Params  →  REPORNEȘTE FC-ul
+
+2.  acum sub-parametrii există:
+    Load from file → config/nova_flight.parm → Write Params
+
+3.  PLND_ENABLED = 0      <-- înapoi. Valorile scrise rămân.
+    Write Params
+```
+
+**Pasul 3 se uită ușor și nu dă niciun semn.** Cu el uitat, vehiculul
+zboară cu precision landing armat permanent — iar §5.8 arată măsurat că
+atunci un RTL aterizează pe marker în loc de acasă.
+
+În SITL capcana nu se vede: `--add-param-file` devine `--defaults`, care
+se aplică înaintea inițializării obiectelor. Prin Mission Planner nu
+există echivalent.
+
+Cei 28 de parametri, cu motivul fiecăruia:
 
 | parametru | valoare | de ce |
 |---|---|---|
@@ -118,10 +176,8 @@ Sunt 28 de parametri. Dacă preferi să-i pui de mână, ăștia sunt și de ce:
 | `DISARM_DELAY` | 20 | marjă pentru pauza pe sol |
 | `WP_ACC` | 1.5 | plafonează înclinarea la 8.7° — e o constrângere a **camerei** (§5.48) |
 
-> **`PLND_*` și `RNGFND1_*` apar doar după REBOOT.** Sub-parametrii nu
-> există până nu se inițializează obiectul. Dacă nu-i găsești în listă:
-> scrie ce poți, repornește FC-ul, revino. `param fetch` nu e suficient
-> (§5.4).
+> Dacă tot nu găsești un `PLND_*` sau `RNGFND1_*` după pasul 1, nu ai
+> repornit FC-ul — `param fetch` nu e suficient (§5.4).
 
 ### 1.2 Modurile de zbor — abortul
 

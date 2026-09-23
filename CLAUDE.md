@@ -436,6 +436,35 @@ niciodată.
 - Sub-parametrii `PLND_*` și `RNGFND1_*` apar **doar după reboot**.
   `param fetch` nu e suficient. Rezolvat prin `--add-param-file` în
   `start_sim.sh`, care îi aplică înainte de inițializare.
+
+  **Mecanismul are un nume, și el explică o capcană a fișierului nostru.**
+  `PLND_ENABLED` și `RNGFND1_TYPE` sunt declarați cu
+  `AP_PARAM_FLAG_ENABLE`:
+
+  ```cpp
+  AP_GROUPINFO_FLAGS("ENABLED", 0, AC_PrecLand, _enabled, 0, AP_PARAM_FLAG_ENABLE)
+  AP_GROUPINFO_FLAGS("TYPE",    1, AP_RangeFinder_Params, type, 0, AP_PARAM_FLAG_ENABLE)
+  ```
+
+  Restul grupului **nu e vizibil** pentru o stație de sol cât timp
+  parametrul de activare e 0. Iar `nova_flight.parm` are
+  `PLND_ENABLED,0` deliberat (§5.8, companion-ul îl aprinde doar în
+  segment) — deci încărcat ca fișier, pe o placă reală, sub-parametrii
+  `PLND_*` **nu apar niciodată**.
+
+  În SITL nu se vede: `--add-param-file` se traduce în `--defaults`, care
+  se aplică înaintea inițializării obiectelor. Pe hardware, prin Mission
+  Planner, nu există echivalent.
+
+  Ordinea care funcționează, pe hardware:
+
+  1. `RNGFND1_TYPE = 10` și `PLND_ENABLED = 1` → **Write** → **reboot**
+  2. abia acum există sub-parametrii → încarcă restul fișierului
+  3. **pune `PLND_ENABLED` înapoi pe 0** — valorile scrise rămân
+
+  Pasul 3 se uită ușor și nu dă niciun semn: vehiculul ar zbura cu
+  precision landing armat permanent, adică exact ce §5.8 arată măsurat că
+  atrage un RTL spre marker.
 - `SURFTRAK_MODE 0` **obligatoriu**. Telemetrul nostru e intermitent
   prin construcție; cu urmărirea de suprafață activă se declanșează
   `Failsafe: Terrain Rangefinder Unhealthy` → RTL.
@@ -447,6 +476,41 @@ niciodată.
   controlerului de poziție), `LAND_ALT_LOW` → `LAND_ALT_LOW_M` (10 m).
   Numele vechi pur și simplu nu mai există — o cerere pe ele nu întoarce
   eroare, ci tăcere.
+#### Numele parametrilor depind de VERSIUNEA de firmware
+
+Citit din tag-urile ArduPilot, nu presupus. Trei redenumiri care ne ating
+direct, și toate au căzut între 4.6 și 4.7:
+
+| | 4.5.x | 4.6.x | **4.7.0+ / 4.8-dev** |
+|---|---|---|---|
+| verificări la armare | `ARMING_CHECK` | `ARMING_CHECK` | **`ARMING_SKIPCHK`** |
+| navigație | `WPNAV_ACCEL`, `WPNAV_RFND_USE` | idem | **`WP_ACC`, `WP_RFND_USE`** |
+| telemetru min/max | `RNGFND1_MIN_CM` | `RNGFND1_MIN_CM` | **`RNGFND1_MIN`** (metri) |
+
+`config/nova_flight.parm` e scris pentru **4.7.0+**, fiindcă SITL-ul rulează
+4.8.0-dev. Încărcat pe o placă cu 4.6, Mission Planner raportează
+`No matching Params` pentru fix acele nume — iar restul se scriu, deci
+configurația iese pe jumătate aplicată fără ca nimic să pice.
+
+**Masca de armare nu se traduce prin redenumire, se INVERSEAZĂ.**
+`ARMING_SKIPCHK` e masca verificărilor pe care le **sari**;
+`ARMING_CHECK` e masca celor pe care le **faci**:
+
+| intenție | 4.7+ | 4.5/4.6 |
+|---|---|---|
+| sari doar verificarea de telemetru | `ARMING_SKIPCHK = 32768` | `ARMING_CHECK = 1015294` |
+
+Un `32768` scris în `ARMING_CHECK` pe 4.6 ar însemna **fă doar verificarea
+de telemetru** — și sari peste busolă, GPS, INS, baterie, RC. Exact
+invers, și exact genul de valoare care trece orice audit pe valoare
+(§5.10) pentru că parametrul există și are numărul cerut.
+
+**Recomandarea e să urci firmware-ul la 4.7.0, nu să traduci fișierul.**
+4.7.0 e stabil și are toate numele din `nova_flight.parm`; e și cel mai
+apropiat de 4.8.0-dev, adică de ce s-a măsurat în SITL. O configurație
+tradusă într-o versiune pe care nu a testat-o nimeni e o variabilă în plus
+exact acolo unde nu o vrei.
+
 - **Obiectul `AC_WPNav` e înregistrat cu prefixul `WP_`, nu `WPNAV_`**
   (`ArduCopter/Parameters.cpp:370`: `GOBJECTPTR(wp_nav, "WP_", AC_WPNav)`).
   Deci `WP_RFND_USE`, `WP_SPD_DN` — iar `WPNAV_RFND_USE` **nu există**.
