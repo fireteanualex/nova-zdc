@@ -216,6 +216,10 @@ def main():
     p.add_argument('--scoring-dir', default='data/scoring',
                    help='unde se scriu imaginea de scoring, cea de contact '
                         'si evidenta lor (6.2.1.30)')
+    p.add_argument('--no-ascent', action='store_true',
+                   help='opreste urcarea de dupa contact (15.2.7). Secventa '
+                        'se incheie pe sol. Pentru primele coborari de test, '
+                        'unde o urcare automata dupa touchdown e o surpriza')
     p.add_argument('--max-rms', type=float, default=None,
                    help='ridica pragul de reproiectie al calibrarii DOAR '
                         'pentru rularea asta. Pentru bring-up la banc cu o '
@@ -324,8 +328,16 @@ def main():
     if ring is None:
         print("[bord] ATENTIE: detectorul nu are ring buffer; 8.3.3 NU va "
               "avea imagine. Vezi --ring-frames.")
-    sm = LandingStateMachine(vehicle, SequenceConfig(conv=a.conv), gate=gate,
-                             on_event=rec.on_event)
+    seq = SequenceConfig(conv=a.conv, do_ascent=not a.no_ascent)
+    if a.no_ascent:
+        # 15.2.7 oprit: secventa se incheie pe sol, fara NAV_TAKEOFF. Pentru
+        # PRIMA coborare autonoma pe un vehicul real asta e ce vrei - o
+        # urcare automata imediat dupa contact e exact genul de surpriza
+        # care te face sa tragi de manse. ArduPilot dezarmeaza singur din
+        # LAND dupa contact (§5.6).
+        print("[bord] 15.2.7 OPRIT (--no-ascent): secventa se incheie pe "
+              "sol, fara urcare la 5 m")
+    sm = LandingStateMachine(vehicle, seq, gate=gate, on_event=rec.on_event)
 
     ecran = race_screen.RaceScreen() if a.race else None
 

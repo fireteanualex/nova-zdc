@@ -798,15 +798,21 @@ def test_campania_masoara_ce_zboara():
         "batch_sim are propriul NO_LATERAL_ALT_M: doua surse de adevar "
         "pentru acelasi prag, iar campania o foloseste pe a ei")
 
-    # 3. aplicatia de bord ia implicitele, deci ele SUNT ce zboara
+    # 3. aplicatia de bord nu regleaza niciun PRAG: ele raman cele din cod,
+    #    deci ce zboara e ce s-a masurat.
+    #
+    #    Se verifica pragurile pe nume, nu forma apelului. Prima varianta
+    #    cerea literalmente `SequenceConfig(conv=a.conv)` si a picat cand
+    #    s-a adaugat `do_ascent` - un flag de SCOP al secventei, nu un prag.
+    #    Un test ancorat in sintaxa pedepseste orice schimbare; unul ancorat
+    #    in proprietate pedepseste doar schimbarea care conteaza.
     pi_src = open(os.path.join(REPO, 'tools', 'nova_pi.py')).read()
-    assert 'SequenceConfig(conv=a.conv)' in pi_src, (
-        "nova_pi.py nu mai construieste SequenceConfig doar cu implicitele; "
-        "verifica daca pragurile de zbor mai sunt cele masurate")
-    for knob in ('scoring_fill', 'final_fill', 'no_lateral_alt_m'):
-        assert f'seq.{knob}' not in pi_src and f'{knob}=' not in pi_src, (
-            f"nova_pi.py regleaza {knob}: vehiculul zboara alte praguri "
-            f"decat cele masurate in campanie")
+    for knob in ('scoring_fill', 'final_fill', 'no_lateral_alt_m',
+                 'scoring_px'):
+        assert knob not in pi_src, (
+            f"nova_pi.py atinge {knob}: vehiculul ar zbura alt prag decat "
+            f"cel masurat in campanie")
+    assert 'SequenceConfig(' in pi_src, "nova_pi.py nu mai face SequenceConfig"
     return "campania si bordul pornesc de la aceleasi praguri"
 
 

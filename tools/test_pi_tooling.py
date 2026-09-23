@@ -812,6 +812,83 @@ def test_G4_codul_de_iesire_ca_poarta():
     return "sarit -> 1, esec -> 1, --json valid"
 
 
+def test_proba_de_coborare_nu_ridica_singura_E0():
+    """`pi/descent_test.sh` porneste secventa autonoma pe un vehicul REAL.
+
+    Exact de aceea nu are voie sa ridice el garda: §5.16 cere ca
+    `autonomy_enabled` sa se schimbe in fisierul VERSIONAT, cu un commit
+    care citeaza raportul E2. Un script care o ridica singur devine a doua
+    cale spre autonomie, iar la scrutineering nu se mai poate spune care a
+    fost folosita (§8, acelasi motiv ca poarta unica de handover)."""
+    cale = os.path.join(REPO, 'pi', 'descent_test.sh')
+    assert os.path.exists(cale), "pi/descent_test.sh lipseste"
+    src = open(cale).read()
+    cod = '\n'.join(l for l in src.splitlines()
+                    if not l.lstrip().startswith('#'))
+
+    # verifica garda, dar nu o SCRIE
+    assert 'autonomy_enabled' in cod, "nu verifica deloc E0"
+    for tipar in ('json.dump', "nova.json'", 'sed -i', '> "$CONFIG"',
+                  'start_flight.sh'):
+        assert tipar not in cod, (
+            f"pi/descent_test.sh pare sa scrie in config ({tipar}): "
+            f"E0 se ridica deliberat, nu dintr-un script de pornire")
+
+    # nu isi construieste singur piesele (§5.14, §5.29)
+    for interzis in ('SafetySupervisor(', 'HandoverGate(',
+                     'LandingStateMachine(', 'run_loop('):
+        assert interzis not in cod, f"{interzis}: al doilea cablaj"
+    assert 'tools/nova_pi.py' in cod, "nu deleaga lui nova_pi.py"
+    return "verifica E0, nu il ridica; deleaga lui nova_pi.py"
+
+
+def test_proba_de_coborare_cere_caile_de_abort():
+    """Abortul care conteaza e comutatorul de mod: merge direct in FC si
+    functioneaza si daca Pi-ul e mort (16.2.3). Detectia pe manse e al
+    doilea strat, nu primul - depinde de exact procesul care ar putea fi
+    cel stricat.
+
+    Scriptul refuza sa porneasca fara el, si cere confirmare tastata: un
+    `y` se apasa din reflex, un cuvant nu."""
+    src = open(os.path.join(REPO, 'pi', 'descent_test.sh')).read()
+
+    assert 'FLTMODE_CH' in src, (
+        "nu verifica comutatorul de mod, singurul abort care nu trece "
+        "prin Raspberry Pi")
+    assert 'ZBOR' in src, "nu cere confirmare tastata inainte de a zbura"
+    assert '--check' in src, "nu se pot verifica preconditiile fara sa zboare"
+
+    # Prima coborare NU urca automat dupa contact: implicit --no-ascent,
+    # iar secventa completa e opt-in.
+    assert '--no-ascent' in src, (
+        "implicit ar urca automat la 5 m dupa touchdown - surpriza exact "
+        "in momentul in care pilotul se relaxeaza")
+    assert '--full-sequence' in src, "nu se poate cere si urcarea (15.2.7)"
+
+    # Coborarea rapida ramane blocata pana la masuratoarea de franare
+    # (elementul deschis 24).
+    cod = '\n'.join(l for l in src.splitlines()
+                    if not l.lstrip().startswith('#'))
+    assert '--fast-descent' not in cod, (
+        "PROFIL_RAPID e blocat pana la distanta de franare pe fiecare "
+        "treapta de viteza (§6/15.2.9)")
+    return "cere FLTMODE_CH si confirmare tastata; fara urcare implicit"
+
+
+def test_no_ascent_ajunge_in_SequenceConfig():
+    """Flagul trebuie sa schimbe chiar comportamentul, nu doar sa existe."""
+    from nova.state_machine import SequenceConfig
+    assert SequenceConfig().do_ascent is True, "implicitul s-a schimbat"
+    assert SequenceConfig(do_ascent=False).do_ascent is False
+
+    src = open(os.path.join(REPO, 'tools', 'nova_pi.py')).read()
+    assert '--no-ascent' in src, "nova_pi.py nu expune flagul"
+    assert 'do_ascent=not a.no_ascent' in src, (
+        "flagul exista dar nu ajunge in SequenceConfig - ar fi un buton "
+        "care nu face nimic")
+    return "--no-ascent -> SequenceConfig.do_ascent"
+
+
 def test_pragul_de_calibrare_ridicat_doar_la_bringup():
     """§5.34: pragul de reproiectie nu se ridica global.
 
@@ -1014,6 +1091,12 @@ def test_parametrii_de_telemetrie_sunt_in_fisierul_de_zbor():
 
 
 TESTS = [
+    ('proba de coborare nu ridica singura E0',
+     test_proba_de_coborare_nu_ridica_singura_E0),
+    ('proba de coborare cere caile de abort',
+     test_proba_de_coborare_cere_caile_de_abort),
+    ('--no-ascent ajunge in SequenceConfig',
+     test_no_ascent_ajunge_in_SequenceConfig),
     ('pragul de calibrare ridicat doar la bringup',
      test_pragul_de_calibrare_ridicat_doar_la_bringup),
     ('calibrarea din repo e reala si pentru rezolutia de lucru',

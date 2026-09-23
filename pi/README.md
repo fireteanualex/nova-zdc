@@ -268,6 +268,54 @@ răcire, throttling-ul termic apare după câteva minute, nu imediat.
 
 ---
 
+## Proba de coborâre autonomă
+
+```bash
+pi/descent_test.sh --check          # doar precondițiile, nu zboară nimic
+pi/descent_test.sh                  # briefing + confirmare + rulare
+pi/descent_test.sh --full-sequence  # și urcarea la 5 m (15.2.7)
+```
+
+Verifică, în ordine, și **refuză** dacă ceva lipsește: E0, calibrarea,
+`FLTMODE_CH`, `RC7_OPTION`, heartbeat-ul, preflight-ul întreg. Apoi arată
+un briefing și cere să scrii `ZBOR` — un `y` se apasă din reflex.
+
+**Implicit nu urcă după contact.** Secvența se încheie pe sol și ArduPilot
+dezarmează singur. O urcare automată imediat după primul touchdown e exact
+genul de surpriză care te face să tragi de manșe. `--full-sequence` o
+pornește, după ce coborârea a mers o dată.
+
+Ce face vehiculul:
+
+```
+pilotul aduce la 5–12 m deasupra markerului, LOITER, manșe libere ~1 s
+pilotul ridică AUX 7   → poarta ACCEPTĂ sau REFUZĂ, cu motiv
+companion-ul cere LAND → așteaptă confirmarea FC
+coborâre cu PLND       → LANDING_TARGET la 20 Hz
+încadrarea la 0.72     → coborâre verticală
+contact                → pauză pe sol → STOP
+```
+
+### Abort, în ordinea încrederii
+
+| | cale | depinde de Pi? |
+|---|---|---|
+| 1 | **comutatorul de mod** (`FLTMODE_CH`) | **nu** — merge direct în FC |
+| 2 | manșele → companion comandă LOITER (150 ms în SITL) | da |
+| 3 | Safety Supervisor → BRAKE / RTL | da |
+
+Prima e singura care funcționează dacă Pi-ul e mort, blocat sau
+deconectat. Scriptul refuză să pornească fără ea. **Mâna pe comutator tot
+segmentul** — durează ~30 s, nu e un moment în care să te uiți la ecran.
+
+> **Geofence-ul din firmware nu e activ.** `nova/fence.py` e validat în
+> SITL dar nu e cablat în nicio aplicație (element deschis 35). Rămân
+> monitoarele de rază și plafon din supervizor — care depind de Pi. Pentru
+> o probă de test, într-un spațiu deschis, cu pilot pe comutator, e
+> acceptabil; pentru cursă nu.
+
+---
+
 ## De la monitor la coborâre
 
 Monitorul nu comandă nimic: `config/nova.json: autonomy_enabled` e **false**,

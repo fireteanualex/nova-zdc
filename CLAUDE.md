@@ -201,6 +201,7 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── README.md             # runbook cu comenzile ssh, cap-coada
 │   ├── setup_uart.sh         # GPIO 14/15: miniUART -> PL011, consola, dialout
 │   ├── bringup.sh            # verificari + monitor cu fereastra fullscreen
+│   ├── descent_test.sh       # proba de coborare autonoma pe vehiculul de test
 │   ├── install.sh            # serviciul de utilizator, pornit la fiecare boot
 │   └── nova-bringup.service  # unitate systemd (graphical-session)
 ├── systemd/
@@ -3464,6 +3465,7 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 22b | **Campania nu a rulat niciodată.** O secvență a mers; `batch_sim.py` cu N rulări și condiții variate nu a fost pornit, deci nu există distribuții. Mediul de dezvoltare nu poate rula Gazebo (`libEGL: failed to create dri2 screen`), deci rulează operatorul | I4, 8.4.2 |
 | 23 | ~~Cifrele I4 — nicio măsurătoare~~ măsurate pe 20 de rulări (§5.52). Rămâne: coada erorii unghiulare pe `DESCEND_TRACK` (p95 2.26° față de pragul de 0.5°), cauză nelămurită; și latența, care se măsoară pe Pi, nu aici | 8.4.2, Safety Case |
 | 24 | Distanța de frânare la 0.8 și 1.5 m/s, pentru `PROFIL_RAPID` (blocat până atunci) | 15.2.9, I5 |
+| 35 | **`nova/fence.py` nu e cablat nicăieri.** Modulul e validat în SITL — ciclu complet salvare → încărcare cerc de 10 m pe marker → citire înapoi → restaurare — dar nu îl instanțiază nici `nova_pi.py`, nici `nova_sim.py`, nici `fake_detector.py`. Deci stratul din firmware cerut de 15.2.4 **nu e activ**; rămân doar `_mon_radius` și `_mon_ceiling` din supervizor, care depind de Pi. Aceeași formă ca §5.14: piesa merge, cablajul nu există. Cere și lat/lon-ul markerului, care se deduce din poziția vehiculului plus offsetul măsurat la handover — logică nouă, deci de decis, nu de strecurat | **15.2.4**, Compliance Matrix |
 | 34 | **Criteriul pe încadrare nu a rulat încă o campanie în Gazebo.** Pragurile (0.62 / 0.72 / 0.50) sunt derivate din geometrie plus două puncte măsurate de pierdere a detecției (§5.49, §5.54), și verificate pe o baleiere sintetică 0–45° care dă captură la fiecare rotație. Dar cifrele de eroare finală, derivă și rată de succes sunt încă cele de la pragul în pixeli. De rulat: `batch_sim.py --n 10`, cu `scoring_fill` și `tilt_margin_deg` în CSV | 8.3.3, 8.4.2 |
 | 33 | ~~Captura pe o dimensiune fixă în pixeli~~ **REZOLVAT** (§5.57): criteriul e acum `Detection.fill` — cât din cadru ocupă cutia markerului, luată din colțuri. Marja e ≥ 1.33× la orice rotație, față de −5% la 41° cu pragul în pixeli. Rămâne: `fill` nu egalizează complet (0.826 la 41° față de 0.914 la nadir); cauza celor 9% e nemăsurată | 8.3.3 |
 | 32 | ~~`scoring_px = 980` de neatins peste ~18° de yaw~~ **REZOLVAT** de 33: pragul în pixeli a devenit rezervă (700), iar criteriul e încadrarea. Alinierea de yaw cu markerul nu mai e necesară pentru 8.3.3 | 8.3.3 |
