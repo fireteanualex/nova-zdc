@@ -389,7 +389,7 @@ def main(argv=None):
                         'protejeaza un vehicul real, iar aici e Gazebo.')
     p.add_argument('--max-rms', type=float, default=None,
                    help='prag de reproiectie; implicit cel din '
-                        'nova/detector_pi.py (0.5 px)')
+                        'nova/detector_pi.py (MAX_REPROJ_ERR_PX)')
     p.add_argument('--keep-gimbal', action='store_true',
                    help='pastreaza gimbalul din modelul stock. Implicit e '
                         'scos: atarna la -0.125 m si ocluzioneaza camera '

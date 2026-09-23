@@ -467,6 +467,22 @@ niciodată.
   Pasul 3 se uită ușor și nu dă niciun semn: vehiculul ar zbura cu
   precision landing armat permanent, adică exact ce §5.8 arată măsurat că
   atrage un RTL spre marker.
+
+  **Mai simplu: pe nume, ocolind Mission Planner.** Flagul ascunde
+  parametrii doar din *enumerare* (`AP_Param::next_group`, lista pe care o
+  descarcă stația de sol). Citirile și scrierile **pe nume** trec prin
+  `AP_Param::find()`, care nu îl consultă — verificat pe Copter-4.5.7,
+  `GCS_Param.cpp:277` și `:399`. Deci „No matching Params" e Mission
+  Planner refuzând să scrie nume care lipsesc din lista *lui*; FC-ul le-ar
+  accepta. `tools/check_params.py --write` scrie fișierul pe nume, cu
+  citire înapoi, și refuză dacă vehiculul e armat.
+
+  **După scriere, o repornire în plus.** `init_precland()` rulează o
+  singură dată la boot (`system.cpp:139` pe 4.5.7) și creează backend-ul
+  din `PLND_TYPE` — nu din `PLND_ENABLED`, deci comutarea la runtime din
+  §5.8 merge și pe 4.5.7. Dar un `PLND_TYPE` scris fără repornire lasă
+  backend-ul inexistent: companion-ul aprinde PLND la handover, trimite
+  `LANDING_TARGET`, iar FC-ul le ignoră tăcut. `--reboot` o face.
 - `SURFTRAK_MODE 0` **obligatoriu**. Telemetrul nostru e intermitent
   prin construcție; cu urmărirea de suprafață activă se declanșează
   `Failsafe: Terrain Rangefinder Unhealthy` → RTL.
@@ -3215,8 +3231,21 @@ iese **12.5 fps**; cu cel nou, 29.7.
 **Nu știm încă** dacă cei 17.9 fps de pe vehicul erau ai analizei sau ai
 camerei. O rulare nouă spune: dacă cifra urcă spre 30, era măsurătoarea.
 
-**Pragurile, decizia echipei (23.09.2026):** `FPS_MIN = 17` absolut, în
+**Confirmat pe vehicul:** după repararea măsurătorii, **30.1 fps**. Cei
+17.9 erau ai buclei de măsurare, nu ai camerei.
+
+**Pragurile, decizia echipei (23.09.2026):** `FPS_MIN = 12` absolut, în
 loc de 80% din nominal (24); `MAX_REPROJ_ERR_PX = 0.85` (§5.34).
+
+**Și a treia verificare care măsura altceva: pragul ridicat nu ajungea în
+preflight.** `MAX_REPROJ_ERR_PX` a fost schimbat la 0.85, dar
+`nova_service.check_calibration` avea propriul `max_rms=0.5` scris de
+mână, iar preflight-ul importă *funcția*, nu constanta. Rezultatul pe
+vehicul: „0.829 px > 0.5 px" după ce echipa ceruse explicit 0.85. Testele
+verificau constanta; niciunul nu verifica drumul pe care îl ia
+preflight-ul. §5.40 încă o dată — o constantă duplicată e o constantă care
+rămâne în urmă. Acum un test trece pe drumul real *și* caută orice
+`max_rms=<număr>` rămas în cod.
 
 ---
 

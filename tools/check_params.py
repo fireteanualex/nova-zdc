@@ -16,6 +16,24 @@ WPNAV_RFND_USE, in toate cele 13 rulari din Faza 1.
 Cod de iesire 0 numai daca TOTI parametrii exista si se potrivesc. De rulat
 inainte de orice campanie de teste si inainte de scrutineering: iesirea lui e
 dovada pentru Compliance Matrix.
+
+SCRIERE (--write): scrie fisierul PE NUME, cu citire inapoi pe fiecare.
+
+    python3 tools/check_params.py --conn /dev/serial0 --baud 921600 \
+        --parm config/nova_flight_4.5.parm --write --reboot
+
+De ce nu prin Mission Planner. PLND_* si RNGFND1_* sunt ascunsi din LISTA
+de parametri cat timp PLND_ENABLED / RNGFND1_TYPE sunt 0
+(AP_PARAM_FLAG_ENABLE), iar Mission Planner scrie doar ce gaseste in lista
+pe care a descarcat-o: "No matching Params". Dar FC-ul accepta scrieri si
+citiri PE NUME oricand - AP_Param::find() nu tine cont de flag (verificat
+pe Copter-4.5.7, GCS_Param.cpp). Deci pe nume nu mai e nevoie de dansul
+activeaza-reporneste-incarca-dezactiveaza.
+
+Dupa scriere FC-ul trebuie REPORNIT: driverul de telemetru si backend-ul de
+precision landing se creeaza o singura data, la boot, din RNGFND1_TYPE si
+PLND_TYPE (init_precland() pe 4.5.7). Fara repornire, un PLND_TYPE proaspat
+scris nu are niciun efect, iar LANDING_TARGET e ignorat fara niciun mesaj.
 """
 
 import argparse
@@ -112,12 +130,55 @@ def read_param(m, name, timeout=2.0, tries=3):
     return None
 
 
+def is_armed(m, timeout=3.0):
+    """True/False dupa HEARTBEAT-ul FC-ului, None daca nu vine niciunul."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        hb = m.recv_match(type='HEARTBEAT', blocking=True, timeout=0.5)
+        if hb is None or hb.get_srcSystem() != m.target_system:
+            continue
+        return bool(hb.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+    return None
+
+
+def write_params(m, wanted, tries=3):
+    """Scrie PE NUME si citeste inapoi. [(nume, cerut, citit_sau_None)].
+
+    Se scrie doar ce difera: un PARAM_SET pe o valoare deja corecta nu
+    aduce nimic si umple jurnalul FC-ului. Tipul trimis e REAL32; ArduPilot
+    il converteste la tipul stocat al parametrului."""
+    out = []
+    for name, want, _line in wanted:
+        got = read_param(m, name)
+        if got is not None and close_enough(want, got):
+            out.append((name, want, got))
+            continue
+        for _ in range(tries):
+            m.mav.param_set_send(m.target_system, m.target_component,
+                                 name.encode('ascii'), float(want),
+                                 mavutil.mavlink.MAV_PARAM_TYPE_REAL32)
+            time.sleep(0.05)
+            got = read_param(m, name)
+            if got is not None and close_enough(want, got):
+                break
+        out.append((name, want, got))
+    return out
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--conn', default='tcp:127.0.0.1:5760')
     p.add_argument('--baud', type=int, default=None)
     p.add_argument('--parm', default=DEFAULT_PARM)
+    p.add_argument('--write', action='store_true',
+                   help='scrie fisierul PE NUME inainte de verificare. Ocoleste '
+                        'filtrul din Mission Planner pentru PLND_*/RNGFND1_*')
+    p.add_argument('--reboot', action='store_true',
+                   help='cu --write: reporneste FC-ul dupa scriere. Necesar: '
+                        'telemetrul si precision landing se initializeaza la boot')
+    p.add_argument('--yes', action='store_true',
+                   help='fara confirmare la --write')
     args = p.parse_args()
 
     wanted = parse_parm(args.parm)
@@ -127,6 +188,48 @@ def main():
     m = mavutil.mavlink_connection(args.conn, **kwargs)
     m.wait_heartbeat()
     print(f"[check_params] heartbeat sys={m.target_system}\n")
+
+    if args.write:
+        armat = is_armed(m)
+        if armat is None:
+            print("[check_params] REFUZ: niciun HEARTBEAT de la FC, nu scriu.")
+            return 2
+        if armat:
+            print("[check_params] REFUZ: vehiculul e ARMAT. Parametrii nu se "
+                  "scriu in zbor sau cu motoarele armate.")
+            return 2
+        print(f"[check_params] scriu {len(wanted)} parametri din {args.parm} "
+              f"PE NUME, cu citire inapoi.")
+        if not args.yes:
+            r = input("  Vehicul dezarmat, elice demontate? Scrie DA: ")
+            if r.strip() != 'DA':
+                print("  anulat.")
+                return 1
+        rez = write_params(m, wanted)
+        esuate = [(n, w, g) for n, w, g in rez
+                  if g is None or not close_enough(w, g)]
+        print(f"  {len(rez) - len(esuate)}/{len(rez)} scrisi si confirmati.")
+        for n, w, g in esuate:
+            print(f"  ESEC  {n}: cerut {w:g}, citit "
+                  f"{'-' if g is None else format(g, 'g')}")
+        if esuate:
+            print("  Numele de mai sus nu exista pe acest firmware: verifica "
+                  "ca --parm corespunde versiunii (4.5 vs 4.7+).")
+            return 1
+        if args.reboot:
+            print("\n  Repornesc FC-ul: telemetrul si precision landing se "
+                  "initializeaza doar la boot.")
+            m.mav.command_long_send(
+                m.target_system, m.target_component,
+                mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
+                0, 1, 0, 0, 0, 0, 0, 0)
+            print("  Asteapta ~15 s, apoi ruleaza din nou FARA --write, ca "
+                  "citirea inapoi sa se faca dupa boot.")
+            return 0
+        print("\n  REPORNESTE FC-ul acum (sau da --reboot): telemetrul si "
+              "precision landing se initializeaza doar la boot. Apoi ruleaza "
+              "din nou fara --write.")
+        return 0
 
     missing, mismatch, ok = [], [], []
     for name, want, line_no in wanted:

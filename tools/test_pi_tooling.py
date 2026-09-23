@@ -703,10 +703,12 @@ def test_G4_NEGATIV_fps_mic_si_capac_pe_obiectiv():
         def close(self):
             pass
 
-    # ~14 fps: sub pragul absolut FPS_MIN (17, decizia echipei)
+    # ~9 fps: sub pragul absolut FPS_MIN (12, decizia echipei). Luat din
+    # constanta, ca un prag mutat sa nu faca testul sa treaca din inertie.
+    assert pf.FPS_MIN > 9.5, f"pragul {pf.FPS_MIN} e sub cadenta de test"
     bune = marker_frames([5.0] * 8)
-    r_fps, r_img = pf.check_camera(Lenta(bune, 0.07), n_frames=8)
-    assert r_fps.status == pf.ESEC, f"14 fps acceptat: {r_fps.detail}"
+    r_fps, r_img = pf.check_camera(Lenta(bune, 0.11), n_frames=8)
+    assert r_fps.status == pf.ESEC, f"~9 fps acceptat: {r_fps.detail}"
     assert r_img.status == pf.OK
 
     negre = [np.zeros((240, 320), np.uint8) for _ in range(8)]
@@ -1060,6 +1062,143 @@ def test_parametrii_pentru_4_5_sunt_traducerea_corecta():
             f"{len(gen)} parametri, la zi cu sursa")
 
 
+class _FCFals:
+    """FC minimal: raspunde la PARAM_REQUEST_READ / PARAM_SET PE NUME, ca
+    ArduPilot (AP_Param::find ignora AP_PARAM_FLAG_ENABLE). Un nume care nu
+    exista pe firmware nu primeste raspuns - tacere, ca pe placa reala."""
+
+    def __init__(self, params, armat=False):
+        self.p = dict(params)
+        self.armat = armat
+        self.scrieri = []
+        self.reboot = False
+        self._coada = []
+        self.target_system, self.target_component = 1, 1
+        fc = self
+
+        class _Mav:
+            def param_request_read_send(self, s, c, name, idx):
+                n = name.decode()
+                if n in fc.p:
+                    fc._coada.append(('PARAM_VALUE', n, fc.p[n]))
+
+            def param_set_send(self, s, c, name, value, typ):
+                n = name.decode()
+                if n in fc.p:                   # inexistent: tacere
+                    fc.p[n] = float(value)
+                    fc.scrieri.append(n)
+
+            def command_long_send(self, *a):
+                fc.reboot = True
+        self.mav = _Mav()
+
+    def recv_match(self, type=None, blocking=True, timeout=None):
+        from pymavlink import mavutil
+        if type == 'HEARTBEAT':
+            class _HB:
+                base_mode = (mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
+                             if self.armat else 0)
+                def get_srcSystem(s):
+                    return 1
+            return _HB()
+        if self._coada:
+            _, n, v = self._coada.pop(0)
+            class _PV:
+                param_id = n
+                param_value = v
+            return _PV()
+        return None
+
+
+def test_scrierea_pe_nume_ocoleste_filtrul_din_mission_planner():
+    """Mission Planner a raportat 9 parametri lipsa: PLND_* si RNGFND1_*,
+    ascunsi din LISTA cat timp PLND_ENABLED / RNGFND1_TYPE sunt 0. FC-ul ii
+    accepta insa PE NUME oricand (verificat pe Copter-4.5.7). `--write`
+    scrie pe nume si citeste inapoi fiecare valoare.
+
+    Trei cazuri, fiecare cu modul lui de esec tacut:
+      - un parametru ascuns se scrie si se confirma;
+      - un nume inexistent pe firmware (WP_ACC pe 4.5.7) e raportat ESEC, nu
+        "scris" - PARAM_SET pe el nu da nicio eroare (§5.10);
+      - cu vehiculul armat, nu se scrie nimic."""
+    import check_params as cp
+
+    wanted = [('PLND_TYPE', 1.0, 1), ('PLND_ALT_MIN', 0.35, 2),
+              ('RNGFND1_MIN_CM', 5.0, 3), ('FS_THR_ENABLE', 1.0, 4)]
+    # PLND_* exista (pe nume), doar ca au valori de fabrica
+    fc = _FCFals({'PLND_TYPE': 0.0, 'PLND_ALT_MIN': 0.75,
+                  'RNGFND1_MIN_CM': 20.0, 'FS_THR_ENABLE': 1.0})
+    rez = cp.write_params(fc, wanted)
+    for n, w, g in rez:
+        assert g is not None and cp.close_enough(w, g), (n, w, g)
+    assert 'FS_THR_ENABLE' not in fc.scrieri, (
+        "a rescris un parametru deja corect")
+    assert set(fc.scrieri) == {'PLND_TYPE', 'PLND_ALT_MIN', 'RNGFND1_MIN_CM'}
+
+    # nume de 4.7 pe o placa 4.5.7: tacere, deci ESEC, nu succes
+    fc2 = _FCFals({'WPNAV_ACCEL': 250.0})
+    rez2 = cp.write_params(fc2, [('WP_ACC', 1.5, 1)])
+    assert rez2[0][2] is None, (
+        "WP_ACC raportat ca scris pe o placa unde nu exista")
+
+    # armat: refuz
+    assert cp.is_armed(_FCFals({}, armat=True)) is True
+    assert cp.is_armed(_FCFals({}, armat=False)) is False
+    return (f"{len(fc.scrieri)} ascunsi scrisi pe nume si confirmati; "
+            f"nume de 4.7 -> ESEC; armat -> refuz")
+
+
+def test_pragul_de_calibrare_are_o_singura_sursa():
+    """Regresie: pragul ridicat la 0.85 NU ajungea in preflight.
+
+    `MAX_REPROJ_ERR_PX` a fost schimbat, dar `nova_service.check_calibration`
+    avea propriul `max_rms=0.5` scris de mana - iar preflight-ul importa
+    functia, nu constanta. Pe vehicul: "0.829 px > 0.5 px, calibrare
+    proasta", dupa ce utilizatorul ceruse explicit 0.85. Testele verificau
+    constanta; nimic nu verifica drumul pe care il ia preflight-ul.
+
+    Doua verificari, pentru ca bug-ul a avut doua fete:
+      - drumul REAL (check_calibration, fara argumente) accepta o calibrare
+        sub prag si refuza una peste;
+      - niciun `max_rms=` cu valoare numerica nu mai sta ca implicit intr-o
+        functie din cod - o copie a pragului e o copie care ramane in urma."""
+    import re
+    import tempfile
+    import nova_service as svc
+    from nova.detector_pi import MAX_REPROJ_ERR_PX, CameraCalibration
+
+    base = real_calibration()
+    for rms, trebuie in ((MAX_REPROJ_ERR_PX - 0.02, True),
+                         (MAX_REPROJ_ERR_PX + 0.05, False)):
+        cal = CameraCalibration(base.K, base.dist, base.width, base.height,
+                                rms=rms, n_images=60, source='test')
+        cale = os.path.join(tempfile.mkdtemp(), 'c.yaml')
+        cal.save(cale)
+        try:
+            svc.check_calibration(cale)
+            trecut = True
+        except svc.StartupRefusal:
+            trecut = False
+        assert trecut == trebuie, (
+            f"rms {rms:.3f} cu pragul {MAX_REPROJ_ERR_PX}: "
+            f"{'refuzat' if not trecut else 'acceptat'} pe drumul preflight-ului")
+
+    copii = []
+    for dirp in ('nova', 'tools'):
+        for f in os.listdir(os.path.join(REPO, dirp)):
+            if not f.endswith('.py') or f.startswith('test_'):
+                continue
+            for nr, linie in enumerate(
+                    open(os.path.join(REPO, dirp, f)), start=1):
+                cod = linie.split('#')[0]          # comentariile pot cita
+                if re.search(r"max_rms\s*=\s*[0-9]", cod):
+                    copii.append(f"{dirp}/{f}:{nr}")
+    assert not copii, (
+        f"prag de calibrare scris ca numar, nu luat din MAX_REPROJ_ERR_PX: "
+        f"{', '.join(copii)}")
+    return f"drumul preflight-ului respecta {MAX_REPROJ_ERR_PX}; nicio copie"
+
+
 def test_proba_de_coborare_nu_ridica_singura_E0():
     """`pi/descent_test.sh` porneste secventa autonoma pe un vehicul REAL.
 
@@ -1379,6 +1518,10 @@ TESTS = [
      test_rotatia_de_montaj_ajunge_doar_pe_vehicul),
     ('parametrii pentru 4.5 sunt traducerea corecta',
      test_parametrii_pentru_4_5_sunt_traducerea_corecta),
+    ('scrierea pe nume ocoleste filtrul din Mission Planner',
+     test_scrierea_pe_nume_ocoleste_filtrul_din_mission_planner),
+    ('pragul de calibrare are o singura sursa',
+     test_pragul_de_calibrare_are_o_singura_sursa),
     ('proba de coborare nu ridica singura E0',
      test_proba_de_coborare_nu_ridica_singura_E0),
     ('proba de coborare cere caile de abort',

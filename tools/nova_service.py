@@ -148,7 +148,7 @@ class StartupRefusal(Exception):
     cod 2, ca systemd si preflight-ul sa il poata deosebi de un crash."""
 
 
-def check_calibration(path, max_rms=0.5):
+def check_calibration(path, max_rms=None):
     """Calibrarea, sau `StartupRefusal` cu motivul exact.
 
     `CameraCalibration.load(require_real=True)` prinde deja fisierul lipsa,
@@ -163,6 +163,13 @@ def check_calibration(path, max_rms=0.5):
     `CameraCalibration.geometric()` pune coeficienti IDENTIC zero. Un zero
     perfect pe toti coeficientii nu apare niciodata dintr-o calibrare reala.
     """
+    # Pragul vine din UN singur loc: MAX_REPROJ_ERR_PX. Aici statea o copie
+    # scrisa de mana, `max_rms=0.5`, iar cand pragul s-a ridicat la 0.85
+    # (decizia echipei) preflight-ul - care importa functia asta, nu
+    # constanta - a continuat sa refuze calibrarea cu "0.829 > 0.5".
+    from nova.detector_pi import MAX_REPROJ_ERR_PX
+    if max_rms is None:
+        max_rms = MAX_REPROJ_ERR_PX
     try:
         cal = CameraCalibration.load(path, require_real=True, max_rms=max_rms)
     except (FileNotFoundError, ValueError) as e:

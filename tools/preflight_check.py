@@ -67,10 +67,15 @@ FLIGHT_PARM = os.path.join(REPO_ROOT, 'config', 'nova_flight.parm')
 FPS_FRAMES = 60
 FPS_TOLERANCE = 0.80
 #: Prag ABSOLUT de cadre/s sub care preflight-ul pica. DECIZIA ECHIPEI
-#: (23.09.2026): 17 fps, in loc de 80% din nominal (24 fps). Masurat pe Pi
-#: 4: 17.9 fps - vezi nota din check_camera despre ce se masura de fapt.
-#: La 0.5 m/s de coborare, 17 fps inseamna ~3 cm intre cadre.
-FPS_MIN = 17.0
+#: (23.09.2026): 12 fps, in loc de 80% din nominal (24 fps).
+#:
+#: Masurat pe Pi 4 dupa repararea masuratorii: 30.1 fps. Cei 17.9 fps de
+#: dinainte erau ai buclei de masurare (np.std pe cadrul intreg), nu ai
+#: camerei - vezi check_camera. Pragul lasa loc de throttling si de
+#: sarcina, fara sa pice un banc care merge.
+#:
+#: La 0.5 m/s de coborare, 12 fps inseamna ~4 cm intre cadre.
+FPS_MIN = 12.0
 
 #: Imagine: sub atata deviatie standard, cadrul e practic uniform (capac pe
 #: obiectiv, intuneric total). Un cadru cu marker alb-negru are zeci.

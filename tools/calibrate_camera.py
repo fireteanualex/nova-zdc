@@ -32,7 +32,8 @@ margini, iar solvePnP cu coeficienti zero da erori de pozitie care cresc
 exact acolo unde se afla markerul in timpul apropierii. Focala derivata
 geometric (W/2 / tan(HFOV/2)) e un punct de plecare, nu un substitut.
 
-Criteriu: eroare de reproiectie RMS peste 0.5 px = calibrare proasta.
+Criteriu: eroare de reproiectie RMS peste MAX_REPROJ_ERR_PX (0.85 px,
+decizia echipei - nova/detector_pi.py) = calibrare refuzata.
 Unealta REFUZA sa salveze. Cauze tipice: tabla indoita, cadre cu blur,
 acoperire slaba a marginilor, prea putine poze.
 """

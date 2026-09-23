@@ -128,33 +128,38 @@ verificarea de telemetru" — fără busolă, GPS, INS, baterie, RC. Exact
 invers, și trece orice audit pe valoare: parametrul există și are numărul
 cerut (§5.10).
 
-### 1.1 Încarcă parametrii — ordinea contează
+### 1.1 Scrie parametrii — de pe Pi, pe nume
 
-**Nu încărca fișierul dintr-o dată.** `PLND_*` și `RNGFND1_*` sunt ascunse
-până când parametrul lor de activare e non-zero **și s-a repornit** —
-sunt declarați cu `AP_PARAM_FLAG_ENABLE`. Iar fișierul nostru are
-`PLND_ENABLED = 0` deliberat (companion-ul îl aprinde doar în segment),
-deci sub-parametrii `PLND_*` nu ar apărea **niciodată**.
+**Nu prin Mission Planner.** `PLND_*` și `RNGFND1_*` sunt ascunși din
+*lista* de parametri cât timp `PLND_ENABLED` / `RNGFND1_TYPE` sunt 0, iar
+Mission Planner scrie doar ce găsește în lista descărcată — de aici
+„No matching Params". FC-ul îi acceptă însă **pe nume** oricând (verificat
+pe Copter-4.5.7: `AP_Param::find()` nu ține cont de flag).
 
-```
-1.  Full Parameter List:  RNGFND1_TYPE = 10
-                          PLND_ENABLED = 1     <-- temporar
-    Write Params  →  REPORNEȘTE FC-ul
+De pe Pi, cu vehiculul **dezarmat**:
 
-2.  acum sub-parametrii există:
-    Load from file → config/nova_flight.parm → Write Params
-
-3.  PLND_ENABLED = 0      <-- înapoi. Valorile scrise rămân.
-    Write Params
+```bash
+tools/check_params.py --conn /dev/serial0 --baud 921600 \
+    --parm config/nova_flight_4.5.parm --write --reboot
+# asteapta ~15 s sa reporneasca FC-ul, apoi:
+tools/check_params.py --conn /dev/serial0 --baud 921600 \
+    --parm config/nova_flight_4.5.parm
 ```
 
-**Pasul 3 se uită ușor și nu dă niciun semn.** Cu el uitat, vehiculul
-zboară cu precision landing armat permanent — iar §5.8 arată măsurat că
-atunci un RTL aterizează pe marker în loc de acasă.
+Prima comandă scrie fiecare parametru pe nume, îl citește înapoi, și
+repornește FC-ul. A doua trebuie să iasă cu **cod 0** — citirea după boot e
+dovada.
 
-În SITL capcana nu se vede: `--add-param-file` devine `--defaults`, care
-se aplică înaintea inițializării obiectelor. Prin Mission Planner nu
-există echivalent.
+**Repornirea nu e opțională.** Pe 4.5.7, `init_precland()` rulează o
+singură dată, la boot, și creează backend-ul de precision landing din
+`PLND_TYPE`. Cu `PLND_TYPE` proaspăt scris dar fără repornire, backend-ul
+nu există: companion-ul aprinde `PLND_ENABLED` la handover, trimite
+`LANDING_TARGET`, iar FC-ul le ignoră — fără niciun mesaj. La fel pentru
+driverul de telemetru din `RNGFND1_TYPE`.
+
+Dacă totuși vrei prin Mission Planner: `RNGFND1_TYPE = 10` și
+`PLND_ENABLED = 1` → Write → **reboot** → Load `nova_flight_4.5.parm` →
+Write → **reboot din nou**. Fișierul pune singur `PLND_ENABLED` înapoi pe 0.
 
 Cei 28 de parametri, cu motivul fiecăruia:
 
