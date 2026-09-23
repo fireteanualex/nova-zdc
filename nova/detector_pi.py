@@ -95,6 +95,51 @@ ROI_BELOW_M = 5.0
 #: pica primul. Ramane ca garda explicita: o detectie cu markerul pe jumatate
 #: afara nu e o detectie, e o extrapolare a lui solvePnP.
 FILL_MAX = 0.95
+
+#: Rotatiile de montaj acceptate - vezi `axe_corp`.
+ROTATII_MONTAJ = (0, 90, 180, 270)
+
+
+def axe_corp(tx, ty, rotatie_deg=0):
+    """(inainte, dreapta) in cadrul CORPULUI, din componentele x, y ale
+    vectorului spre marker in cadrul CAMEREI (x dreapta pe imagine, y in jos).
+
+    `rotatie_deg` spune cum e montata camera, definit prin ce vezi: cu cate
+    grade trebuie rotita imaginea bruta SPRE STANGA (invers acelor de
+    ceasornic, pe ecran) ca nasul dronei sa ajunga SUS.
+
+        rotatie   inainte   dreapta
+        0         -ty       +tx       conventia initiala: varful imaginii = nas
+        90        +tx       +ty       nasul apare in DREAPTA imaginii brute
+        180       +ty       -tx       nasul apare JOS
+        270       -tx       -ty       nasul apare in STANGA
+
+    DE CE AICI si nu prin rotirea pixelilor. Un cadru 2304x1296 rotit cu 90
+    grade devine 1296x2304, iar calibrarea (K, cx, cy, dimensiunea) nu se mai
+    potriveste: `build_pi_detector` refuza pornirea, `fill` s-ar calcula fata
+    de alt cadru, si fiecare cadru ar plati o copie integrala pe Pi 4. Ce e
+    rotit e MONTAJUL, deci se roteste maparea axelor - zero cost, calibrarea
+    neatinsa. Doar fereastra de afisare roteste pixelii, pe o copie.
+
+    DE CE AICI si nu prin PLND_YAW_ALIGN. Parametrul ArduPilot ar roti doar
+    LANDING_TARGET. Dar `angle_x`/`angle_y` mai intra in poarta de handover,
+    in supervizor si in comparatiile cu adevarul din simulare - toate
+    presupun cadrul corpului. Rotatia se face o singura data, la sursa, iar
+    PLND_YAW_ALIGN RAMANE 0: ambele ar insemna rotatie dubla.
+
+    Nu are legatura cu rotatia din §5.1 (`conv`), care e conventia de axe a
+    mesajului LANDING_TARGET, independenta de montaj."""
+    r = int(rotatie_deg) % 360
+    if r == 0:
+        return -ty, tx
+    if r == 90:
+        return tx, ty
+    if r == 180:
+        return ty, -tx
+    if r == 270:
+        return -tx, -ty
+    raise ValueError(f"rotatie de montaj {rotatie_deg}: se accepta doar "
+                     f"{ROTATII_MONTAJ} (camera e montata in trepte de 90 grade)")
 ROI_SIZE_PX = (640, 480)
 
 #: Instrumentare (E1.4): fereastra pe care se calculeaza percentilele.
@@ -265,8 +310,13 @@ class ArucoMarkerDetector:
     """
 
     def __init__(self, calib, marker_id=MARKER_ID, marker_size_m=MARKER_SIZE_M,
-                 roi_below_m=ROI_BELOW_M, roi_size_px=ROI_SIZE_PX):
+                 roi_below_m=ROI_BELOW_M, roi_size_px=ROI_SIZE_PX,
+                 camera_rotation_deg=0):
         self.calib = calib
+        # Validat aici, la constructie, nu la primul cadru: o valoare gresita
+        # trebuie sa opreasca pornirea, nu sa apara in mijlocul unui zbor.
+        axe_corp(0.0, 0.0, camera_rotation_deg)
+        self.camera_rotation_deg = int(camera_rotation_deg) % 360
         self.marker_id = int(marker_id)
         self.marker_size_m = float(marker_size_m)
         self.roi_below_m = float(roi_below_m)
@@ -407,10 +457,11 @@ class ArucoMarkerDetector:
         if t[2] <= 0.05:
             return None                       # in spatele camerei / degenerat
 
-        # Conventia de montaj (vezi docstring-ul modulului): varful imaginii
-        # e nasul dronei. inainte = -y_cam, dreapta = +x_cam.
-        angle_x = math.atan2(-t[1], t[2])
-        angle_y = math.atan2(t[0], t[2])
+        # Conventia de montaj: cu rotatie 0, varful imaginii e nasul dronei,
+        # deci inainte = -y_cam, dreapta = +x_cam. Altfel vezi `axe_corp`.
+        inainte, dreapta = axe_corp(t[0], t[1], self.camera_rotation_deg)
+        angle_x = math.atan2(inainte, t[2])
+        angle_y = math.atan2(dreapta, t[2])
         distance = float(np.linalg.norm(t))
 
         # range_m = ce ar citi un telemetru pe axa optica pana la PLANUL
@@ -1004,7 +1055,8 @@ class PiDetector:
 
 # --- Constructor de bord -------------------------------------------------------------
 
-def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None):
+def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None,
+                      keep_last_frame=False):
     """Detectorul complet pentru aplicatia de bord, din config/nova.json.
     Refuza sa porneasca fara calibrare reala (E1.2).
 
@@ -1031,11 +1083,16 @@ def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None):
     aruco = ArucoMarkerDetector(calib, marker_id=cfg['marker_id'],
                                 marker_size_m=cfg['marker_size_m'],
                                 roi_below_m=cfg['roi_below_m'],
-                                roi_size_px=cfg['roi_size_px'])
+                                roi_size_px=cfg['roi_size_px'],
+                                camera_rotation_deg=cfg['camera_rotation_deg'])
+    if verbose and aruco.camera_rotation_deg:
+        print(f"[detector] camera montata rotit: imaginea se roteste cu "
+              f"{aruco.camera_rotation_deg} grade la stanga (axe, nu pixeli)")
     source = PiCameraSource(verbose=verbose)
     if (source.size[0], source.size[1]) != (calib.width, calib.height):
         raise ValueError(
             f"calibrarea e pentru {calib.width}x{calib.height}, camera da "
             f"{source.size[0]}x{source.size[1]}. Recalibreaza la rezolutia "
             f"de tracking.")
-    return PiDetector(source, aruco, ring_frames=ring_frames, threaded=True).start()
+    return PiDetector(source, aruco, ring_frames=ring_frames, threaded=True,
+                      keep_last_frame=keep_last_frame).start()

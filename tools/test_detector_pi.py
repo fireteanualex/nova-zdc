@@ -484,6 +484,96 @@ def test_detectorul_raporteaza_incadrarea_din_colturi():
             f"{det.fill:.3f} -> {det_r.fill:.3f} la 45 deg")
 
 
+def test_rotatia_de_montaj_din_cv2_rotate():
+    """Camera montata rotit: adevarul vine din `cv2.rotate`, nu din tabelul
+    din `axe_corp`.
+
+    Altfel testul ar verifica tabelul cu el insusi - daca amandoua gresesc
+    in acelasi fel, trece. Aici definitia e operatia pe care o face omul:
+    "imaginea trebuie rotita 90 grade la STANGA ca nasul sa fie sus" inseamna
+    ca `cv2.rotate(bruta, ROTATE_90_COUNTERCLOCKWISE)` da imaginea corecta.
+
+    Cadrul e PATRAT, cu punctul principal exact in centru si fara
+    distorsiune tangentiala, ca rotirea pixelilor sa nu schimbe calibrarea -
+    altfel am testa si o calibrare gresita, nu doar maparea.
+
+    Cazul negativ conteaza la fel de mult: aceeasi imagine bruta, citita cu
+    rotatia 0, trebuie sa dea axele GRESITE. Asa arata o camera montata
+    rotit si nedeclarata - vehiculul ar corecta perpendicular pe eroare si
+    ar orbita, exact semnatura din §5.1."""
+    S = 1296
+    c = (S - 1) / 2.0
+    f = 933.0
+    K = np.array([[f, 0, c], [0, f, c], [0, 0, 1]], dtype=np.float64)
+    cal = CameraCalibration(K, [0.0, 0.0, 0.0, 0.0, 0.0], S, S,
+                            rms=0.2, n_images=25, source='patrat (test)')
+
+    # markerul: 1.2 m IN FATA nasului si 0.5 m la DREAPTA, la 6 m dedesubt.
+    # Asimetric deliberat: cu fata == dreapta, o inversare ar trece.
+    FATA, DREAPTA, Z = 1.2, 0.5, 6.0
+    # imaginea CORECTA (nas sus): inainte = -y_cam, dreapta = +x_cam
+    t_drept = (DREAPTA, -FATA, Z)
+
+    marker = cv2.aruco.generateImageMarker(DICT, 26, 200)
+    q = 50
+    pansa = np.full((300, 300), 255, np.uint8)
+    pansa[q:q + 200, q:q + 200] = marker
+    src = np.array([[q, q], [q + 200, q], [q + 200, q + 200], [q, q + 200]],
+                   dtype=np.float32)
+    dst = project(cal, R_FLAT, t_drept, obj_corners()).astype(np.float32)
+    dreapta_img = cv2.warpPerspective(
+        pansa, cv2.getPerspectiveTransform(src, dst), (S, S),
+        flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT,
+        borderValue=110)
+
+    # Ce ar da o camera care trebuie rotita cu R la STANGA ca sa fie dreapta:
+    # inversul lui R, adica rotirea imaginii corecte la DREAPTA.
+    montaj = {
+        0: None,
+        90: cv2.ROTATE_90_CLOCKWISE,
+        180: cv2.ROTATE_180,
+        270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+    }
+    la_stanga = {90: cv2.ROTATE_90_COUNTERCLOCKWISE, 180: cv2.ROTATE_180,
+                 270: cv2.ROTATE_90_CLOCKWISE}
+
+    rezultate = []
+    for rot, cod in montaj.items():
+        bruta = dreapta_img if cod is None else cv2.rotate(dreapta_img, cod)
+        # definitia: rotita la stanga cu `rot`, bruta redevine imaginea corecta
+        if rot:
+            assert np.array_equal(cv2.rotate(bruta, la_stanga[rot]),
+                                  dreapta_img), f"definitia pentru {rot}"
+
+        det = ArucoMarkerDetector(cal, camera_rotation_deg=rot).detect(
+            bruta, 0.0)
+        assert det is not None, f"nicio detectie la rotatia {rot}"
+        f_m = Z * math.tan(det.angle_x)
+        d_m = Z * math.tan(det.angle_y)
+        assert abs(f_m - FATA) < 0.03 and abs(d_m - DREAPTA) < 0.03, (
+            f"rotatie {rot}: inainte {f_m:.2f} m (asteptat {FATA}), "
+            f"dreapta {d_m:.2f} m (asteptat {DREAPTA})")
+        rezultate.append(f"{rot}:{f_m:+.2f}/{d_m:+.2f}")
+
+    # NEGATIV: camera rotita 90, dar nedeclarata
+    bruta = cv2.rotate(dreapta_img, cv2.ROTATE_90_CLOCKWISE)
+    det = ArucoMarkerDetector(cal, camera_rotation_deg=0).detect(bruta, 0.0)
+    f_m = Z * math.tan(det.angle_x)
+    d_m = Z * math.tan(det.angle_y)
+    assert abs(f_m - FATA) > 0.3 or abs(d_m - DREAPTA) > 0.3, (
+        "rotatia nedeclarata da totusi axele bune - testul nu masoara nimic")
+
+    # valorile care nu sunt montaje reale se refuza la constructie
+    for rau in (45, 30, -15):
+        try:
+            ArucoMarkerDetector(cal, camera_rotation_deg=rau)
+        except ValueError:
+            continue
+        raise AssertionError(f"rotatia {rau} a fost acceptata")
+    return (f"fata/dreapta recuperate (m): {' '.join(rezultate)}; "
+            f"nedeclarat: {f_m:+.2f}/{d_m:+.2f}")
+
+
 TESTS = [
     ('incadrarea tine cont de rotatia markerului',
      test_incadrarea_tine_cont_de_rotatia_markerului),
@@ -507,6 +597,8 @@ TESTS = [
      test_regresie_last_corners_nu_schimba_Detection),
     ('detectorul raporteaza incadrarea din colturi',
      test_detectorul_raporteaza_incadrarea_din_colturi),
+    ('rotatia de montaj, cu adevarul din cv2.rotate',
+     test_rotatia_de_montaj_din_cv2_rotate),
 ]
 
 

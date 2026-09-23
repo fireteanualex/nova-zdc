@@ -384,7 +384,8 @@ def build_monitor_detector(cfg, cal, ring, source=None):
     aruco = ArucoMarkerDetector(cal, marker_id=cfg['marker_id'],
                                 marker_size_m=cfg['marker_size_m'],
                                 roi_below_m=cfg['roi_below_m'],
-                                roi_size_px=cfg['roi_size_px'])
+                                roi_size_px=cfg['roi_size_px'],
+                                camera_rotation_deg=cfg['camera_rotation_deg'])
     if source is None:
         source = PiCameraSource(verbose=False)
         if (source.size[0], source.size[1]) != (cal.width, cal.height):

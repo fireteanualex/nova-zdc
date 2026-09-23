@@ -41,6 +41,13 @@ DEFAULTS = {
     # ajunge, iar saltul de FPS pe Pi 4 e mare.
     'roi_below_m': 5.0,
     'roi_size_px': [640, 480],
+
+    # Cum e montata camera pe VEHICULUL REAL: cu cate grade trebuie rotita
+    # imaginea bruta SPRE STANGA (pe ecran) ca nasul dronei sa ajunga sus.
+    # 0, 90, 180 sau 270. Se aplica pe maparea axelor, nu pe pixeli - vezi
+    # nova.detector_pi.axe_corp. Simularea NU o citeste: camera din Gazebo
+    # e montata drept, indiferent cum e cea de pe vehicul.
+    'camera_rotation_deg': 0,
 }
 
 

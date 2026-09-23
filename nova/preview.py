@@ -53,6 +53,27 @@ def gui_available():
     return any(os.environ.get(v) for v in GUI_ENV_VARS)
 
 
+#: Rotirea imaginii brute SPRE STANGA (pe ecran) -> codul cv2 care o face.
+#: Aceeasi definitie ca `camera_rotation_deg` din config: cu cat rotesti ca
+#: nasul dronei sa ajunga sus.
+_ROTIRI_CV2 = {90: cv2.ROTATE_90_COUNTERCLOCKWISE, 180: cv2.ROTATE_180,
+               270: cv2.ROTATE_90_CLOCKWISE}
+
+
+def roteste_pentru_afisare(img, rotatie_deg):
+    """Copie rotita SPRE STANGA cu `rotatie_deg`, numai pentru ecran.
+
+    Detectia nu trece niciodata pe aici: ea lucreaza pe cadrul brut, cu
+    rotatia aplicata pe axe (`nova.detector_pi.axe_corp`), ca sa nu
+    invalideze calibrarea. Aici doar operatorul vede imaginea cu nasul sus."""
+    r = int(rotatie_deg) % 360
+    if r == 0:
+        return img
+    if r not in _ROTIRI_CV2:
+        raise ValueError(f"rotatie {rotatie_deg}: doar 0/90/180/270")
+    return cv2.rotate(img, _ROTIRI_CV2[r])
+
+
 class Preview:
     """O fereastra, sau nimic.
 
@@ -68,8 +89,11 @@ class Preview:
     """
 
     def __init__(self, title, enabled=False, fullscreen=False, scale=1.0,
-                 logger=None):
+                 logger=None, rotate_deg=0):
         self.title = title
+        if int(rotate_deg) % 360 not in (0, 90, 180, 270):
+            raise ValueError(f"rotatie {rotate_deg}: doar 0/90/180/270")
+        self.rotate_deg = int(rotate_deg) % 360
         self.scale = float(scale)
         self.fullscreen = fullscreen
         self.enabled = bool(enabled)
@@ -95,7 +119,7 @@ class Preview:
                                   cv2.WINDOW_FULLSCREEN)
         self.created = True
 
-    def show(self, frame, wait_ms=1):
+    def show(self, frame, wait_ms=1, text=None):
         """Afiseaza un cadru. False daca operatorul a cerut iesirea.
 
         `frame` NU se modifica: redimensionarea produce o copie si e doar
@@ -109,6 +133,16 @@ class Preview:
         if self.scale != 1.0:
             img = cv2.resize(frame, None, fx=self.scale, fy=self.scale,
                              interpolation=cv2.INTER_AREA)
+        # dupa redimensionare: rotim cadrul mic, nu pe cel de 3 MB
+        img = roteste_pentru_afisare(img, self.rotate_deg)
+        # textul se scrie DUPA rotire, altfel s-ar roti si el si nu s-ar mai
+        # citi. Pe o copie: cadrul primit nu se modifica niciodata.
+        if text:
+            img = img.copy()
+            for i, linie in enumerate(text):
+                cv2.putText(img, linie, (12, 32 + 30 * i),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2,
+                            cv2.LINE_AA)
         cv2.imshow(self.title, img)
         key = cv2.waitKey(wait_ms) & 0xFF
         if key in (k & 0xFF for k in EXIT_KEYS):
@@ -135,14 +169,14 @@ class Preview:
         return False
 
 
-def bench_preview(title, enabled=True, scale=1.0, logger=None):
+def bench_preview(title, enabled=True, scale=1.0, logger=None, rotate_deg=0):
     """Contextul 1: unealta de banc. Fullscreen, iesire pe q si Escape."""
     return Preview(title, enabled=enabled, fullscreen=True, scale=scale,
-                   logger=logger)
+                   logger=logger, rotate_deg=rotate_deg)
 
 
 def onboard_preview(title, enabled=False, scale=0.5, logger=None,
-                    fullscreen=False):
+                    fullscreen=False, rotate_deg=0):
     """Contextul 3: pe vehicul. Implicit OPRITA; la aprindere, avertizeaza.
 
     Avertismentul nu e politete. Pe un Pi fara vc4-kms-v3d, `imshow` merge
@@ -154,7 +188,7 @@ def onboard_preview(title, enabled=False, scale=0.5, logger=None,
     a vedea ce vede camera si nimeni nu cronometreaza. Ramane fals implicit:
     pe un ecran de 1080p, fullscreen inseamna si mai mult CPU de scalare."""
     pv = Preview(title, enabled=enabled, fullscreen=fullscreen, scale=scale,
-                 logger=logger)
+                 logger=logger, rotate_deg=rotate_deg)
     if pv.enabled:
         pv.log("[preview] ATENTIE: fereastra PORNITA pe bord. Fara "
                "vc4-kms-v3d nu exista accelerare grafica, deci afisarea "

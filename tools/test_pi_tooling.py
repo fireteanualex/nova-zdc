@@ -404,8 +404,11 @@ def test_G2_monitorul_ruleaza_fara_sa_comande():
     """RACE_MONITOR end-to-end pe sursa sintetica."""
     tmp = tempfile.mkdtemp()
     cal = real_calibration()
-    cfg = {'marker_id': 26, 'marker_size_m': 0.48, 'roi_below_m': 5.0,
-           'roi_size_px': [640, 480], 'autonomy_enabled': False}
+    # Din DEFAULTS, nu scris de mana: un dictionar construit partial nu are
+    # forma celui din productie (`nova_config.load` completeaza mereu), iar
+    # la prima cheie noua testul pica din motivul gresit.
+    from nova import config as nova_config
+    cfg = dict(nova_config.DEFAULTS, autonomy_enabled=False)
     log = svc.setup_logging(os.path.join(tmp, 'logs'), verbose=False)
     ring = svc.FrameRing(maxlen=8)
     args = argparse.Namespace(conn='', baud=0, buffer_frames=8,
@@ -812,6 +815,140 @@ def test_G4_codul_de_iesire_ca_poarta():
     return "sarit -> 1, esec -> 1, --json valid"
 
 
+def test_rotatia_de_afisare_pune_nasul_sus():
+    """`camera_rotation_deg = 90` = imaginea bruta se roteste 90 grade la
+    STANGA ca nasul sa ajunga sus. Deci un punct din DREAPTA imaginii brute
+    trebuie sa ajunga SUS pe ecran.
+
+    E aceeasi definitie ca in detector (`axe_corp`), testata acolo cu
+    `cv2.rotate`; aici se verifica faptul ca fereastra roteste in ACELASI
+    sens. Doua sensuri diferite ar insemna un operator care vede nasul sus
+    in timp ce vehiculul corecteaza pe alta axa."""
+    import numpy as np
+    from nova.preview import roteste_pentru_afisare, Preview
+
+    img = np.zeros((100, 200), np.uint8)
+    img[45:55, 185:195] = 255                  # punct in DREAPTA, la mijloc
+    for rot, unde in ((0, 'dreapta'), (90, 'sus'), (180, 'stanga'),
+                      (270, 'jos')):
+        r = roteste_pentru_afisare(img, rot)
+        ys, xs = np.nonzero(r)
+        cy, cx = ys.mean() / r.shape[0], xs.mean() / r.shape[1]
+        gasit = ('sus' if cy < 0.2 else 'jos' if cy > 0.8 else
+                 'stanga' if cx < 0.2 else 'dreapta' if cx > 0.8 else '?')
+        assert gasit == unde, f"rotatie {rot}: punctul e {gasit}, nu {unde}"
+
+    # cadrul primit nu se modifica niciodata
+    assert img[50, 190] == 255 and img.shape == (100, 200)
+
+    for rau in (45, 30):
+        try:
+            Preview('t', enabled=False, rotate_deg=rau)
+        except ValueError:
+            continue
+        raise AssertionError(f"Preview a acceptat rotatia {rau}")
+    return "dreapta -> sus la 90; cadrul primit neatins"
+
+
+def test_fereastra_de_bord_chiar_primeste_cadre():
+    """Regresie: fereastra de pe bord NU primea niciodata cadre.
+
+    `pv` se crea, se tiparea "fereastra pornita", iar `run_loop` rula fara
+    sa apeleze `pv.show()`. Fereastra se creeaza abia in `show()`, deci pe
+    ecran nu aparea nimic - `--fullscreen` din `pi/bringup.sh` era un buton
+    legat la nimic. Testele de atunci verificau ca flagul se parseaza si ca
+    fabrica primeste argumentul, nu ca un cadru ajunge pe ecran."""
+    import numpy as np
+    import nova_pi
+    from nova.detection import Detection
+
+    class _PV:
+        enabled = True
+
+        def __init__(self):
+            self.cadre, self.texte, self.inchis = [], [], False
+            self.raspuns = True
+
+        def show(self, frame, text=None):
+            self.cadre.append(frame.shape)
+            self.texte.append(text or [])
+            return self.raspuns
+
+        def close(self):
+            self.inchis = True
+
+    class _Aruco:
+        last_corners = np.array([[10, 10], [60, 10], [60, 60], [10, 60]],
+                                np.float32)
+
+    class _Det:
+        det = _Aruco()
+        last_frame = np.zeros((1296, 2304), np.uint8)
+        last_detection = Detection(t=0.0, angle_x=0.1, angle_y=-0.05,
+                                   distance_m=2.0, marker_px=200.0,
+                                   range_m=2.0, fill=0.2)
+
+        def poll(self, now):
+            return ['o detectie']
+
+    pv = _PV()
+    f = nova_pi.FereastraBord(_Det(), pv, rotatie_deg=90)
+
+    # bucla la ~500 Hz timp de 1 s: fereastra trebuie hranita, dar LIMITAT
+    for i in range(500):
+        assert f.poll(1000.0 + i * 0.002) == ['o detectie']
+    assert pv.cadre, "fereastra nu a primit NICIUN cadru"
+    assert 8 <= len(pv.cadre) <= 12, (
+        f"{len(pv.cadre)} cadre in 1 s: limitarea la "
+        f"{nova_pi.FereastraBord.AFISARE_HZ} Hz nu tine")
+    assert pv.cadre[0] == (1296, 2304, 3), (
+        f"fereastra primeste {pv.cadre[0]} - rotirea e treaba lui Preview, "
+        f"pe copia de afisare, nu a cadrului")
+    assert any('in fata' in t for t in pv.texte[-1]), pv.texte[-1]
+    assert any('90' in t for t in pv.texte[-1]), (
+        "rotatia de montaj nu apare pe ecran")
+
+    # Escape: fereastra se inchide, APLICATIA CONTINUA
+    pv.raspuns = False
+    for i in range(100):
+        assert f.poll(2000.0 + i * 0.02) == ['o detectie'], (
+            "inchiderea ferestrei a oprit bucla")
+    assert pv.inchis and pv.enabled is False
+    n = len(pv.cadre)
+    f.poll(3000.0)
+    assert len(pv.cadre) == n, "dupa inchidere se mai trimit cadre"
+    return f"{n - 1} cadre/s la 500 Hz de bucla; Escape nu opreste zborul"
+
+
+def test_rotatia_de_montaj_ajunge_doar_pe_vehicul():
+    """Camera din Gazebo e montata DREPT. Daca simularea ar prelua rotatia
+    vehiculului din config/nova.json, ar roti axele unei camere deja drepte
+    - si vehiculul simulat ar orbita, exact semnatura din §5.1.
+
+    Invers, un loc de pe vehicul care uita sa o dea ar zbura cu axele
+    rotite. Deci fiecare loc care construieste detectorul e clasificat."""
+    pe_vehicul = ('nova/detector_pi.py', 'tools/nova_pi.py',
+                  'tools/nova_service.py', 'tools/run_e2.py')
+    in_simulare = ('tools/nova_sim.py', 'tools/gz_frames.py',
+                   'tools/check_handover_fov.py', 'tools/compare_detectors.py')
+    for nume in pe_vehicul:
+        src = open(os.path.join(REPO, nume)).read()
+        n_det = src.count('ArucoMarkerDetector(')
+        n_rot = src.count("camera_rotation_deg=cfg['camera_rotation_deg']")
+        assert n_rot >= n_det - src.count('class ArucoMarkerDetector'), (
+            f"{nume}: construieste {n_det} detectoare, doar {n_rot} primesc "
+            f"rotatia de montaj - camera reala ar zbura cu axele gresite")
+    for nume in in_simulare:
+        src = open(os.path.join(REPO, nume)).read()
+        assert 'camera_rotation_deg' not in src, (
+            f"{nume} preia rotatia vehiculului: camera din Gazebo e dreapta, "
+            f"iar rotita inca o data vehiculul simulat ar orbita")
+
+    from nova import config as nova_config
+    assert nova_config.DEFAULTS['camera_rotation_deg'] == 0
+    return f"{len(pe_vehicul)} locuri pe vehicul, {len(in_simulare)} in sim"
+
+
 def test_proba_de_coborare_nu_ridica_singura_E0():
     """`pi/descent_test.sh` porneste secventa autonoma pe un vehicul REAL.
 
@@ -1127,6 +1264,12 @@ def test_parametrii_de_telemetrie_sunt_in_fisierul_de_zbor():
 
 
 TESTS = [
+    ('rotatia de afisare pune nasul sus',
+     test_rotatia_de_afisare_pune_nasul_sus),
+    ('fereastra de bord chiar primeste cadre',
+     test_fereastra_de_bord_chiar_primeste_cadre),
+    ('rotatia de montaj ajunge doar pe vehicul',
+     test_rotatia_de_montaj_ajunge_doar_pe_vehicul),
     ('proba de coborare nu ridica singura E0',
      test_proba_de_coborare_nu_ridica_singura_E0),
     ('proba de coborare cere caile de abort',

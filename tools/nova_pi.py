@@ -30,9 +30,13 @@ deschide (nova/serial_guard.py) si iesim cu comanda de reparare.
 """
 
 import argparse
+import math
 import os
 import sys
 import time
+
+import cv2
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -83,13 +87,15 @@ def camera_check(cfg, seconds, show_window=False, preview_scale=0.5,
     aruco = ArucoMarkerDetector(calib, marker_id=cfg['marker_id'],
                                 marker_size_m=cfg['marker_size_m'],
                                 roi_below_m=cfg['roi_below_m'],
-                                roi_size_px=cfg['roi_size_px'])
+                                roi_size_px=cfg['roi_size_px'],
+                                camera_rotation_deg=cfg['camera_rotation_deg'])
     src = PiCameraSource(verbose=True)
     if src.control_problems:
         print("[camera-check] ATENTIE: controale neaplicate, vezi mai sus")
     det = PiDetector(src, aruco, threaded=True).start()
     pv = preview_mod.bench_preview('NOVA camera-check', enabled=show_window,
-                                   scale=preview_scale)
+                                   scale=preview_scale,
+                                   rotate_deg=cfg['camera_rotation_deg'])
     t0 = time.time()
     n = 0
     try:
@@ -128,6 +134,74 @@ class LastDetection:
         if dets:
             self.last_detection = dets[-1]
         return dets
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class FereastraBord:
+    """Hraneste fereastra de pe bord, fara sa atinga `run_loop`.
+
+    Pana aici fereastra NU primea niciodata cadre: `pv` se crea, se tiparea
+    "fereastra pornita", iar `run_loop` rula fara sa apeleze `pv.show()`.
+    Cum `Preview` isi creeaza fereastra abia in `show()`, pe ecran nu aparea
+    nimic. `--fullscreen` era un buton legat la nimic - §5.14 inca o data:
+    piesa merge, cablajul nu exista.
+
+    `run_loop` e comun cu simularea si validat, deci nu se modifica. Dar
+    apeleaza `detector.poll()` la fiecare ciclu, din FIRUL PRINCIPAL - singurul
+    din care OpenCV accepta `imshow` pe toate backend-urile. Fereastra se
+    hraneste de aici, limitat la AFISARE_HZ.
+
+    Inchiderea ferestrei NU opreste aplicatia. Un Escape apasat din greseala
+    in timpul unei coborari ar lasa vehiculul fara supervizor; afisarea nu
+    are voie sa decida nimic despre zbor."""
+
+    AFISARE_HZ = 10.0
+
+    def __init__(self, inner, pv, rotatie_deg=0):
+        self._inner = inner
+        self._pv = pv
+        self._rot = rotatie_deg
+        self._ultima = float('-inf')
+        self.n_afisate = 0
+
+    def poll(self, now):
+        dets = self._inner.poll(now)
+        if self._pv.enabled and now - self._ultima >= 1.0 / self.AFISARE_HZ:
+            self._ultima = now
+            self._afiseaza()
+        return dets
+
+    def _afiseaza(self):
+        cadru = getattr(self._inner, 'last_frame', None)
+        if cadru is None:
+            return
+        img = cv2.cvtColor(cadru, cv2.COLOR_GRAY2BGR) if cadru.ndim == 2 \
+            else cadru.copy()
+        # Colturile sunt ale ultimei detectii, din firul detectorului - pot fi
+        # ale cadrului de dinainte. La 30 fps asta e 33 ms: nu se vede.
+        aruco = getattr(self._inner, 'det', None)
+        colturi = getattr(aruco, 'last_corners', None)
+        if colturi is not None:
+            cv2.polylines(img, [np.asarray(colturi, np.int32).reshape(-1, 1, 2)],
+                          True, (0, 255, 0), 4)
+        text = ["SUS = NASUL DRONEI (daca rotatia e corecta)"]
+        d = getattr(self._inner, 'last_detection', None)
+        if d is not None:
+            fata = d.range_m * math.tan(d.angle_x)
+            dreapta = d.range_m * math.tan(d.angle_y)
+            text.append(f"marker: {fata:+.2f} m in fata, {dreapta:+.2f} m "
+                        f"la dreapta, {d.range_m:.2f} m jos")
+        if self._rot:
+            text.append(f"rotatie montaj: {self._rot} deg la stanga")
+        if not self._pv.show(img, text=text):
+            print("[bord] fereastra inchisa de la tastatura. Aplicatia "
+                  "CONTINUA - afisarea nu decide nimic despre zbor.")
+            self._pv.close()
+            self._pv.enabled = False
+            return
+        self.n_afisate += 1
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
@@ -282,7 +356,9 @@ def main():
         # deschidem legatura cu FC-ul.
         detector = build_pi_detector(cfg, verbose=True,
                                      ring_frames=a.ring_frames,
-                                     max_rms=a.max_rms)
+                                     max_rms=a.max_rms,
+                                     keep_last_frame=(a.show_window or
+                                                      a.fullscreen))
     except (FileNotFoundError, ValueError) as e:
         # Refuz DELIBERAT (E1.2), nu crash: mesaj scurt, cod de iesire
         # distinct, ca serviciul/preflight-ul sa il poata deosebi de o
@@ -372,11 +448,13 @@ def main():
     pv = preview_mod.onboard_preview('NOVA bord',
                                      enabled=a.show_window or a.fullscreen,
                                      scale=a.preview_scale,
-                                     fullscreen=a.fullscreen)
+                                     fullscreen=a.fullscreen,
+                                     rotate_deg=cfg['camera_rotation_deg'])
     if pv.enabled:
         # Fereastra pe bord nu e interzisa, dar nu are ce cauta intr-o cursa.
         # E pusa aici pentru depanare la sol, cu avertismentul de rigoare.
         print("[bord] ATENTIE: fereastra pornita - vezi avertismentul de mai sus")
+        detector = FereastraBord(detector, pv, cfg['camera_rotation_deg'])
     print("[bord] rulez. Ctrl-C pentru oprire.")
     try:
         run_loop(vehicle, detector, sm, supervisor=sup, on_status=status,

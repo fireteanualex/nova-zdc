@@ -381,6 +381,8 @@ def run_session(args, source_factory, input_fn=input):
 
     detector = ArucoMarkerDetector(
         cal, marker_id=cfg['marker_id'], marker_size_m=cfg['marker_size_m'],
+        # E2 masoara camera REALA, deci in cadrul corpului ei real
+        camera_rotation_deg=cfg['camera_rotation_deg'],
         # ROI OPRIT pentru E2: introduce dependenta de ordinea cadrelor si de
         # istoricul detectiilor, iar o statie trebuie sa fie reproductibila
         # independent de cele dinainte. Calea cu ROI se masoara separat.
