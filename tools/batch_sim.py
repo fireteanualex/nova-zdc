@@ -141,7 +141,7 @@ CSV_HEADER = [
     'eroare_finala_cm', 'deriva_cm', 'alt_scoring_m', 'scoring_px',
     't_descend_s', 't_final_s', 't_touchdown_s', 't_ascent_s', 't_total_s',
     'rata_detectie', 'range_p95', 'angle_p95', 'lat_p99_ms', 'n_detectii',
-    'gnss_conform',
+    'gnss_conform', 'imagini_8_3_3',
 ]
 
 
@@ -331,6 +331,8 @@ def nova_sim_cmd(run_dir, calib, seconds, python=sys.executable,
             '--calib', calib, '--provisional',
             '--seconds', str(seconds)] + extra + [
             '--csv', os.path.join(run_dir, 'frames.csv'),
+            # 8.3.3: imaginile predate juriului, cu evidenta lor.
+            '--scoring-dir', os.path.join(run_dir, 'scoring'),
             # Cadrul in care s-a pierdut detectia, daca se pierde. Fara el,
             # "detection_age: BRAKE" nu spune daca markerul a iesit din
             # cadru sau imaginea nu mai e detectabila.
@@ -478,6 +480,9 @@ def row_from(cond, motiv, raport=None, succes=False):
             'n_detectii': raport.get('n_detectii', ''),
             'gnss_conform': (1 if (raport.get('gnss') or {}).get('ack_ok')
                              else 0) if raport.get('gnss') else '',
+            'imagini_8_3_3': (1 if (raport.get('imagini') or {})
+                              .get('complet_8_3_3') else 0)
+            if raport.get('imagini') else '',
         })
     return r
 

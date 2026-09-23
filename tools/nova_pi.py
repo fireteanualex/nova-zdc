@@ -46,7 +46,8 @@ from nova import serial_guard                             # noqa: E402
 from nova.detector_pi import (CameraCalibration, PiCameraSource,  # noqa: E402
                               ArucoMarkerDetector, PiDetector,
                               build_pi_detector)
-from nova.handover import HandoverGate                     # noqa: E402
+from nova.handover import HandoverGate
+from nova.scoring import ScoringRecorder                     # noqa: E402
 from nova.rc import OverrideMonitor                        # noqa: E402
 from nova.safety import SafetySupervisor                   # noqa: E402
 from nova.state_machine import (LandingStateMachine,       # noqa: E402
@@ -205,6 +206,13 @@ def main():
     p.add_argument('--fast-descent', action='store_true',
                    help='permite viteze peste 0.5 m/s; cere intai '
                         'masuratoarea de distanta de franare (§6/15.2.9)')
+    p.add_argument('--ring-frames', type=int, default=30,
+                   help='cate cadre tine ringul pentru 8.3.3. Pe Pi un cadru '
+                        'e ~3 MB, deci 30 inseamna ~90 MB. 0 = oprit, si '
+                        'atunci NU se produce imaginea predata juriului')
+    p.add_argument('--scoring-dir', default='data/scoring',
+                   help='unde se scriu imaginea de scoring, cea de contact '
+                        'si evidenta lor (6.2.1.30)')
     p.add_argument('--preview-scale', type=float, default=0.5,
                    help='scara ferestrei; detectia ruleaza pe cadrul plin')
     a = p.parse_args()
@@ -250,7 +258,8 @@ def main():
                                 a.preview_scale)
         # Detectorul intai: daca lipseste calibrarea, ne oprim inainte sa
         # deschidem legatura cu FC-ul.
-        detector = build_pi_detector(cfg, verbose=True)
+        detector = build_pi_detector(cfg, verbose=True,
+                                     ring_frames=a.ring_frames)
     except (FileNotFoundError, ValueError) as e:
         # Refuz DELIBERAT (E1.2), nu crash: mesaj scurt, cod de iesire
         # distinct, ca serviciul/preflight-ul sa il poata deosebi de o
@@ -291,7 +300,20 @@ def main():
     # invelis peste detector, nu dintr-o modificare in run_loop: bucla e
     # validata si nu vrem sa o atingem pentru afisare.
     detector = LastDetection(detector)
-    sm = LandingStateMachine(vehicle, SequenceConfig(conv=a.conv), gate=gate)
+
+    # 8.3.3: imaginea predata juriului. Cadrele se scot din ringul
+    # detectorului dupa timestamp-ul CAPTURII purtat de eveniment, nu dupa
+    # cel al deciziei si nici dupa "ultimul cadru de acum" - intre ele sunt
+    # zeci de milisecunde de coborare (§5.55).
+    # LastDetection deleaga prin __getattr__, deci ringul detectorului
+    # se vede direct prin invelis.
+    ring = getattr(detector, 'ring', None)
+    rec = ScoringRecorder(a.scoring_dir, ring, vehicle=vehicle)
+    if ring is None:
+        print("[bord] ATENTIE: detectorul nu are ring buffer; 8.3.3 NU va "
+              "avea imagine. Vezi --ring-frames.")
+    sm = LandingStateMachine(vehicle, SequenceConfig(conv=a.conv), gate=gate,
+                             on_event=rec.on_event)
 
     ecran = race_screen.RaceScreen() if a.race else None
 
@@ -327,6 +349,11 @@ def main():
     finally:
         pv.close()
         detector.stop()
+        r = rec.raport()
+        if r['salvate']:
+            print(f"[bord] 8.3.3: {', '.join(sorted(r['salvate'].values()))}")
+        if r['lipsa']:
+            print(f"[bord] 8.3.3 INCOMPLET: lipsesc {', '.join(r['lipsa'])}")
     return 0
 
 

@@ -141,6 +141,8 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── authority.py          # modulare de autoritate pe praguri (§5.30)
 │   ├── sim_truth.py          # adevarul din Gazebo, pentru validare (I4)
 │   ├── ekf_source.py         # 15.2.5: surse EKF fara GNSS (§5.53)
+│   ├── frame_ring.py         # ultimele N cadre, cu timestamp (8.3.3)
+│   ├── scoring.py            # imaginile predate juriului + evidenta (§5.55)
 │   └── state_machine.py      # mașina de stări a segmentului autonom
 ├── tools/
 │   ├── nova_pi.py            # aplicația de BORD (detector real, fără ocolire E0)
@@ -172,7 +174,7 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │                             #   pi_tooling, make_calib_target,
 │                             #   authority, sim_handover, marker_model,
 │                             #   camera_model, gz_source, sim_loop,
-│                             #   ekf_source
+│                             #   ekf_source, scoring
 ├── sim/
 │   ├── models/aruco_26/      # marker ArUco 26, generat (nu edita de mână)
 │   └── worlds/nova_marker.sdf  # derivată din iris_runway.sdf
@@ -2767,6 +2769,51 @@ sensibil la o variabilă (rotația) pe care nu o controlăm. Asta e logică nou�
 în mașina de stări; element deschis 33.
 
 
+### 5.55 O imagine greșită predată ca dovadă e mai rea decât una lipsă
+
+J2: până acum secvența se încheia „cu succes" și nu preda juriului nimic.
+`FrameRing` exista, dar numai în `tools/nova_service.py`; `nova_pi.py` nu
+avea niciun handler pentru `scoring_capture`.
+
+**Un singur ring, folosit de toți trei.** Mutat în `nova/frame_ring.py`:
+serviciul RACE_MONITOR, aplicația de bord și simularea îl iau de acolo. Două
+copii ar fi divergat la prima modificare — §5.14, de data asta prevenit în
+loc de descoperit.
+
+**Ringul se alimentează ÎNAINTE de detecție.** Cadrul cerut de 8.3.3 e
+tocmai unul pe care markerul **nu** mai încape în cadru (§5.2): la contact,
+camera e la 74.5 mm și vede sub un sfert din marker. Un ring alimentat doar
+la detecție reușită ar pierde exact imaginea cerută. Un test verifică
+ordinea celor două linii în sursă.
+
+**Trei reguli pentru ca rezultatul să fie evidență, nu o poză:**
+
+1. **Cadrul se alege după timestamp-ul CAPTURII**, purtat de eveniment — nu
+   după cel al deciziei și nici după „ultimul cadru de acum". La 0.5 m/s,
+   100 ms de întârziere înseamnă 5 cm de altitudine, adică alt moment al
+   coborârii.
+2. **Se caută înainte, nu în jur.** Un cadru de dinainte arată un moment mai
+   sus. Dacă în fereastra de toleranță (0.2 s, șase cadre la 30 fps) nu
+   există niciunul, nu se salvează nimic.
+3. **Un cadru lipsă nu se înlocuiește.** Lipsa se raportează și se poate
+   cere din nou; o imagine greșită predată ca dovadă nu se mai poate
+   detecta de nimeni, niciodată.
+
+Fiecare imagine primește un `.json` alături, cu `time_boot_ms` de la FC,
+altitudinea și atitudinea. Un `.png` singur nu se poate pune în relație cu
+`.bin` (6.2.1.30), deci nu e evidență.
+
+**Se predau două imagini**, din același ring: cea de la `scoring_capture`
+(mai sus, unde markerul se vede întreg — de aia există starea) și cea de la
+`touchdown` (litera cerinței). Raportul spune `complet_8_3_3` doar dacă
+există amândouă, iar campania scrie asta în CSV.
+
+**Ringul e oprit implicit pe bord.** La 2304×1296 un cadru e ~3 MB, deci 30
+de cadre înseamnă 90 MB din RAM-ul Pi-ului. Se pornește explicit, cu
+`--ring-frames`, de aplicația care chiar predă imaginea — iar dacă lipsește,
+aplicația o **spune** la pornire în loc să tacă și să nu producă nimic.
+
+
 ---
 
 ## 6. Cerințe care constrâng software-ul
@@ -3072,9 +3119,15 @@ imaginii conține pixel de pe suprafața markerului.
 480 mm. Se vede sub un sfert din el — juriul nu poate măsura nimic.
 
 **Soluția (fără modificări mecanice):** stare `SCORING_CAPTURE` care
-declanșează captura full-res pe **dimensiunea markerului în pixeli**
-(>980 px, deci ~0.42–0.45 m), nu pe altitudine. Plus ring buffer cu
-ultimele ~2 s de cadre, salvat la contact.
+declanșează captura pe **dimensiunea markerului în pixeli**, nu pe
+altitudine, plus ring buffer cu ultimele cadre. Se predau **două** imagini,
+amândouă scoase din același ring după timestamp-ul capturii: cea de scoring
+(markerul se vede întreg) și cea de contact (litera cerinței).
+
+Implementat în `nova/scoring.py` + `nova/frame_ring.py` (§5.55). Pragul în
+pixeli nu mai e 980: acela e de neatins peste ~18° de yaw (§5.51), iar
+criteriul potrivit e marja de încadrare, nu o dimensiune fixă — element
+deschis 33.
 
 Deriva laterală între captură și contact: **maxim 1.2 cm pe 13 rulări**.
 
@@ -3096,7 +3149,7 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 5 | ~~Fix urcare la 5 m după touchdown~~ validat în SITL | 15.2.7 |
 | 6 | ~~Safety Supervisor~~ detecție + override + geofence validate în SITL | 15.2.9, 15.3.1, 15.2.4 |
 | 11 | Distanța de frânare la fiecare treaptă din profilul D1 | 15.2.9 + D1 |
-| 12 | Ring buffer + imaginea de touchdown (grupul C) | 8.3.3 — **obligatoriu** |
+| 12 | ~~Ring buffer + imaginea de touchdown~~ implementat (§5.55): două imagini din același ring, alese după timestamp-ul capturii, cu evidență `.json`. Rămâne: verificat pe hardware că 30 de cadre încap în RAM-ul Pi-ului fără să fure din bugetul detecției | 8.3.3 |
 | 13 | `STICK_DEADBAND_PWM` pe emițătorul de concurs | 15.3.1 |
 | 14 | **E2**: validare offline a detectorului real (marker printat, ruletă, 3 condiții de lumină); până atunci `autonomy_enabled=false` | E0, 15.2.3 |
 | 15 | Confirmare pe hardware: moduri de senzor IMX708 (30 fps binned, ~14 fps nativ), durata comutării de mod, controale aplicate, temperatură | §5.15, E2 |

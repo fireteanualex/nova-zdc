@@ -42,6 +42,7 @@ import cv2
 import numpy as np
 
 from .detection import Detection, CameraModel, MARKER_SIZE_M
+from .frame_ring import FrameRing
 
 # --- Camera: rezolutii si controale (E1.1) ---------------------------------
 
@@ -760,7 +761,7 @@ class PiDetector:
     """
 
     def __init__(self, source, detector, threaded=True, max_queue=8,
-                 clock=None, keep_last_frame=False):
+                 clock=None, keep_last_frame=False, ring_frames=0):
         """`clock` e ceasul in care se masoara LATENTA captura->publicare.
 
         Trebuie sa fie ACELASI cu cel in care sursa stampileaza cadrele. Pe
@@ -781,6 +782,10 @@ class PiDetector:
         #: ar fi o copie de 3 MB pe fiecare cadru, din bugetul detectiei.
         self.keep_last_frame = keep_last_frame
         self.last_frame = None
+        #: Ring buffer pentru 8.3.3 (J2). Oprit implicit: pe Pi fiecare cadru
+        #: e ~3 MB, deci 30 de cadre inseamna 90 MB de RAM. Se porneste
+        #: explicit de aplicatia care preda imaginea juriului.
+        self.ring = FrameRing(ring_frames) if ring_frames else None
         self.threaded = threaded
         self.queue = collections.deque(maxlen=max_queue)
         self.lock = threading.Lock()
@@ -819,6 +824,11 @@ class PiDetector:
         gray, t_cap = item
         if self.keep_last_frame:
             self.last_frame = gray
+        if self.ring is not None:
+            # Impins INAINTE de detectie: cadrul trebuie sa fie in ring chiar
+            # daca detectia pe el esueaza. Cadrul de contact e tocmai unul pe
+            # care markerul nu mai incape in cadru (§5.2).
+            self.ring.push(gray, t_cap)
         det = self.det.detect(gray, t_cap)
         t_pub = time.monotonic()
         with self.lock:
@@ -893,9 +903,12 @@ class PiDetector:
 
 # --- Constructor de bord -------------------------------------------------------------
 
-def build_pi_detector(cfg, verbose=True):
+def build_pi_detector(cfg, verbose=True, ring_frames=0):
     """Detectorul complet pentru aplicatia de bord, din config/nova.json.
-    Refuza sa porneasca fara calibrare reala (E1.2)."""
+    Refuza sa porneasca fara calibrare reala (E1.2).
+
+    `ring_frames` > 0 porneste ringul cerut de 8.3.3. Oprit implicit: pe Pi
+    un cadru e ~3 MB."""
     from . import config as nova_config
     cal_path = nova_config.resolve(cfg, 'camera_calibration')
     calib = CameraCalibration.load(cal_path, require_real=True)
@@ -911,4 +924,4 @@ def build_pi_detector(cfg, verbose=True):
             f"calibrarea e pentru {calib.width}x{calib.height}, camera da "
             f"{source.size[0]}x{source.size[1]}. Recalibreaza la rezolutia "
             f"de tracking.")
-    return PiDetector(source, aruco, threaded=True).start()
+    return PiDetector(source, aruco, ring_frames=ring_frames, threaded=True).start()

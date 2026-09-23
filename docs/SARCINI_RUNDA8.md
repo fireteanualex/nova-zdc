@@ -75,7 +75,17 @@ primul.
 
 ---
 
-## J2 — 8.3.3: imaginea de touchdown nu se produce
+## J2 ✔ REZOLVAT — 8.3.3: imaginea de touchdown
+
+**Rezultat:** `nova/frame_ring.py` (ring unic, folosit de serviciu, bord și
+sim) + `nova/scoring.py` (alege cadrul după timestamp-ul capturii, scrie
+`.png` + `.json` cu `time_boot_ms`). Se predau două imagini: scoring și
+contact. Campania raportează `imagini_8_3_3` în CSV. Detalii în §5.55.
+
+Rămâne de verificat pe hardware că ringul încape în RAM-ul Pi-ului fără să
+fure din bugetul detecției.
+
+Contextul inițial, păstrat pentru trasabilitate:
 
 `FrameRing` există, dar numai în `tools/nova_service.py`. `tools/nova_pi.py`
 nu are niciun handler pentru `scoring_capture`, deci secvența se încheie „cu

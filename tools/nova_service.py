@@ -63,7 +63,7 @@ LOG_BACKUPS = 5
 # DECIZIE DESCHISA: 8.3.3 cere cadrul de la CONTACT, iar §4 arata ca deriva
 # intre captura si contact e sub 1.2 cm, deci 1 s de istoric e suficient cu
 # marja. Grupul C poate cere mai mult; se schimba din --buffer-frames.
-RING_FRAMES = 30
+from nova.frame_ring import RING_FRAMES, FrameRing  # noqa: E402,F401
 
 #: Asteptarea perifericelor la boot. Serviciul poate porni inaintea lor;
 #: systemd le-ar reporni oricum, dar un restart in bucla polueaza logul.
@@ -286,56 +286,9 @@ class ReadOnlyVehicle:
         return scrie
 
 
-# --- ring buffer ------------------------------------------------------------
-
-class FrameRing:
-    """Ultimele N cadre, cu timestamp-ul de captura (pregatire pentru 8.3.3).
-
-    Pastreaza referinte, nu copii: cadrele vin din picamera2 si nu sunt
-    refolosite dupa `release()`-ul cererii, deci pot fi tinute ca atare.
-    `nbytes` e util in log ca sa se vada cat RAM consuma efectiv, nu cat am
-    estimat noi."""
-
-    def __init__(self, maxlen=RING_FRAMES):
-        self.buf = collections.deque(maxlen=maxlen)
-
-    def push(self, frame, t):
-        self.buf.append((t, frame))
-
-    def __len__(self):
-        return len(self.buf)
-
-    def nbytes(self):
-        return sum(f.nbytes for _, f in self.buf)
-
-    def span_s(self):
-        if len(self.buf) < 2:
-            return 0.0
-        return self.buf[-1][0] - self.buf[0][0]
-
-    def dump(self, out_dir, prefix='ring'):
-        """Scrie cadrele pe disc. Intoarce lista de fisiere.
-
-        Numele contine timestamp-ul de CAPTURA in milisecunde, nu un index:
-        asa cadrul se poate alinia cu logul supervizorului si cu .bin, care e
-        tot rostul lui 8.3.3 / 6.2.1.30. Un `0001.png` nu se poate pune in
-        relatie cu nimic."""
-        import cv2
-        os.makedirs(out_dir, exist_ok=True)
-        scrise = []
-        for t, frame in list(self.buf):
-            nume = f"{prefix}_{int(t * 1000):015d}.png"
-            cale = os.path.join(out_dir, nume)
-            if cv2.imwrite(cale, frame):
-                scrise.append(cale)
-        return scrise
-
-    def since(self, t):
-        """Cadrele capturate dupa `t`, cronologic. Grupul C scoate de aici
-        cadrul de touchdown, dupa timestamp-ul capturii - nu dupa cel al
-        deciziei (vezi §3 din CLAUDE.md)."""
-        return [(ts, f) for ts, f in self.buf if ts >= t]
-
+# --- ring buffer ---------------------------------------------------------
+# Mutat in `nova/frame_ring.py` la J2: acelasi ring e folosit si de
+# aplicatia de bord (8.3.3), iar doua copii ar fi divergat.
 
 class RingTapSource:
     """Deriveaza cadrele intr-un FrameRing, fara sa schimbe sursa.

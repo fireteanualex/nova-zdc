@@ -484,6 +484,7 @@ def _app_gol():
     app.alt_scoring_m = None
     app.scoring_alt_m = None
     app.scoring_px = None
+    app.rec = None            # 8.3.3: fara recorder in testul de urmarire
     app.pos_scoring = None
     app.pos_touchdown = None
     app.eroare_finala_m = None

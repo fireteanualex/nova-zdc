@@ -61,6 +61,7 @@ from nova.ekf_source import EkfSourceManager                # noqa: E402
 from nova.handover import HandoverGate                      # noqa: E402
 from nova.rc import OverrideMonitor                         # noqa: E402
 from nova.safety import LINK_MAX_AGE_S, SafetySupervisor    # noqa: E402
+from nova.scoring import ScoringRecorder                    # noqa: E402
 from nova.state_machine import (LandingStateMachine,        # noqa: E402
                                 SequenceConfig)
 from nova.vehicle import Vehicle                            # noqa: E402
@@ -168,8 +169,8 @@ class SimApp:
         # raporteaza uptime-ul masinii ca latenta (§5.43).
         self.detector = PiDetector(self.source, aruco, threaded=True,
                                    clock=self._ceas_sursa,
-                                   keep_last_frame=bool(args.dump_dir)
-                                   ).start()
+                                   keep_last_frame=bool(args.dump_dir),
+                                   ring_frames=args.ring_frames).start()
 
         self.truth = None
         if not args.no_truth:
@@ -201,6 +202,12 @@ class SimApp:
             print(f"[sim] corectii laterale doar peste "
                   f"{args.no_lateral_alt:.2f} m "
                   f"(implicit {SequenceConfig().no_lateral_alt_m:.2f} m)")
+        # 8.3.3: acelasi ScoringRecorder ca pe bord, ca imaginea predata
+        # juriului sa fie produsa de acelasi cod in sim si in zbor (§8).
+        self.rec = None
+        if args.scoring_dir:
+            self.rec = ScoringRecorder(args.scoring_dir, self.detector.ring,
+                                       vehicle=self.v)
         self.sm = LandingStateMachine(self.v, seq, gate=self.gate,
                                       on_event=self._on_event)
 
@@ -236,6 +243,8 @@ class SimApp:
         de pragul in pixeli - deci instrumentarea legata de stare raporta
         `None` desi captura se putea produce. Iar in campanie asta a aratat
         ca 100% succes pe rulari care NU indeplineau 8.3.3 (§5.51)."""
+        if self.rec is not None:
+            self.rec.on_event(nume, info)
         if nume != 'scoring_capture':
             return
         self.scoring_alt_m = info.get('alt')
@@ -492,6 +501,7 @@ class SimApp:
             'n_detectii': s.get('n', 0),
             'faze_masurate': list(FAZE_MASURATE),
             'gnss': (self.ekf.raport() if self.ekf is not None else None),
+            'imagini': (self.rec.raport() if self.rec is not None else None),
             'n_cadre': self._prev_frames,
             'range_p50': s.get('range_p50'), 'range_p95': s.get('range_p95'),
             'angle_p50': s.get('angle_p50'), 'angle_p95': s.get('angle_p95'),
@@ -547,6 +557,13 @@ def print_report(r, praguri=(0.03, 0.5, 0.95)):
         print(f"    {'latenta cadru->LT':<19}: p50 {r['lat_p50_ms']:.1f} ms  "
               f"p99 {r['lat_p99_ms']:.1f} ms  (timp de simulare)")
     print(f"    stare finala       : {r['stare_finala']}")
+    im = r.get('imagini')
+    if im is not None:
+        if im['complet_8_3_3']:
+            print(f"    {'8.3.3 imagini':<19}: {', '.join(sorted(im['salvate'].values()))}")
+        else:
+            print(f"    {'8.3.3 imagini':<19}: INCOMPLET - lipsesc "
+                  f"{', '.join(im['lipsa']) or '(niciun eveniment)'}")
     g = r.get('gnss')
     if g is not None:
         semn = 'CONFORM' if g['ack_ok'] and g['stare'] in ('ACTIV',
@@ -615,6 +632,10 @@ def main(argv=None):
     p.add_argument('--stop-after-handback', type=float, default=5.0,
                    help='iesi la N secunde de simulare dupa HANDBACK. 0 = '
                         'ruleaza pana la --seconds')
+    p.add_argument('--ring-frames', type=int, default=60,
+                   help='cate cadre tine ringul pentru 8.3.3')
+    p.add_argument('--scoring-dir', default=None,
+                   help='unde se scriu imaginea de scoring si cea de contact')
     p.add_argument('--dump-dir', default=None,
                    help='salveaza cadrul in care s-a pierdut detectia')
     p.add_argument('--csv', default=None)
