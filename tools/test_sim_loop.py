@@ -721,6 +721,53 @@ def test_pragul_de_coborare_verticala_e_reglabil_fara_cod():
     return "reglabile din SequenceConfig si din linia de comanda"
 
 
+def test_bugetul_camerei_nu_e_pragul_de_integritate():
+    """Elementul 30: doua praguri distincte imparteau un numar.
+
+    `safety.MAX_TILT_DEG` e plafonul de integritate al vehiculului - o
+    constanta. Limita camerei e o FUNCTIE de altitudine si de eroarea
+    laterala, si e sub 30 de grade in tot regimul care decide aterizarea.
+    Deci monitorul de inclinare nu poate proteja detectia: pana la 30 de
+    grade, markerul a iesit demult din cadru.
+
+    Cifrele verificate aici sunt cele MASURATE, nu alese: 14.0 grade la
+    7.17 m cu 2.95 m lateral (§5.48, unde tranzitoriul a atins 19.3 si
+    markerul a iesit cu 72.7 cm) si 19.5 grade la 1 m cu 10 cm."""
+    from nova.detection import CameraModel
+    from nova import safety
+
+    cam = CameraModel()
+    assert abs(cam.tilt_budget_deg(7.17, 2.95) - 14.0) < 0.2, (
+        cam.tilt_budget_deg(7.17, 2.95))
+    assert abs(cam.tilt_budget_deg(1.00, 0.10) - 19.5) < 0.2, (
+        cam.tilt_budget_deg(1.00, 0.10))
+
+    # scade cu eroarea laterala: te poti inclina mai putin tocmai cand ai
+    # mai mult de corectat
+    la_1m = [cam.tilt_budget_deg(1.0, l) for l in (0.0, 0.1, 0.2, 0.3)]
+    assert la_1m == sorted(la_1m, reverse=True), la_1m
+
+    # si e sub pragul de integritate in tot regimul de sub ~2 m
+    for h in (0.5, 1.0, 2.0):
+        b = cam.tilt_budget_deg(h, 0.10)
+        assert b < safety.MAX_TILT_DEG, (
+            f"la {h} m bugetul camerei ({b:.1f}) ar trebui sa fie sub "
+            f"pragul de integritate ({safety.MAX_TILT_DEG})")
+
+    # sub marker nu mai exista buget deloc: nu se intoarce un numar negativ
+    assert cam.tilt_budget_deg(0.2, 0.0) == 0.0
+    assert cam.tilt_budget_deg(0.0, 0.0) == 0.0
+    assert cam.tilt_budget_deg(None, 0.0) == 0.0
+
+    # campania il masoara, ca relatia sa intre in Safety Case
+    src = open(os.path.join(REPO, 'tools', 'nova_sim.py')).read()
+    assert 'tilt_budget_deg' in src and 'tilt_margin_deg' in src, (
+        "bugetul de inclinare nu ajunge in frames.csv, deci Safety Case-ul "
+        "ramane cu o singura cifra in loc de relatie (§6/15.2.9)")
+    return (f"buget 14.0 deg la 7.17 m / 2.95 m lateral; 19.5 la 1 m / "
+            f"10 cm; integritate {safety.MAX_TILT_DEG:.0f} constant")
+
+
 def test_campania_masoara_ce_zboara():
     """Campania nu are voie sa porneasca cu alte praguri decat vehiculul.
 
@@ -1594,6 +1641,8 @@ TESTS = [
      test_niciun_pas_din_campanie_nu_asteapta_o_tasta),
     ('copiii nu mostenesc tastatura si nu tamponeaza',
      test_copiii_nu_mostenesc_tastatura_si_nu_tamponeaza),
+    ('bugetul camerei nu e pragul de integritate',
+     test_bugetul_camerei_nu_e_pragul_de_integritate),
     ('campania masoara ce zboara', test_campania_masoara_ce_zboara),
     ('incadrarea nu se subtiaza cu rotatia',
      test_incadrarea_nu_se_subtiaza_cu_rotatia),

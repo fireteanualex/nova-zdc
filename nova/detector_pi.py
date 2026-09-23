@@ -838,6 +838,17 @@ class PiDetector:
         `_note_frames` pe o clasa care nu e cea din productie (§5.40)."""
         return self.det.n_frames
 
+    @property
+    def cam(self):
+        """Modelul de camera al detectorului interior.
+
+        Delegat din acelasi motiv ca `n_frames`: cine are PiDetector nu
+        trebuie sa stie ca inauntru e un ArucoMarkerDetector. Un
+        `detector.det.cam` scris prin lantul de atribute se rupe tacut la
+        prima schimbare de structura - exact cum s-a rupt numararea
+        cadrelor."""
+        return self.det.cam
+
     # -- ciclu de viata ----------------------------------------------------
     def start(self):
         if self.threaded and self._thread is None:

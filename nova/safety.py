@@ -51,6 +51,32 @@ MAX_DESCENT_RATE_MS = 2.0
 DESCENT_RATE_HOLD_S = 0.5
 
 #: Inclinare peste care vehiculul nu mai e intr-o coborare controlata.
+#:
+#: **E plafonul de INTEGRITATE al vehiculului, nu limita camerei.** Cele doua
+#: au impartit acelasi numar pana acum, si nu sunt acelasi lucru:
+#:
+#:   integritate  30 grade, constanta. Peste, coborarea nu mai e controlata,
+#:                indiferent ce vede camera.
+#:   camera       `CameraModel.tilt_budget_deg(alt, lateral)`, functie de
+#:                altitudine SI de eroarea laterala. Masurat: 14.0 grade la
+#:                7.17 m cu 2.95 m lateral (§5.48), 19.5 grade la 1 m cu
+#:                10 cm - adica sub 30 in tot regimul de sub ~2 m.
+#:
+#: Deci monitorul asta NU poate proteja detectia: pana ajunge la 30 de grade,
+#: markerul a iesit demult din cadru si a declansat monitorul de varsta a
+#: detectiei. Nu e o scapare de reglat coborand pragul la 20 - un BRAKE pe
+#: bugetul camerei ar transforma un tranzitoriu recuperabil in incercare
+#: anulata, si ar lovi tocmai cand controlerul face ce trebuie: se inclina ca
+#: sa corecteze lateral.
+#:
+#: Bugetul camerei se apara in alta parte, preventiv:
+#:   - `WP_ACC = 1.5` plafoneaza inclinarea de regim la 8.7 grade (§5.48)
+#:   - `SequenceConfig.final_fill` scoate coborarea din fazele supravegheate
+#:     inainte ca bugetul sa se prabuseasca sub 1 m
+#:   - poarta ar trebui sa refuze geometria nerecuperabila (elementul 28/J4)
+#:
+#: Masurat si raportat ca marja in campanie, ca relatia sa intre in Safety
+#: Case - nu o singura cifra (§6/15.2.9). Elementul deschis 30.
 MAX_TILT_DEG = 30.0
 TILT_HOLD_S = 0.3
 

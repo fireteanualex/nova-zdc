@@ -135,6 +135,41 @@ class CameraModel:
                    marker_px * factor / self.height_px)
 
 
+    def tilt_budget_deg(self, alt_m, lateral_m=0.0):
+        """Cat se poate inclina vehiculul fara ca markerul sa iasa din cadru.
+
+        §5.48, scris ca inegalitate:
+
+            tan(inclinare) <= tan(jumatate_de_cadru) - (lateral + 0.24) / h
+
+        Termenul din dreapta e perfid: vehiculul se inclina TOCMAI ca sa
+        corecteze lateral, deci exact cand eroarea e mare, cadrul se muta in
+        directia gresita. Cu cat eroarea laterala e mai mare, cu atat ai voie
+        sa te inclini mai putin.
+
+        Jumatatea de cadru se ia din PIXELI (`height_px`, axa scurta), nu din
+        VFOV-ul de fisa tehnica: cele doua difera cu ~1.3 grade (§2).
+
+        Masurat, si reprodus de functia asta:
+          h 7.17 m, lateral 2.95 m -> 14.0 grade, iar tranzitoriul a atins
+          19.3: markerul a iesit din cadru cu 72.7 cm (§5.48)
+          h 1.00 m, lateral 0.10 m -> 19.5 grade, adica sub pragul de
+          integritate de 30 al supervizorului (elementul deschis 30)
+
+        **Nu e acelasi lucru cu `safety.MAX_TILT_DEG`.** Acela e plafonul de
+        integritate al vehiculului, o constanta. Asta e limita camerei, si e
+        functie de altitudine si de eroarea laterala. Doua praguri distincte
+        care pana acum imparteau un numar."""
+        if alt_m is None or alt_m <= 0.0:
+            return 0.0
+        jumatate = math.atan2(self.height_px / 2.0, self.focal_px)
+        t = math.tan(jumatate) - \
+            (abs(lateral_m) + self.marker_size_m / 2.0) / alt_m
+        if t <= 0.0:
+            return 0.0
+        return math.degrees(math.atan(t))
+
+
 def fill_from_corners(corners, frame_w_px, frame_h_px):
     """Cat din cadru ocupa cutia de incadrare a colturilor detectate.
 

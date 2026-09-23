@@ -120,6 +120,34 @@ AUX_HIGH_PWM = 1700
 ACQUIRE_TIMEOUT_S = 3.0
 ACQUIRE_RETRY_S = 0.2
 
+#: Fazele in care detectiile ajung pe MAVLink (15.2.3).
+#:
+#: Lista e POZITIVA, nu o negatie (§5.25): o faza noua nu emite pana cand
+#: cineva o adauga aici deliberat. Cu o negatie, ar emite din prima zi.
+#:
+#: Pana la J5, `on_detection` trimitea `LANDING_TARGET` si `DISTANCE_SENSOR`
+#: NECONDITIONAT, in toate starile - inclusiv `IDLE`, adica in tot zborul
+#: pilotului. Verificat direct: 5 detectii in IDLE -> 5 LT si 5 DS.
+#:
+#: `LANDING_TARGET` era inert acolo (PLND_ENABLED e 0 pana la handover,
+#: §5.8). `DISTANCE_SENSOR` nu: FC-ul avea telemetru in tot zborul, iar
+#: §5.9 arata masurat ca o citire de telemetru schimba
+#: `get_alt_above_ground_m()`, deci incetinirea de dinainte de contact - si
+#: ca poate face `NAV_TAKEOFF` sa fie respins prin gardul "can't takeoff
+#: downwards" (§5.7). Cu `WP_RFND_USE = 0` al doilea efect nu se manifesta,
+#: dar primul e independent de orice setare de navigatie.
+#:
+#: Mai important decat efectul: randul din Compliance Matrix pentru 15.2.3 -
+#: "companion-ul nu comanda nimic in afara segmentului autonom" - nu era
+#: sustinut de cod. Acum e.
+#:
+#: De ce ACQUIRE e inauntru: PLND e deja armat, iar estimatorul primeste
+#: masuratori inainte ca FC-ul sa confirme LAND. De ce TOUCHDOWN_CONFIRM si
+#: ASCENT nu: vehiculul e pe sol si apoi urca, iar acolo un telemetru care
+#: raporteaza sub tinta de decolare e exact cazul masurat in §5.9.
+EMITTING_PHASES = ('ACQUIRE', 'DESCEND_TRACK', 'SCORING_CAPTURE',
+                   'FINAL_DESCENT')
+
 # --- A1: precision landing se armeaza doar pentru segmentul autonom -------
 # PLND_ENABLED e consultat la fiecare ciclu de Mode::land_run_normal_or_precland(),
 # iar AC_PrecLand::init() creeaza backend-ul dupa PLND_TYPE, nu dupa
@@ -313,9 +341,12 @@ class LandingStateMachine:
                 self.set_state(State.SCORING_CAPTURE,
                                f"{self.v.alt:.3f} m, {det.marker_px:.0f} px")
 
-        # Sub NO_LATERAL_ALT_M nu se mai fac corectii laterale; in practica
-        # markerul nici nu mai incape in cadru sub 0.38 m (5.2), deci
-        # detectorul nu mai publica nimic si nu e nevoie de filtru aici.
+        # Detectia se inregistreaza INTOTDEAUNA (mai sus): poarta si
+        # monitorul de varsta a detectiei depind de ea in orice stare. Ce se
+        # filtreaza e EMISIA pe MAVLink, adica singurul lucru care ajunge la
+        # FC in afara segmentului autonom.
+        if self.state not in EMITTING_PHASES:
+            return
         angle_x, angle_y = self._apply_conv(det.angle_x, det.angle_y)
         self.v.send_landing_target(angle_x, angle_y, det.distance_m)
         if self.cfg.send_range:

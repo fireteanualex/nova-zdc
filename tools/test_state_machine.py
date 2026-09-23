@@ -546,9 +546,68 @@ def test_autoritate_restaurata_dupa_override_in_cablajul_real():
             "original, ANGLE_MAX neatins")
 
 
+def test_nicio_comanda_in_afara_segmentului_autonom():
+    """15.2.3: in afara segmentului autonom companion-ul nu comanda nimic.
+
+    Pana la J5 nu era asa. `on_detection` trimitea `LANDING_TARGET` si
+    `DISTANCE_SENSOR` neconditionat, in TOATE starile - deci si in `IDLE`,
+    adica in tot zborul pilotului. `LANDING_TARGET` era inert (PLND e 0),
+    dar `DISTANCE_SENSOR` nu: FC-ul avea telemetru permanent, iar §5.9
+    masoara ce schimba asta.
+
+    Cazul negativ conteaza la fel de mult ca cel pozitiv: daca filtrul ar
+    taia si fazele de coborare, secventa nu ar mai functiona deloc si
+    testul asta ar trebui sa spuna de ce (§5.11)."""
+    from nova.state_machine import EMITTING_PHASES
+    import fake_detector as _fd
+
+    v, det, sm, sup, events, args = build_app(alt=6.0)
+    sm.state = State.IDLE
+    v.n_lt = v.n_ds = 0
+    now = 1000.0
+    for i in range(5):
+        now += 0.05
+        for d in det.poll(now):
+            sm.on_detection(d, now)
+    assert v.n_lt == 0 and v.n_ds == 0, (
+        f"in IDLE au plecat {v.n_lt} LANDING_TARGET si {v.n_ds} "
+        f"DISTANCE_SENSOR catre FC")
+
+    # ... si in coborare pleaca, altfel filtrul ar rupe secventa
+    sm.state = State.DESCEND_TRACK
+    v.n_lt = v.n_ds = 0
+    for i in range(5):
+        now += 0.05
+        for d in det.poll(now):
+            sm.on_detection(d, now)
+    assert v.n_lt > 0 and v.n_ds > 0, (
+        "filtrul taie si fazele de coborare: secventa nu ar mai functiona")
+
+    # lista e POZITIVA si nu contine fazele de pe sol / de urcare
+    for faza in (State.IDLE, State.HANDOVER_CHECK, State.REJECT,
+                 State.TOUCHDOWN_CONFIRM, State.ASCENT, State.HANDBACK,
+                 State.ABORT):
+        assert faza not in EMITTING_PHASES, faza
+
+    # detectia se INREGISTREAZA totusi in orice stare: poarta si monitorul
+    # de varsta a detectiei depind de ea
+    sm.state = State.IDLE
+    sm.last_det = None
+    now += 0.05
+    ds = det.poll(now)
+    assert ds, "harness-ul nu a produs nicio detectie"
+    sm.on_detection(ds[0], now)
+    assert sm.last_det is not None, (
+        "filtrul a oprit si inregistrarea detectiei, nu doar emisia - "
+        "poarta si monitorul de varsta ar ramane oarbe")
+    return f"IDLE: 0 mesaje; DESCEND_TRACK: emite; {len(EMITTING_PHASES)} faze"
+
+
 TESTS = [
     ('secventa completa ajunge la HANDBACK', test_secventa_completa),
     ('SCORING_CAPTURE exact o data', test_scoring_capture_exact_o_data),
+    ('nicio comanda in afara segmentului autonom',
+     test_nicio_comanda_in_afara_segmentului_autonom),
     ('fara captura in afara coborarii', test_fara_captura_in_afara_coborarii),
     ('fara telemetru de rezerva', test_fara_telemetru_de_rezerva),
     ('PLND armat si stins', test_precland_armat_si_stins),

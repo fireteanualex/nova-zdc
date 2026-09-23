@@ -84,7 +84,7 @@ CSV_HEADER = [
     'det_range_m', 'truth_range_m', 'range_rel',
     'angle_deg', 'angle_x_deg', 'angle_y_deg',
     'truth_north_off_m', 'truth_east_off_m', 'yaw_deg', 'tilt_deg',
-    'lat_ms',
+    'tilt_budget_deg', 'tilt_margin_deg', 'lat_ms',
 ]
 
 
@@ -481,6 +481,20 @@ class SimApp:
                 'yaw_deg': round(err['yaw_deg'], 2),
                 'tilt_deg': round(err['tilt_deg'], 2),
             })
+            # Bugetul de inclinare al CAMEREI la altitudinea si eroarea
+            # laterala de acum, si cat a mai ramas din el (§5.48). Nu e
+            # pragul de integritate din supervizor (30 grade, constant) -
+            # asta scade cu altitudinea si cu eroarea laterala, si e cel
+            # care decide daca markerul ramane in cadru.
+            #
+            # Se masoara, nu se actioneaza pe el: un BRAKE aici ar anula
+            # incercarea tocmai cand controlerul corecteaza. Ce intra in
+            # Safety Case e RELATIA, nu o singura cifra (§6/15.2.9).
+            lateral = math.hypot(err['truth_north_off_m'],
+                                 err['truth_east_off_m'])
+            buget = self.detector.cam.tilt_budget_deg(alt, lateral)
+            rand['tilt_budget_deg'] = round(buget, 2)
+            rand['tilt_margin_deg'] = round(buget - err['tilt_deg'], 2)
         self.rows.append(rand)
         del n_lt
 
