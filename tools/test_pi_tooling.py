@@ -1414,6 +1414,48 @@ def test_bringup_unitatea_de_boot():
     return "unitate de utilizator, StartLimit in [Unit], SIGINT la oprire"
 
 
+def test_uneltele_din_ghiduri_se_pot_rula_direct():
+    """Ghidurile spun `tools/run_e2.py ...`, nu `python3 tools/run_e2.py`.
+
+    Pe vehicul: "Nu am run_e2.py". Fisierul exista, dar era 100644 in git -
+    `tools/run_e2.py` dadea Permission denied, iar completarea cu Tab nu il
+    oferea, deci parea ca lipseste. La fel pentru preflight_check,
+    calibrate_camera, nova_pi si alte 30. check_params mergea doar pentru ca
+    din intamplare era executabil.
+
+    Regula: orice unealta urmarita in git, cu shebang Python si `__main__`,
+    are bitul de executie IN GIT - acolo il ia rsync-ul din deploy.sh."""
+    import subprocess
+    fara = []
+    for f in sorted(os.listdir(os.path.join(REPO, 'tools'))):
+        if not f.endswith('.py'):
+            continue
+        cale = os.path.join(REPO, 'tools', f)
+        src = open(cale).read()
+        if not src.startswith('#!') or 'python' not in src.splitlines()[0]:
+            continue
+        if "__name__ == '__main__'" not in src and \
+                '__name__ == "__main__"' not in src:
+            continue
+        mod = subprocess.run(['git', 'ls-files', '--stage', f'tools/{f}'],
+                             cwd=REPO, capture_output=True, text=True).stdout
+        if not mod:
+            continue                                  # neurmarit
+        if not mod.startswith('100755'):
+            fara.append(f)
+    assert not fara, (
+        f"unelte fara bit de executie in git (ghidurile le ruleaza direct): "
+        f"{', '.join(fara)}. Repara: git update-index --chmod=+x tools/<f>")
+
+    # si ce ruleaza ghidul de test, concret, e printre ele
+    ghid = open(os.path.join(REPO, 'docs', 'ZBOR_TEST_ATERIZARE.md')).read()
+    import re
+    for unealta in set(re.findall(r"(?m)^\s*(tools/[a-z_0-9]+\.py)", ghid)):
+        assert os.access(os.path.join(REPO, unealta), os.X_OK), (
+            f"ghidul ruleaza {unealta} direct, dar nu e executabil")
+    return "toate uneltele-punct-de-intrare sunt 100755 in git"
+
+
 def test_install_refuza_sudo():
     """Rulat cu sudo pe vehicul, pi/install.sh a pus unitatea in configul lui
     ROOT, cu ExecStart spre /root/nova-zdc, iar `systemctl --user` nu a
@@ -1553,6 +1595,8 @@ TESTS = [
     ('calibrarea din repo e reala si pentru rezolutia de lucru',
      test_calibrarea_din_repo_e_reala_si_pentru_rezolutia_de_lucru),
     ('bringup: unitatea de boot', test_bringup_unitatea_de_boot),
+    ('uneltele din ghiduri se pot rula direct',
+     test_uneltele_din_ghiduri_se_pot_rula_direct),
     ('install refuza sudo', test_install_refuza_sudo),
     ('bringup: nu e un al doilea cablaj',
      test_bringup_nu_e_un_al_doilea_cablaj),

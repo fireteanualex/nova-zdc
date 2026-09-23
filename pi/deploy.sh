@@ -89,7 +89,7 @@ fi
 # Verificam, in loc sa presupunem: un script fara +x da "Permission denied"
 # la pista, si arata ca o problema de cale.
 say "verific drepturile de executie"
-ssh "$HOST" "cd ~/$DEST && for f in pi/*.sh tools/*.sh; do \
+ssh "$HOST" "cd ~/$DEST && for f in pi/*.sh tools/*.sh tools/*.py; do \
   [ -x \"\$f\" ] || { echo \"  chmod +x \$f\"; chmod +x \"\$f\"; }; done; echo '  ok'"
 
 if [[ $SETUP -eq 1 ]]; then
