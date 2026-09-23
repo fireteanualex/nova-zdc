@@ -213,6 +213,9 @@ def main():
     p.add_argument('--scoring-dir', default='data/scoring',
                    help='unde se scriu imaginea de scoring, cea de contact '
                         'si evidenta lor (6.2.1.30)')
+    p.add_argument('--fullscreen', action='store_true',
+                   help='fereastra pe tot ecranul (implica --show-window). '
+                        'Pentru bring-up la sol; iesire pe q sau Escape')
     p.add_argument('--preview-scale', type=float, default=0.5,
                    help='scara ferestrei; detectia ruleaza pe cadrul plin')
     a = p.parse_args()
@@ -334,8 +337,10 @@ def main():
                                     last_det=detector.last_detection, now=now)
         ecran.draw(snap)
 
-    pv = preview_mod.onboard_preview('NOVA bord', enabled=a.show_window,
-                                     scale=a.preview_scale)
+    pv = preview_mod.onboard_preview('NOVA bord',
+                                     enabled=a.show_window or a.fullscreen,
+                                     scale=a.preview_scale,
+                                     fullscreen=a.fullscreen)
     if pv.enabled:
         # Fereastra pe bord nu e interzisa, dar nu are ce cauta intr-o cursa.
         # E pusa aici pentru depanare la sol, cu avertismentul de rigoare.

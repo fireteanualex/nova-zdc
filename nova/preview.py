@@ -141,14 +141,19 @@ def bench_preview(title, enabled=True, scale=1.0, logger=None):
                    logger=logger)
 
 
-def onboard_preview(title, enabled=False, scale=0.5, logger=None):
+def onboard_preview(title, enabled=False, scale=0.5, logger=None,
+                    fullscreen=False):
     """Contextul 3: pe vehicul. Implicit OPRITA; la aprindere, avertizeaza.
 
     Avertismentul nu e politete. Pe un Pi fara vc4-kms-v3d, `imshow` merge
     prin software rendering si ia CPU din exact bugetul care trebuie sa
     tina 30 fps de detectie. Cine aprinde fereastra intr-o cursa trebuie sa
-    stie ce plateste."""
-    pv = Preview(title, enabled=enabled, fullscreen=False, scale=scale,
+    stie ce plateste.
+
+    `fullscreen` e pentru bring-up la sol, unde monitorul e singurul mod de
+    a vedea ce vede camera si nimeni nu cronometreaza. Ramane fals implicit:
+    pe un ecran de 1080p, fullscreen inseamna si mai mult CPU de scalare."""
+    pv = Preview(title, enabled=enabled, fullscreen=fullscreen, scale=scale,
                  logger=logger)
     if pv.enabled:
         pv.log("[preview] ATENTIE: fereastra PORNITA pe bord. Fara "

@@ -108,9 +108,8 @@ FS_THR_ENABLE,1
 #    Iyy (pitch) > Ixx (roll) cu 8% conform tensorului din Onshape (§7), deci
 #    castigurile NU se copiaza de pe o axa pe alta. Reglaj dupa asamblare.
 #
-# 5. SERIALn_PROTOCOL / SERIALn_BAUD pentru legatura cu Pi-ul
-#    Depinde de portul fizic folosit pe X7+. MAVLink2, 921600, ca in
-#    tools/nova_pi.py. De adaugat cand se stie portul.
+# 5. ~~SERIALn pentru legatura cu Pi-ul~~ - adaugat mai jos, pentru
+#    Pixhawk 6C / TELEM2.
 
 # WP_ACC 1.5 - acelasi motiv ca in nova_sitl.parm si aceeasi derivare: e o
 # constrangere a CAMEREI (VFOV si dimensiunea markerului), nu a simularii.
@@ -146,3 +145,39 @@ EK3_SRC2_VELXY,0
 EK3_SRC2_POSZ,1
 EK3_SRC2_VELZ,0
 EK3_SRC2_YAW,1
+
+# ---------------------------------------------------------------------------
+# Legatura cu Raspberry Pi 4, pe TELEM2 (Pixhawk 6C).
+#
+# CARE SERIAL E TELEM2, verificat in sursa si nu din memorie (§5.10):
+#
+#   libraries/AP_HAL_ChibiOS/hwdef/Pixhawk6C/hwdef.dat:36
+#     SERIAL_ORDER OTG1 UART7 UART5 USART1 UART8 USART2 USART3 OTG2
+#                    0     1     2      3     4      5      6     7
+#   iar in acelasi fisier, "# telem2" e deasupra lui UART5.
+#
+#   Deci TELEM1 = SERIAL1, TELEM2 = **SERIAL2**. Nu presupune ca numerele
+#   de pe carcasa se potrivesc cu indicii de parametru - pe alte placi nu
+#   se potrivesc.
+#
+# Cablaj, 3 fire, NU 5:
+#   Pixhawk TELEM2 pin 2 (TX)  ->  Pi GPIO 15 / pin 10 (RXD)
+#   Pixhawk TELEM2 pin 3 (RX)  ->  Pi GPIO 14 / pin 8  (TXD)
+#   Pixhawk TELEM2 pin 6 (GND) ->  Pi GND    / pin 6
+#
+#   TX si RX se INCRUCISEAZA. Pinul de 5 V al lui TELEM2 NU se leaga la Pi:
+#   Pi-ul are alimentarea lui, iar doua surse legate impreuna se bat.
+#   Nivelurile sunt 3.3 V pe ambele capete, deci nu trebuie convertor.
+SERIAL2_PROTOCOL,2
+SERIAL2_BAUD,921
+
+# Controlul de flux: implicit 2 = AUTO pe placile ChibiOS
+# (AP_BoardConfig.cpp:70, BOARD_SER2_RTSCTS_DEFAULT 2). Auto-detectia
+# testeaza daca bufferul de iesire se umple la pornire - cu RTS/CTS
+# nelegate, cum e cablajul de 3 fire de mai sus, rezultatul depinde de ce
+# se intampla sa fie pe pini in acel moment.
+#
+# Se pune 0 EXPLICIT. Simptomul, daca nu: legatura pare moarta intr-un
+# sens, fara niciun mesaj de eroare nicaieri - exact clasa de esec din
+# §5.10, unde "nu a dat eroare" nu inseamna "e configurat".
+BRD_SER2_RTSCTS,0

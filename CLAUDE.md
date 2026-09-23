@@ -43,7 +43,7 @@ autonom îl transformă în tur manual, zero puncte pe autonomie.
 
 | Componentă | Model | Note |
 |---|---|---|
-| Flight controller | CUAV X7+ | ArduPilot (Copter 4.8.0-dev testat) |
+| Flight controller | **Pixhawk 6C** | ArduPilot (Copter 4.8.0-dev testat). Legatura cu Pi-ul pe TELEM2 = **SERIAL2** (`hwdef.dat:36`). Placa din matricea initiala era CUAV X7+ |
 | Companion | Raspberry Pi 4 | Python + pymavlink + OpenCV |
 | Cameră | Raspberry Pi Camera Module 3 **Wide** | IMX708, rolling shutter |
 | Frame | Quad X | ~2.5–3.0 kg (vezi §7 — contradicție deschisă) |
@@ -182,6 +182,12 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── CHECKLIST_TEREN.md    # checklist + tabel simptom → cauză → fix
 │   ├── LIMITE_SIM.md         # ce NU poate spune Gazebo (I6)
 │   └── DIAGNOSTIC_OSCILATIE.md  # oscilatia de pendul, un parametru pe rulare (I5)
+├── pi/                       # bring-up pe hardware (Pi 4 + Pixhawk 6C)
+│   ├── README.md             # runbook cu comenzile ssh, cap-coada
+│   ├── setup_uart.sh         # GPIO 14/15: miniUART -> PL011, consola, dialout
+│   ├── bringup.sh            # verificari + monitor cu fereastra fullscreen
+│   ├── install.sh            # serviciul de utilizator, pornit la fiecare boot
+│   └── nova-bringup.service  # unitate systemd (graphical-session)
 ├── systemd/
 │   └── nova-monitor.service  # generat de nova_service.py --install-unit
 ├── requirements-pi.txt       # pip comun (fără picamera2/numpy/opencv)
@@ -3008,6 +3014,74 @@ doar emisia: poarta de handover și monitorul de vârstă a detecției depind
 de `last_det` în `IDLE`, iar un filtru pus prea sus le-ar face oarbe. Un
 test verifică ambele direcții — zero mesaje în `IDLE`, dar emisie în
 `DESCEND_TRACK`, altfel filtrul ar rupe secvența fără ca nimic să spună.
+
+
+### 5.59 Pe Pi 4, `/dev/serial0` nu e UART-ul pe care îl vrei
+
+Primul lucru care se strică la bring-up, și cel mai greu de diagnosticat,
+pentru că simptomul arată ca hardware.
+
+Pe Raspberry Pi 4 sunt **două** UART-uri pe pinii GPIO 14/15:
+
+| | dispozitiv | ceas |
+|---|---|---|
+| PL011 | `ttyAMA0` | propriu, stabil la orice baud |
+| miniUART | `ttyS0` | **legat de frecvența miezului VPU** |
+
+Implicit, PL011 e luat de Bluetooth, iar `/dev/serial0` arată spre
+**miniUART**. Iar ceasul miezului se scalează cu încărcarea și cu
+temperatura. La 921600 baud asta înseamnă o legătură care merge câteva
+minute și apoi începe să dea caractere greșite — adică exact profilul unui
+cablu prost sau al unui FC defect. Se caută în locul greșit ore întregi.
+
+`dtoverlay=disable-bt` mută PL011 înapoi pe GPIO 14/15, și de acolo
+`/dev/serial0 → ttyAMA0`.
+
+Al doilea lucru, independent: Linux pune implicit o **consolă serială** pe
+același port. Două programe pe un UART înseamnă că fiecare înghite din
+mesajele celuilalt; pymavlink vede pachete tăiate, nu se plânge, și pur și
+simplu nu ajunge niciodată la `HEARTBEAT`.
+
+> Nu e același lucru cu §5.27. Acolo portul e **ocupat** și deschiderea dă
+> `Errno 16`, adică un mesaj. Aici portul se deschide perfect și datele sunt
+> doar corupte — genul de eșec care nu lasă nicio urmă.
+
+`pi/setup_uart.sh` face ambele, plus grupul `dialout`, și are `--check`
+care raportează starea fără să schimbe nimic. Caută `config.txt` în
+`/boot/firmware` **și** în `/boot`: pe Bookworm/Trixie e primul, iar scris
+în locul greșit fișierul se editează „cu succes" și nu are niciun efect —
+§5.10 aplicat unui fișier de boot.
+
+#### TELEM2 nu e SERIAL2 pentru că așa scrie pe carcasă
+
+Verificat în sursă, nu presupus (§5.10):
+
+```
+libraries/AP_HAL_ChibiOS/hwdef/Pixhawk6C/hwdef.dat:36
+  SERIAL_ORDER OTG1 UART7 UART5 USART1 UART8 USART2 USART3 OTG2
+                 0     1     2      3     4      5      6     7
+```
+
+iar `# telem2` e deasupra lui `UART5`. Deci TELEM1 = SERIAL1,
+TELEM2 = **SERIAL2**. Pe alte plăci numerotarea nu se potrivește.
+
+**Controlul de flux e capcana a treia.** `BRD_SER2_RTSCTS` are implicit
+**2 = Auto** pe plăcile ChibiOS (`AP_BoardConfig.cpp:70`). Auto-detecția
+testează dacă bufferul de ieșire se umple la pornire — iar cu RTS/CTS
+nelegate, cum e cablajul de trei fire, rezultatul depinde de ce se întâmplă
+să fie pe pini. Se pune **0 explicit**. Simptomul, dacă nu: legătura pare
+moartă într-un sens, fără niciun mesaj nicăieri.
+
+#### Fereastra fullscreen cere o sesiune grafică, deci un serviciu de utilizator
+
+`nova-bringup.service` e **de utilizator**, legat de `graphical-session.target`.
+Un serviciu de sistem pornește înaintea oricărei sesiuni: `imshow` aruncă
+`Can't initialize GUI backend`, `nova/preview.py` se stinge singură și spune
+de ce (§5.28) — deci serviciul ar porni, ar arăta verde în `systemctl
+status`, și nu s-ar vedea nimic pe ecran. Cere autologin pe desktop.
+
+Pentru vehicul, fără ecran, rămâne `systemd/nova-monitor.service`, care e de
+sistem. **Nu se pornesc amândouă**: se bat pe `/dev/serial0` (§5.27).
 
 ---
 

@@ -812,7 +812,146 @@ def test_G4_codul_de_iesire_ca_poarta():
     return "sarit -> 1, esec -> 1, --json valid"
 
 
+def test_bringup_unitatea_de_boot():
+    """Unitatea care porneste bring-up-ul la fiecare boot."""
+    cale = os.path.join(REPO, 'pi', 'nova-bringup.service')
+    assert os.path.exists(cale), "pi/nova-bringup.service lipseste"
+    unit = open(cale).read()
+    sec = _unit_sections(unit)
+
+    # §5.26, a doua oara in acelasi proiect: StartLimit* sunt chei de [Unit].
+    # Puse in [Service], systemd le ignora TACUT, iar `systemctl status`
+    # arata verde cu limita inexistenta.
+    srv = sec.get('Service', {})
+    assert 'StartLimitIntervalSec' in sec['Unit'], (
+        "StartLimitIntervalSec lipseste din [Unit]")
+    assert 'StartLimitIntervalSec' not in srv, (
+        "StartLimitIntervalSec e in [Service], unde e ignorat tacut")
+    assert 'StartLimitBurst' in sec['Unit'] and 'StartLimitBurst' not in srv
+
+    # Serviciu de UTILIZATOR, legat de sesiunea grafica: unul de sistem
+    # porneste inainte sa existe un ecran, deci `imshow` esueaza si
+    # fereastra nu apare niciodata - in timp ce statusul arata verde (§5.28).
+    assert sec['Install']['WantedBy'] == 'graphical-session.target', (
+        f"fara sesiune grafica fereastra nu are unde sa apara: "
+        f"{sec['Install'].get('WantedBy')}")
+    assert 'multi-user.target' not in unit, (
+        "unitatea pare sa fie de sistem; fereastra OpenCV cere o sesiune")
+
+    # Oprirea trebuie sa arate ca un Ctrl-C, ca raportul sa apuce sa se
+    # scrie (§5.47).
+    assert srv.get('KillSignal') == 'SIGINT', srv.get('KillSignal')
+
+    # §5.41: fara asta logul ramane gol exact in minutele in care vrei sa
+    # vezi unde a ajuns.
+    assert 'PYTHONUNBUFFERED=1' in srv.get('Environment', ''), (
+        "fara PYTHONUNBUFFERED logul e tamponat si pare gol")
+    return "unitate de utilizator, StartLimit in [Unit], SIGINT la oprire"
+
+
+def test_bringup_nu_e_un_al_doilea_cablaj():
+    """`pi/bringup.sh` verifica si porneste, dar NU isi construieste piesele.
+
+    Acelasi motiv ca la `race_mode.py` (§5.29): un al doilea punct de
+    intrare care si-ar instantia singur supervizorul, poarta si masina de
+    stari ar reintroduce exact clasa de bug din §5.14 - piesele merg,
+    cablajul nu, si nicio suita nu se uita la el.
+
+    Deci bring-up-ul deleaga lui `tools/nova_pi.py`, care e cablajul
+    validat."""
+    cale = os.path.join(REPO, 'pi', 'bringup.sh')
+    assert os.path.exists(cale), "pi/bringup.sh lipseste"
+    src = open(cale).read()
+
+    for interzis in ('SafetySupervisor(', 'HandoverGate(',
+                     'LandingStateMachine(', 'run_loop('):
+        assert interzis not in src, (
+            f"pi/bringup.sh contine {interzis}: e un al doilea cablaj")
+    assert 'tools/nova_pi.py' in src, (
+        "bring-up-ul nu deleaga lui nova_pi.py")
+
+    # Nu ridica E0 pe furis. Garda se ridica din fisierul versionat, cu
+    # commit - nu dintr-un script de pornire (§5.16).
+    #
+    # Se cauta SCRIERI, nu mentiuni: scriptul are voie - si e bine - sa
+    # spuna in comentarii ca E0 ramane inchis. Un test care interzice
+    # cuvantul ar pedepsi exact documentatia pe care o vrem.
+    cod = '\n'.join(l for l in src.splitlines()
+                    if not l.lstrip().startswith('#'))
+    for tipar in ('autonomy_enabled', 'nova.json', 'start_flight.sh'):
+        assert tipar not in cod, (
+            f"pi/bringup.sh atinge {tipar} in COD: E0 se ridica deliberat, "
+            f"din fisierul versionat, cu commit")
+    assert '--race' not in cod, "bring-up-ul nu e modul de cursa"
+
+    # ...si chiar spune, in text, ca nu comanda nimic
+    assert 'autonomy_enabled' in src, (
+        "bring-up-ul nu spune nicaieri ca E0 ramane inchis")
+    return "deleaga lui nova_pi.py, spune ca E0 e inchis, nu il atinge"
+
+
+def test_setup_uart_cauta_ambele_directoare_de_boot():
+    """Bookworm/Trixie tin config.txt in /boot/firmware, versiunile vechi in
+    /boot. Scris in locul gresit, fisierul se editeaza "cu succes" si nu
+    are niciun efect - §5.10 aplicat unui fisier de boot."""
+    cale = os.path.join(REPO, 'pi', 'setup_uart.sh')
+    assert os.path.exists(cale), "pi/setup_uart.sh lipseste"
+    src = open(cale).read()
+    assert '/boot/firmware' in src and '/boot' in src, (
+        "nu cauta ambele directoare de boot")
+
+    # Cele trei lucruri fara de care legatura la 921600 nu tine
+    for cheie, de_ce in (
+            ('enable_uart=1', 'UART-ul nici nu e pornit'),
+            ('dtoverlay=disable-bt', 'serial0 ramane pe miniUART, instabil'),
+            ('console=serial0', 'consola seriala sta pe acelasi port')):
+        assert cheie in src, f"{cheie} lipseste: {de_ce}"
+
+    assert 'dialout' in src, "nu verifica grupul dialout"
+    assert '--check' in src, "nu se poate rula fara sa schimbe nimic"
+    return "cauta ambele /boot, trateaza miniUART, consola si dialout"
+
+
+def test_parametrii_de_telemetrie_sunt_in_fisierul_de_zbor():
+    """TELEM2 pe Pixhawk 6C = SERIAL2, verificat in hwdef, nu presupus.
+
+    Si controlul de flux se pune pe 0 EXPLICIT: implicitul pe ChibiOS e 2
+    (Auto), iar auto-detectia cu RTS/CTS nelegate depinde de ce se intampla
+    sa fie pe pini. Simptomul, daca nu: legatura pare moarta intr-un sens,
+    fara niciun mesaj nicaieri."""
+    cale = os.path.join(REPO, 'config', 'nova_flight.parm')
+    src = open(cale).read()
+    valori = {}
+    for linie in src.splitlines():
+        linie = linie.split('#')[0].strip()
+        if ',' in linie:
+            k, _, v = linie.partition(',')
+            valori[k.strip()] = v.strip()
+
+    assert valori.get('SERIAL2_PROTOCOL') == '2', (
+        f"SERIAL2_PROTOCOL trebuie 2 (MAVLink2): {valori.get('SERIAL2_PROTOCOL')}")
+    assert valori.get('SERIAL2_BAUD') == '921', (
+        f"SERIAL2_BAUD e in mii: 921 = 921600, nu {valori.get('SERIAL2_BAUD')}")
+    assert valori.get('BRD_SER2_RTSCTS') == '0', (
+        "BRD_SER2_RTSCTS trebuie 0 explicit; implicitul 2 (Auto) cu RTS/CTS "
+        "nelegate da o legatura care pare moarta intr-un sens")
+
+    # baud-ul din parm trebuie sa fie acelasi cu cel din aplicatie
+    pi_src = open(os.path.join(REPO, 'tools', 'nova_pi.py')).read()
+    assert '921600' in pi_src, (
+        "nova_pi.py nu mai foloseste 921600: parametrul de pe FC si "
+        "aplicatia ar vorbi la viteze diferite")
+    return "SERIAL2 = TELEM2 pe 6C, 921600, fara control de flux"
+
+
 TESTS = [
+    ('bringup: unitatea de boot', test_bringup_unitatea_de_boot),
+    ('bringup: nu e un al doilea cablaj',
+     test_bringup_nu_e_un_al_doilea_cablaj),
+    ('setup_uart: cauta ambele directoare de boot',
+     test_setup_uart_cauta_ambele_directoare_de_boot),
+    ('parametrii de telemetrie sunt in fisierul de zbor',
+     test_parametrii_de_telemetrie_sunt_in_fisierul_de_zbor),
     ('H0: poarta de platforma (trixie+bookworm)', test_G1_poarta_de_platforma),
     ('G1: ordinea apt -> venv -> pip', test_G1_ordinea_pasilor),
     ('G1 NEGATIV: venv fara --system-site-packages',

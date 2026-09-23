@@ -1,0 +1,52 @@
+# NOVA - ZDC 2026 - bring-up la fiecare pornire a Pi-ului
+#
+# SERVICIU DE UTILIZATOR, nu de sistem. Instalat de pi/install.sh in
+# ~/.config/systemd/user/ si pornit cu:
+#     systemctl --user enable --now nova-bringup
+#
+# DE CE DE UTILIZATOR SI NU DE SISTEM
+#
+#   Fereastra OpenCV are nevoie de o sesiune grafica: DISPLAY sau
+#   WAYLAND_DISPLAY, plus dreptul de a desena in ea. Un serviciu de sistem
+#   porneste inaintea oricarei sesiuni si nu are niciuna - `imshow` arunca
+#   "Can't initialize GUI backend", iar `nova/preview.py` se stinge singura
+#   si spune de ce (§5.28). Deci ar porni, ar parea sanatos in
+#   `systemctl status`, si nu ai vedea nimic pe ecran.
+#
+#   Legat de sesiunea grafica a utilizatorului, serviciul porneste cand
+#   exista un ecran pe care sa deseneze. Cere autologin (raspi-config ->
+#   System Options -> Boot / Auto Login -> Desktop Autologin).
+#
+#   Pentru varianta fara ecran - pe vehicul, in cursa - exista deja
+#   `systemd/nova-monitor.service`, care e de sistem si nu deseneaza nimic.
+#   Nu le porni pe amandoua: se bat pe /dev/serial0 (§5.27).
+
+[Unit]
+Description=NOVA ZDC - bring-up Pi 4 + Pixhawk (monitor, fara comenzi)
+Documentation=file:///home/fireteanualex/nova-zdc/pi/README.md
+After=graphical-session.target
+PartOf=graphical-session.target
+# Daca pica de 5 ori in 5 minute, ceva e rupt structural - lipsa calibrare,
+# camera defecta, UART nepregatit. Ne oprim si lasam logul sa fie citit, in
+# loc sa reincercam la infinit si sa umplem jurnalul.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h/nova-zdc
+Environment=PYTHONUNBUFFERED=1
+# Logul din fisier ramane tamponat pe blocuri daca Python scrie intr-un
+# fisier, deci pare gol exact in minutele in care vrei sa vezi unde a ajuns
+# (§5.41). PYTHONUNBUFFERED de mai sus e reparatia; aici doar nu o stricam.
+ExecStart=%h/nova-zdc/pi/bringup.sh
+Restart=on-failure
+RestartSec=5
+# Ctrl-C din terminal si oprirea serviciului trebuie sa arate la fel pentru
+# aplicatie: SIGINT, nu SIGTERM brutal, ca raportul sa apuce sa se scrie
+# (§5.47).
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=graphical-session.target
