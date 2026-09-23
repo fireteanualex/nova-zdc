@@ -398,7 +398,8 @@ def run_checks(args, source_factory=None):
         r_mav = check_mavlink(args.conn, args.baud, args.mavlink_timeout)
         results.append(r_mav)
         if r_mav.passed:
-            results.append(check_params(args.conn, args.baud, args.parm))
+            parm = args.parm or nova_config.resolve(cfg, 'flight_parm')
+            results.append(check_params(args.conn, args.baud, parm))
         else:
             # Fara heartbeat, check_params ar astepta degeaba 19 timeout-uri.
             results.append(Result('parametri', ESEC,
@@ -413,7 +414,10 @@ def main(argv=None):
     p.add_argument('--config', default=None)
     p.add_argument('--conn', default='/dev/serial0')
     p.add_argument('--baud', type=int, default=921600)
-    p.add_argument('--parm', default=FLIGHT_PARM)
+    p.add_argument('--parm', default=None,
+                   help='fisierul de parametri de verificat. Implicit cel '
+                        'din config/nova.json (`flight_parm`), care trebuie '
+                        'sa corespunda firmware-ului de pe FC')
     p.add_argument('--frames', type=int, default=FPS_FRAMES)
     p.add_argument('--mavlink-timeout', type=float, default=MAVLINK_TIMEOUT_S)
     p.add_argument('--no-camera', action='store_true')

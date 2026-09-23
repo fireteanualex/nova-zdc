@@ -17,12 +17,13 @@
 # pe exact numele alea, si scrie restul - deci configuratia iese pe
 # jumatate aplicata, fara ca nimic sa pice.
 #
-# NU traduce numele ca sa incapa pe 4.6. Masca de armare se INVERSEAZA:
-# SKIPCHK listeaza ce sari, CHECK listeaza ce faci. Aceeasi intentie e
-# 32768 aici si 1015294 pe 4.6, iar un 32768 pus in ARMING_CHECK ar
-# insemna "fa DOAR verificarea de telemetru" - fara busola, GPS, INS,
-# baterie, RC. Urca firmware-ul la 4.7.0: e si cel mai apropiat de
-# 4.8.0-dev, adica de versiunea pe care s-a masurat totul in SITL.
+# NU traduce numele DE MANA. Masca de armare se INVERSEAZA (SKIPCHK
+# listeaza ce sari, CHECK ce faci: 32768 aici = 1015294 pe 4.5/4.6), iar
+# doua unitati se schimba din m in cm. Pentru 4.5.x exista
+# config/nova_flight_4.5.parm, GENERAT din fisierul asta de
+# tools/make_parm_45.py si verificat de un test. Dupa orice schimbare aici:
+#     python3 tools/make_parm_45.py
+# config/nova.json (`flight_parm`) spune care din cele doua se verifica.
 #
 # ===========================================================================
 # ORDINEA DE INCARCARE - NU tot fisierul dintr-o data

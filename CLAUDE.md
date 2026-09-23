@@ -139,7 +139,8 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── nova_sitl.parm        # parametri ArduPilot SITL, încărcați la boot
 │   ├── nova.json             # config companion; E0: autonomy_enabled=false
 │   ├── gamepad.json          # maparea gamepad-ului, din --calibrate
-│   ├── nova_flight.parm      # parametri ArduPilot VEHICUL REAL (neverificat pe hardware)
+│   ├── nova_flight.parm      # parametri ArduPilot VEHICUL REAL, ArduCopter 4.7.0+
+│   ├── nova_flight_4.5.parm  # aceiasi, pentru 4.5.x - GENERAT de make_parm_45.py
 │   └── camera_pi.yaml        # calibrarea camerei, din calibrate_camera.py (evidență: se commit-uiește)
 ├── nova/                     # cod companion, identic sim ↔ Raspberry Pi
 │   ├── config.py             # config/nova.json + garda E0
@@ -168,6 +169,7 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── start_flight.sh       # pornire completa pe Pi: venv, port, E0, race_mode
 │   ├── sim_handover.py       # declanseaza poarta in SITL, fara gamepad (§5.32)
 │   ├── make_marker_model.py  # modelul Gazebo al markerului (§5.31)
+│   ├── make_parm_45.py       # nova_flight.parm -> 4.5.x: nume, unitati, masca
 │   ├── make_camera_model.py  # senzorul de camera, din calibrare (§5.33)
 │   ├── measure_rtf.py        # factorul de timp real, fara pornire (§5.33)
 │   ├── setup_sim_venv.sh     # mediul cu gz-transport + OpenCV 4.10 (§5.36)

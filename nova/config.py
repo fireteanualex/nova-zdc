@@ -48,6 +48,14 @@ DEFAULTS = {
     # nova.detector_pi.axe_corp. Simularea NU o citeste: camera din Gazebo
     # e montata drept, indiferent cum e cea de pe vehicul.
     'camera_rotation_deg': 0,
+
+    # Fisierul de parametri ArduPilot care corespunde FIRMWARE-ULUI de pe
+    # FC. Numele si unitatile difera intre 4.6 si 4.7 (CLAUDE.md §5.4), deci
+    # preflight-ul trebuie sa verifice fisierul potrivit versiunii - altfel
+    # pica pe nume care pur si simplu nu exista pe placa.
+    #   4.7.0+  config/nova_flight.parm
+    #   4.5.x   config/nova_flight_4.5.parm  (generat, nu editat de mana)
+    'flight_parm': 'config/nova_flight.parm',
 }
 
 

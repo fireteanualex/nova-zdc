@@ -1,0 +1,51 @@
+# NOVA - ZDC 2026 - configuratie VEHICUL REAL, ArduCopter 4.5.7
+#
+# GENERAT de tools/make_parm_45.py din config/nova_flight.parm.
+# NU EDITA DE MANA: modifica sursa si regenereaza. Un test pica daca
+# fisierul asta nu mai corespunde sursei.
+#
+# De ce exista: nova_flight.parm e scris pentru 4.7+, iar placa ruleaza
+# 4.5.7. Traducerea schimba nume, UNITATI (m -> cm) si inverseaza masca
+# de armare - vezi docstring-ul generatorului.
+#
+# Aceeasi ordine de incarcare ca sursa: RNGFND1_TYPE=10 si
+# PLND_ENABLED=1, Write, REBOOT; apoi fisierul; apoi PLND_ENABLED=0.
+#
+# Verificare prin citire inapoi:
+#   python3 tools/check_params.py --conn /dev/serial0 --baud 921600 \
+#       --parm config/nova_flight_4.5.parm
+
+FRAME_CLASS,1
+FRAME_TYPE,1
+RNGFND1_TYPE,10
+RNGFND1_ORIENT,25
+# RNGFND1_MIN,0.05 pe 4.7+
+RNGFND1_MIN_CM,5
+# RNGFND1_MAX,30 pe 4.7+
+RNGFND1_MAX_CM,3000
+# RNGFND1_GNDCLR,0.0745 pe 4.7+
+RNGFND1_GNDCLEAR,7
+SURFTRAK_MODE,0
+TERRAIN_ENABLE,0
+PLND_ENABLED,0
+PLND_TYPE,1
+PLND_EST_TYPE,1
+PLND_STRICT,2
+PLND_ALT_MIN,0.35
+PLND_YAW_ALIGN,0
+# ARMING_SKIPCHK,32768 pe 4.7+
+ARMING_CHECK,1015294
+# WP_RFND_USE,0 pe 4.7+
+WPNAV_RFND_USE,0
+DISARM_DELAY,20
+FS_THR_ENABLE,1
+# WP_ACC,1.5 pe 4.7+
+WPNAV_ACCEL,150
+EK3_SRC2_POSXY,0
+EK3_SRC2_VELXY,0
+EK3_SRC2_POSZ,1
+EK3_SRC2_VELZ,0
+EK3_SRC2_YAW,1
+SERIAL2_PROTOCOL,2
+SERIAL2_BAUD,921
+BRD_SER2_RTSCTS,0

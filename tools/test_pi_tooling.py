@@ -995,6 +995,71 @@ def test_rotatia_de_montaj_ajunge_doar_pe_vehicul():
     return f"{len(pe_vehicul)} locuri pe vehicul, {len(in_simulare)} in sim"
 
 
+def test_parametrii_pentru_4_5_sunt_traducerea_corecta():
+    """Placa ruleaza ArduCopter 4.5.7; nova_flight.parm e scris pentru 4.7+.
+
+    `config/nova_flight_4.5.parm` e GENERAT de tools/make_parm_45.py. Testul
+    verifica trei lucruri, fiecare cu un mod de esec care nu da eroare
+    nicaieri:
+
+    1. fisierul e la zi cu sursa - editat de mana sau uitat la o schimbare,
+       placa ar zbura alta configuratie decat cea descrisa;
+    2. unitatile: WP_ACC 1.5 m/s/s copiat ca WPNAV_ACCEL 1.5 ar insemna
+       1.5 cm/s/s, practic zero corectie laterala;
+    3. masca de armare INVERSATA: 32768 copiat in ARMING_CHECK ar insemna
+       "fa doar verificarea de telemetru" - fara busola, GPS, INS, baterie.
+    Toate trei ar trece orice audit pe valoare (§5.10)."""
+    import make_parm_45 as mp
+
+    assert open(mp.TINTA).read() == mp.genereaza(), (
+        "config/nova_flight_4.5.parm nu corespunde sursei. Ruleaza: "
+        "python3 tools/make_parm_45.py")
+
+    sursa = dict(mp.citeste(mp.SURSA))
+    gen = dict(mp.citeste(mp.TINTA))
+
+    assert gen['WPNAV_ACCEL'] == sursa['WP_ACC'] * 100, (
+        f"WPNAV_ACCEL {gen['WPNAV_ACCEL']} cm/s/s pentru WP_ACC "
+        f"{sursa['WP_ACC']} m/s/s")
+    assert 50 <= gen['WPNAV_ACCEL'] <= 500, "in afara plajei de pe 4.5.7"
+    assert gen['RNGFND1_MIN_CM'] == sursa['RNGFND1_MIN'] * 100
+    assert gen['RNGFND1_MAX_CM'] == sursa['RNGFND1_MAX'] * 100
+    assert abs(gen['RNGFND1_GNDCLEAR'] - sursa['RNGFND1_GNDCLR'] * 100) <= 0.5
+    assert gen['WPNAV_RFND_USE'] == sursa['WP_RFND_USE']
+
+    check = int(gen['ARMING_CHECK'])
+    skip = int(sursa['ARMING_SKIPCHK'])
+    assert not check & 1, (
+        "bitul 0 (All) aprins in ARMING_CHECK: ar face TOATE verificarile, "
+        "inclusiv cea pe care sursa o sare")
+    for b in mp.BITI_COPTER_45:
+        sarit = bool(skip & (1 << b))
+        facut = bool(check & (1 << b))
+        assert sarit != facut, (
+            f"bitul {b}: sarit pe 4.7={sarit}, facut pe 4.5={facut} - "
+            f"masca nu e inversul celei din sursa")
+
+    # niciun nume care exista doar pe 4.7+
+    for doar_47 in ('WP_ACC', 'WP_RFND_USE', 'ARMING_SKIPCHK',
+                    'RNGFND1_MIN', 'RNGFND1_MAX', 'RNGFND1_GNDCLR'):
+        assert doar_47 not in gen, f"{doar_47} nu exista pe 4.5.7"
+
+    # restul identic
+    for nume, v in sursa.items():
+        if nume not in mp.REDENUMIRI:
+            assert gen.get(nume) == v, f"{nume}: {gen.get(nume)} vs {v}"
+
+    # si preflight-ul verifica fisierul care corespunde placii
+    from nova import config as nova_config
+    cfg = nova_config.load()
+    assert nova_config.resolve(cfg, 'flight_parm').endswith(
+        'nova_flight_4.5.parm'), (
+        "config/nova.json nu indica fisierul pentru 4.5.7, dar placa "
+        "ruleaza 4.5.7 - preflight-ul ar pica pe nume inexistente")
+    return (f"WPNAV_ACCEL {gen['WPNAV_ACCEL']:.0f}, ARMING_CHECK {check}, "
+            f"{len(gen)} parametri, la zi cu sursa")
+
+
 def test_proba_de_coborare_nu_ridica_singura_E0():
     """`pi/descent_test.sh` porneste secventa autonoma pe un vehicul REAL.
 
@@ -1312,6 +1377,8 @@ TESTS = [
      test_fereastra_de_bord_chiar_primeste_cadre),
     ('rotatia de montaj ajunge doar pe vehicul',
      test_rotatia_de_montaj_ajunge_doar_pe_vehicul),
+    ('parametrii pentru 4.5 sunt traducerea corecta',
+     test_parametrii_pentru_4_5_sunt_traducerea_corecta),
     ('proba de coborare nu ridica singura E0',
      test_proba_de_coborare_nu_ridica_singura_E0),
     ('proba de coborare cere caile de abort',

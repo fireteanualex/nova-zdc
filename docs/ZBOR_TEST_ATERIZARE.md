@@ -107,10 +107,13 @@ mai vechi, trei nume nu există:
 Dacă Mission Planner îți spune **`No matching Params`** pe exact numele
 astea, ești pe 4.6 sau mai vechi.
 
-> **Recomandare: urcă firmware-ul la 4.7.0.** E stabil, are toate numele
-> din fișier, și e cel mai apropiat de 4.8.0-dev — adică de versiunea pe
-> care s-a măsurat totul în SITL. O configurație tradusă într-o versiune
-> pe care nu a testat-o nimeni e o variabilă în plus fix unde nu o vrei.
+> **Pe 4.5.x folosește `config/nova_flight_4.5.parm`** — generat din
+> fișierul de 4.7 de `tools/make_parm_45.py`, cu numele, unitățile și masca
+> de armare traduse, și verificat de un test. `config/nova.json`
+> (`flight_parm`) îl indică deja, deci preflight-ul îl verifică pe el.
+>
+> Dacă urci firmware-ul la 4.7.0 (cel mai apropiat de ce s-a măsurat în
+> SITL), schimbă `flight_parm` înapoi pe `config/nova_flight.parm`.
 
 Dacă rămâi pe 4.6, traducerea numelor nu e de ajuns: **masca de armare se
 inversează.** `ARMING_SKIPCHK` listează verificările pe care le **sari**;
