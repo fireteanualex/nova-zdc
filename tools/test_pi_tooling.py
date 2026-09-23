@@ -1414,6 +1414,24 @@ def test_bringup_unitatea_de_boot():
     return "unitate de utilizator, StartLimit in [Unit], SIGINT la oprire"
 
 
+def test_install_refuza_sudo():
+    """Rulat cu sudo pe vehicul, pi/install.sh a pus unitatea in configul lui
+    ROOT, cu ExecStart spre /root/nova-zdc, iar `systemctl --user` nu a
+    gasit busul sesiunii. Serviciul e de utilizator (sesiunea grafica a lui
+    `nova`), deci sub root nu poate merge - scriptul trebuie sa refuze
+    INAINTE sa scrie ceva, si sa spuna cum se curata."""
+    src = open(os.path.join(REPO, 'pi', 'install.sh')).read()
+    i_root = src.find('EUID -eq 0')
+    i_cp = src.find('run cp ')
+    assert i_root != -1, "install.sh nu verifica daca ruleaza ca root"
+    assert i_cp != -1 and i_root < i_cp, (
+        "verificarea de root vine DUPA copierea unitatii - ar lasa deja un "
+        "fisier in /root inainte sa refuze")
+    assert '/root/.config/systemd/user/nova-bringup.service' in src, (
+        "refuzul nu spune cum se curata o instalare facuta cu sudo")
+    return "refuza sub root, inainte de orice scriere, cu comanda de curatare"
+
+
 def test_bringup_nu_e_un_al_doilea_cablaj():
     """`pi/bringup.sh` verifica si porneste, dar NU isi construieste piesele.
 
@@ -1535,6 +1553,7 @@ TESTS = [
     ('calibrarea din repo e reala si pentru rezolutia de lucru',
      test_calibrarea_din_repo_e_reala_si_pentru_rezolutia_de_lucru),
     ('bringup: unitatea de boot', test_bringup_unitatea_de_boot),
+    ('install refuza sudo', test_install_refuza_sudo),
     ('bringup: nu e un al doilea cablaj',
      test_bringup_nu_e_un_al_doilea_cablaj),
     ('setup_uart: cauta ambele directoare de boot',

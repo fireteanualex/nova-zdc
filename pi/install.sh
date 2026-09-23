@@ -35,6 +35,18 @@ done
 
 command -v systemctl >/dev/null || die "nu exista systemctl"
 
+# NU sub sudo. Serviciul e DE UTILIZATOR, al celui care are sesiunea grafica
+# (`nova`). Sub sudo, $HOME devine /root: unitatea ajunge in configul lui
+# root, cu ExecStart spre /root/nova-zdc - care nu exista - iar
+# `systemctl --user` nu gaseste busul sesiunii ("Failed to connect to user
+# scope bus"). Asa s-a si intamplat, prima data, pe vehicul.
+if [[ $EUID -eq 0 ]]; then
+  die "nu rula cu sudo. Serviciul e al utilizatorului care are ecranul:
+    pi/install.sh              (ca nova, fara sudo)
+  Daca l-ai rulat deja cu sudo, curata ce a lasat:
+    sudo rm -f /root/.config/systemd/user/nova-bringup.service"
+fi
+
 if [[ $UNINSTALL -eq 1 ]]; then
   say "scot serviciul"
   run systemctl --user disable --now nova-bringup.service || true
