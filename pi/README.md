@@ -4,10 +4,18 @@ Scris pentru **primul test pe hardware**, nu pentru cursă. Scopul e să
 ajungi la un Pi care, pornit, arată pe ecran ce vede camera, cu markerul
 detectat, și care citește telemetria de la Pixhawk — fără să comande nimic.
 
-> **Da, îmi trebuie fișierul de calibrare al camerei.** `config/camera_pi.yaml`
-> e obligatoriu: detectorul **refuză** să pornească fără o calibrare reală
-> (E1.2, §5.34). Dacă ai deja unul, copiază-l acolo. Dacă nu, se face pe loc
-> cu `tools/calibrate_camera.py` — vezi pasul 5.
+> **Calibrarea e deja în repo.** `config/camera_pi.yaml` — ChArUco, 60 de
+> poze, `fy = 1038.7 px`, HFOV 96.0° / VFOV 63.9°.
+>
+> **Are `rms = 0.829 px`, peste pragul de zbor de 0.5.** Detectorul o
+> refuză în configurația de zbor; bring-up-ul o acceptă cu `--max-rms`, o
+> rulare pe rând, și o spune de fiecare dată. **De refăcut înainte de E2.**
+> O cameră bine calibrată stă la 0.2–0.5; 0.83 sugerează țintă neplană,
+> poze mișcate sau colțuri neacoperite (§5.34).
+>
+> Pragul din cod **nu** a fost ridicat: e citit de garda care decide dacă se
+> zboară, iar un test verifică faptul că nici `start_flight.sh`, nici modul
+> de cursă nu primesc `--max-rms`.
 
 ---
 
@@ -126,14 +134,13 @@ tools/check_params.py --conn /dev/serial0 --baud 921600
 
 ### 5. Calibrarea camerei
 
-Dacă ai fișierul:
+Deja în repo, deci nu ai ce copia. Verifică doar că a ajuns:
 
 ```bash
-# de pe desktop
-scp camera_pi.yaml pi@<ip-pi>:~/nova-zdc/config/camera_pi.yaml
+grep -c . config/camera_pi.yaml && pi/bringup.sh --check | grep -A3 calibr
 ```
 
-Dacă nu, se face pe Pi, cu o tablă ChArUco tipărită:
+Când o refaci (rms sub 0.5), pe Pi, cu o tablă ChArUco tipărită:
 
 ```bash
 tools/make_calib_target.py --help     # genereaza ținta de tipărit
@@ -192,6 +199,53 @@ ls -t ~/nova-logs/ | head                 # logurile de rulare
 
 > Nu porni în același timp `nova-monitor.service` (cel de sistem, fără
 > ecran): se bat pe `/dev/serial0` (§5.27).
+
+---
+
+## Override pilot și comutatorul de handover
+
+**În bring-up sunt cablate, dar dorm** — și e corect.
+
+`nova_pi.py` construiește `OverrideMonitor` și `SafetySupervisor` și le dă
+lui `run_loop`. Dar supervizorul se armează **din fază**
+(`AUTONOMOUS_PHASES`, §5.14), iar cu E0 închis secvența rămâne în `IDLE`,
+deci `update()` iese pe `if not self.armed`. Nu e o scăpare: companion-ul
+nu comandă nimic în monitor, deci nu există de la ce să preia pilotul — el
+are oricum controlul integral prin FC.
+
+> Tabelul din §8 spune „Override pilot … **toate** fazele". Mai exact:
+> toate fazele **autonome**. În afara segmentului nu e nimic de întrerupt.
+
+**Înainte de proba de coborâre**, două măsurători cu emițătorul REAL, cu
+Pi-ul legat la FC:
+
+```bash
+tools/calibrate_sticks.py --conn /dev/serial0 --baud 921600
+```
+
+Zgomotul manșelor în repaus → `STICK_DEADBAND_PWM` (elementul deschis 13).
+**Cifra de pe gamepad nu se transferă**: acolo s-a măsurat σ = 0.00 și
+amplitudine 0 PWM, dar aia e o ieșire cuantizată, nu un gimbal analogic cu
+link RC. Lasă manșele libere pe toată durata; orice atingere strică
+statistica.
+
+```bash
+tools/check_rc_override.py --conn /dev/serial0 --baud 921600
+```
+
+Verifică precondiția întregului lanț: FC-ul chiar raportează înapoi în
+`RC_CHANNELS` ce primește de la emițător? Dacă **nu**, poarta nu vede
+comutatorul AUX 7 și monitorul de override nu funcționează — iar orice test
+cu pilot în buclă n-ar însemna nimic.
+
+Mai trebuie, pe emițător (elementul deschis 20, lipsesc deliberat din
+`nova_flight.parm` pentru că depind de transmițător):
+
+- **AUX 7** pe un comutator cu două/trei poziții — e singura cale de intrare
+  în segmentul autonom, pe **frontul crescător**, cu ≥1700 PWM sus
+- **`FLTMODE_CH` + `FLTMODE1..6`** — abortul robust e un mod de zbor mapat
+  direct pe FC, care nu trece prin Pi deloc (16.2.3). Detecția pe manșe e
+  necesară pentru 15.1.7, dar nu e singurul strat.
 
 ---
 

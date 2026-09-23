@@ -53,24 +53,39 @@ autonom îl transformă în tur manual, zero puncte pe autonomie.
 
 - Senzor IMX708, 4608×2592 nativ, pixel 1.4 um
 - Obiectiv Wide: focală 2.75 mm, f/2.2
-- **HFOV 102°, VFOV 67°** (fișa tehnică). Din focala geometrică la 16:9,
-  VFOV-ul derivat e **69.6°**; diferența e a decupajului 2304×1296 față de
-  senzorul 4:3. Valoarea care contează operațional e cea din calibrare.
-- Rezoluție de lucru: **2304×1296**, focală echivalentă **933 px**
+- **Măsurat pe camera noastră** (`config/camera_pi.yaml`, ChArUco, 60 poze):
+  `fy = 1038.7 px`, **HFOV 96.0°, VFOV 63.9°**
+- Fișa tehnică dă HFOV 102° / VFOV 67°, iar focala derivată din ea e 933 px.
+  **Camera reală e cu ~11% mai îngustă.** Nu e o eroare de calibrare — e
+  toleranța obiectivului, și e în direcția care strânge, nu care ajută.
+- Rezoluție de lucru: **2304×1296**
 - Cameră la **74.5 mm** deasupra solului la contact (tren de aterizare)
 - Autofocus PDAF — **trebuie blocat manual**, altfel caută focus exact
   în timpul coborârii
 
-Dimensiunea markerului (480 mm) în imagine: `marker_px = 933 * 0.48 / Z`
+Dimensiunea markerului (480 mm) în imagine: `marker_px = fy * 0.48 / Z`
 
-| Altitudine | marker_px |
+| Altitudine | cu 933 (fișă) | **cu 1038.7 (măsurat)** |
+|---|---|---|
+| 20 m | 22 | **25** |
+| 15 m | 30 | **33** |
+| 10 m | 45 | **50** |
+| 5 m | 90 | **100** |
+| 1 m | 448 | **499** |
+| 0.45 m | 995 | **1108** |
+
+**Ce se schimbă și ce nu, din cauza celor 11%:**
+
+| | efect |
 |---|---|
-| 20 m | 22 |
-| 15 m | 30 |
-| 10 m | 45 |
-| 5 m | 90 |
-| 1 m | 448 |
-| 0.45 m | 995 |
+| `Detection.fill`, deci pragurile de captură și de coborâre verticală | **nimic** — se măsoară din colțuri față de cadrul real, deci focala se simplifică |
+| detecția la altitudine | **mai bună**: markerul e mai mare la aceeași înălțime |
+| raza maximă de handover | **mai strâmtă cu ~11%**: 4.03 m la 12 m, nu 4.49; 1.54 m la 5 m, nu 1.73 |
+| bugetul de înclinare al camerei | **mai strâmt**: 15.8° la 1 m cu 10 cm lateral, nu 19.5° |
+
+Primele două rânduri sunt exact argumentul pentru care criteriul de captură
+a fost mutat de pe pixeli pe încadrare (§5.57): un prag în pixeli ar fi
+trebuit recalculat acum, iar unul pe `fill` nu.
 
 **Nu există rangefinder hardware.** Singurul senzor orientat în jos e
 camera. Vezi §5 pentru consecințe.
@@ -3515,7 +3530,7 @@ Safety Case.
 
 | Monitor | Prag | Acțiune | Se aplică în |
 |---|---|---|---|
-| Override pilot | `STICK_DEADBAND_PWM` 80, `OVERRIDE_HOLD_S` 0.1 s | LOITER + pasiv definitiv | **toate** fazele |
+| Override pilot | `STICK_DEADBAND_PWM` 80, `OVERRIDE_HOLD_S` 0.1 s | LOITER + pasiv definitiv | toate fazele **autonome** |
 | Vârsta ultimei detecții | `DETECTION_MAX_AGE_S` 0.5 s | BRAKE | `DESCEND_TRACK`, `SCORING_CAPTURE` |
 | Rază față de handover | `GEOFENCE_RADIUS_M` 10.0 m | RTL | tot segmentul autonom |
 | Plafon AGL | `CEILING_AGL_M` 30.0 m | RTL | tot segmentul autonom |
@@ -3526,6 +3541,13 @@ Pragul de înclinare e al **integrității vehiculului**, nu al camerei. Cel
 al camerei e o funcție de altitudine și eroare laterală
 (`CameraModel.tilt_budget_deg`), e sub 30° în tot regimul de sub ~2 m, și
 se **măsoară** în loc să declanșeze BRAKE — vezi §5.57.
+
+> **„Toate fazele" înseamnă toate fazele autonome, nu chiar toate.**
+> Supervizorul se armează din fază (`AUTONOMOUS_PHASES`, §5.14) și
+> `update()` iese pe `if not self.armed` — deci în `IDLE` niciun monitor nu
+> rulează, inclusiv cel de override. Nu e o scăpare: în afara segmentului
+> companion-ul nu comandă nimic, deci nu există de la ce să preia pilotul.
+> Contează la bring-up, unde e prima întrebare care se pune văzând ecranul.
 
 Trei proprietăți care nu sunt evidente din tabel:
 

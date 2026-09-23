@@ -45,7 +45,7 @@ from nova import race_screen                              # noqa: E402
 from nova import serial_guard                             # noqa: E402
 from nova.detector_pi import (CameraCalibration, PiCameraSource,  # noqa: E402
                               ArucoMarkerDetector, PiDetector,
-                              build_pi_detector)
+                              build_pi_detector, MAX_REPROJ_ERR_PX)
 from nova.handover import HandoverGate
 from nova.scoring import ScoringRecorder                     # noqa: E402
 from nova.rc import OverrideMonitor                        # noqa: E402
@@ -67,14 +67,17 @@ def banner(cfg):
     print("=" * 64)
 
 
-def camera_check(cfg, seconds, show_window=False, preview_scale=0.5):
+def camera_check(cfg, seconds, show_window=False, preview_scale=0.5,
+                 max_rms=None):
     """Camera + calibrare, fara MAVLink. Pentru banc si preflight.
 
     Asta e singurul loc din aplicatia de bord unde fereastra are sens
     implicit: --camera-check se ruleaza pe banc, nu in cursa. Chiar si aici
     ramane pe fals, ca sa mearga si prin SSH fara X."""
     cal_path = nova_config.resolve(cfg, 'camera_calibration')
-    calib = CameraCalibration.load(cal_path, require_real=True)
+    calib = CameraCalibration.load(
+        cal_path, require_real=True,
+        max_rms=MAX_REPROJ_ERR_PX if max_rms is None else float(max_rms))
     print(f"[camera-check] calibrare: {calib}")
     aruco = ArucoMarkerDetector(calib, marker_id=cfg['marker_id'],
                                 marker_size_m=cfg['marker_size_m'],
@@ -213,6 +216,11 @@ def main():
     p.add_argument('--scoring-dir', default='data/scoring',
                    help='unde se scriu imaginea de scoring, cea de contact '
                         'si evidenta lor (6.2.1.30)')
+    p.add_argument('--max-rms', type=float, default=None,
+                   help='ridica pragul de reproiectie al calibrarii DOAR '
+                        'pentru rularea asta. Pentru bring-up la banc cu o '
+                        'calibrare provizorie; se anunta zgomotos. Pragul de '
+                        'zbor din cod ramane neatins (§5.34)')
     p.add_argument('--fullscreen', action='store_true',
                    help='fereastra pe tot ecranul (implica --show-window). '
                         'Pentru bring-up la sol; iesire pe q sau Escape')
@@ -258,11 +266,12 @@ def main():
     try:
         if a.camera_check:
             return camera_check(cfg, a.seconds, a.show_window,
-                                a.preview_scale)
+                                a.preview_scale, max_rms=a.max_rms)
         # Detectorul intai: daca lipseste calibrarea, ne oprim inainte sa
         # deschidem legatura cu FC-ul.
         detector = build_pi_detector(cfg, verbose=True,
-                                     ring_frames=a.ring_frames)
+                                     ring_frames=a.ring_frames,
+                                     max_rms=a.max_rms)
     except (FileNotFoundError, ValueError) as e:
         # Refuz DELIBERAT (E1.2), nu crash: mesaj scurt, cod de iesire
         # distinct, ca serviciul/preflight-ul sa il poata deosebi de o

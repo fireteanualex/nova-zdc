@@ -153,9 +153,16 @@ class CameraCalibration:
     def camera_model(self, marker_size_m=MARKER_SIZE_M):
         """CameraModel din nova/detection.py, derivat din calibrare. Asa
         verificarea de incadrare (§5.2) e aceeasi ca in detectorul sintetic,
-        dar cu focala si FOV-ul reale, nu cu cele din fisa tehnica."""
+        dar cu focala si FOV-ul reale, nu cu cele din fisa tehnica.
+
+        Dimensiunile in PIXELI se dau explicit, nu se lasa pe implicit.
+        `fill` si `tilt_budget_deg` se raporteaza la ele, iar implicitul
+        (2304x1296) se potriveste doar cu rezolutia de lucru actuala. O
+        calibrare facuta la alta rezolutie ar produce incadrari calculate
+        fata de un cadru care nu exista - si nimic nu ar semnala asta."""
         return CameraModel(focal_px=self.fy, hfov_deg=self.hfov_deg(),
-                           vfov_deg=self.vfov_deg(), marker_size_m=marker_size_m)
+                           vfov_deg=self.vfov_deg(), marker_size_m=marker_size_m,
+                           width_px=float(self.width), height_px=float(self.height))
 
     def is_real(self):
         return self.rms is not None and self.n_images > 0
@@ -997,17 +1004,30 @@ class PiDetector:
 
 # --- Constructor de bord -------------------------------------------------------------
 
-def build_pi_detector(cfg, verbose=True, ring_frames=0):
+def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None):
     """Detectorul complet pentru aplicatia de bord, din config/nova.json.
     Refuza sa porneasca fara calibrare reala (E1.2).
 
     `ring_frames` > 0 porneste ringul cerut de 8.3.3. Oprit implicit: pe Pi
-    un cadru e ~3 MB."""
+    un cadru e ~3 MB.
+
+    `max_rms` ridica pragul de reproiectie DOAR pentru apelul asta. Exista
+    pentru bring-up la banc, unde o calibrare provizorie e mai buna decat
+    niciuna, si se anunta zgomotos. Nu se schimba `MAX_REPROJ_ERR_PX`, care
+    e citit de tot codul: ridicat global, ar slabi tacut exact garda care
+    decide daca se zboara (§5.34)."""
     from . import config as nova_config
     cal_path = nova_config.resolve(cfg, 'camera_calibration')
-    calib = CameraCalibration.load(cal_path, require_real=True)
+    prag = MAX_REPROJ_ERR_PX if max_rms is None else float(max_rms)
+    calib = CameraCalibration.load(cal_path, require_real=True, max_rms=prag)
     if verbose:
         print(f"[detector] calibrare: {calib}")
+    if max_rms is not None and calib.rms is not None \
+            and calib.rms > MAX_REPROJ_ERR_PX:
+        print(f"[detector] ATENTIE: calibrarea are rms {calib.rms:.3f} px, "
+              f"peste pragul de zbor de {MAX_REPROJ_ERR_PX} px.")
+        print(f"[detector]           acceptata doar pentru rularea asta "
+              f"(--max-rms {prag}). De refacut inainte de zbor.")
     aruco = ArucoMarkerDetector(calib, marker_id=cfg['marker_id'],
                                 marker_size_m=cfg['marker_size_m'],
                                 roi_below_m=cfg['roi_below_m'],

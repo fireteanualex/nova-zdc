@@ -1,0 +1,35 @@
+%YAML:1.0
+---
+camera_matrix: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+   data: [ 1037.8900284132792, 0., 1188.8679068412991, 0.,
+       1038.6793331487204, 647.17112217616909, 0., 0., 1. ]
+dist_coeffs: !!opencv-matrix
+   rows: 1
+   cols: 5
+   dt: d
+   data: [ -0.029983233298381616, 0.10283296459606964,
+       0.0011903572226070621, 0.0089183944095242718,
+       -0.026970258877339198 ]
+image_width: 2304
+image_height: 1296
+rms_reprojection_px: 0.82872837118818743
+n_images: 60
+source: "calibrateCamera, ChArUco 9x6 patrate (8x5 colturi), patrat 44.5 mm, marker 33.5 mm, DICT_5X5_250, 0 poze respinse, 2026-09-13 19:25"
+hfov_deg: 95.965698692521201
+vfov_deg: 63.917534290887218
+meta_aruco_dict: DICT_5X5_250
+meta_calibrated_at: "2026-09-13 19:25:34"
+meta_inner_corners: "8x5"
+meta_lens_position: 1.6299999952316284
+meta_marker_mm_measured: 33.5
+meta_n_images_accepted: 60.
+meta_n_images_attempted: 60.
+meta_n_images_rejected: 0.
+meta_resolution: "2304x1296"
+meta_rms_px: 0.82869999999999999
+meta_square_mm_measured: 44.5
+meta_squares: "9x6"
+meta_target_type: charuco

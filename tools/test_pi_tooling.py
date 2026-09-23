@@ -812,6 +812,75 @@ def test_G4_codul_de_iesire_ca_poarta():
     return "sarit -> 1, esec -> 1, --json valid"
 
 
+def test_pragul_de_calibrare_ridicat_doar_la_bringup():
+    """§5.34: pragul de reproiectie nu se ridica global.
+
+    `MAX_REPROJ_ERR_PX = 0.5` e citit de detectorul de bord, adica de garda
+    care decide daca se zboara. Calibrarea reala din repo are rms 0.83, deci
+    e tentant sa ridici constanta - si atunci ai slabit tacut exact garda
+    aia, pentru tot codul, pentru totdeauna.
+
+    Ce se face in schimb: `--max-rms` ridica pragul pentru O RULARE, se
+    anunta zgomotos, si e dat doar de bring-up-ul de banc. Calea de ZBOR nu
+    are voie sa il primeasca."""
+    from nova import detector_pi
+
+    assert detector_pi.MAX_REPROJ_ERR_PX == 0.5, (
+        f"pragul de zbor a fost schimbat global: "
+        f"{detector_pi.MAX_REPROJ_ERR_PX}")
+
+    bringup = open(os.path.join(REPO, 'pi', 'bringup.sh')).read()
+    assert '--max-rms' in bringup, "bring-up-ul nu poate porni cu calibrarea curenta"
+
+    # Calea de zbor si modul de cursa NU au voie sa ridice pragul.
+    for nume in ('tools/start_flight.sh', 'tools/race_mode.py'):
+        cale = os.path.join(REPO, nume)
+        if not os.path.exists(cale):
+            continue
+        cod = '\n'.join(l for l in open(cale).read().splitlines()
+                        if not l.lstrip().startswith('#'))
+        assert 'max-rms' not in cod and 'max_rms' not in cod, (
+            f"{nume} ridica pragul de calibrare: zborul ar porni cu o "
+            f"calibrare pe care garda o refuza")
+    return "--max-rms doar la bring-up; pragul de zbor neatins"
+
+
+def test_calibrarea_din_repo_e_reala_si_pentru_rezolutia_de_lucru():
+    """Calibrarea versionata e evidenta (§3), deci se verifica, nu se crede.
+
+    Doua lucruri care nu sar in ochi:
+      - `is_real()` trebuie sa fie adevarat, altfel detectorul o refuza
+        oricum si nimic nu ar spune de ce (§5.34)
+      - rezolutia calibrarii trebuie sa fie cea de lucru: `fill` si
+        `tilt_budget_deg` se raporteaza la dimensiunile in PIXELI, iar o
+        calibrare facuta la alta rezolutie ar da incadrari fata de un cadru
+        care nu exista"""
+    from nova.detector_pi import (CameraCalibration, MAX_REPROJ_ERR_PX,
+                                  TRACK_SIZE)
+    cale = os.path.join(REPO, 'config', 'camera_pi.yaml')
+    if not os.path.exists(cale):
+        return "config/camera_pi.yaml lipseste (sarit)"
+
+    cal = CameraCalibration.load(cale, require_real=True, max_rms=10.0)
+    assert cal.is_real(), "calibrarea din repo nu e reala"
+    assert (cal.width, cal.height) == TRACK_SIZE, (
+        f"calibrarea e pentru {cal.width}x{cal.height}, rezolutia de lucru "
+        f"e {TRACK_SIZE[0]}x{TRACK_SIZE[1]}")
+
+    cm = cal.camera_model()
+    assert cm.width_px == float(cal.width), (
+        "CameraModel nu poarta latimea calibrarii, deci `fill` s-ar calcula "
+        "fata de un cadru implicit")
+    assert cm.height_px == float(cal.height), cm.height_px
+    assert abs(cm.focal_px - cal.fy) < 1e-6
+
+    nota = ''
+    if cal.rms is not None and cal.rms > MAX_REPROJ_ERR_PX:
+        nota = (f"; rms {cal.rms:.2f} px PESTE pragul de zbor "
+                f"{MAX_REPROJ_ERR_PX} - de refacut inainte de E2")
+    return f"reala, {cal.width}x{cal.height}, fy={cal.fy:.0f} px{nota}"
+
+
 def test_bringup_unitatea_de_boot():
     """Unitatea care porneste bring-up-ul la fiecare boot."""
     cale = os.path.join(REPO, 'pi', 'nova-bringup.service')
@@ -945,6 +1014,10 @@ def test_parametrii_de_telemetrie_sunt_in_fisierul_de_zbor():
 
 
 TESTS = [
+    ('pragul de calibrare ridicat doar la bringup',
+     test_pragul_de_calibrare_ridicat_doar_la_bringup),
+    ('calibrarea din repo e reala si pentru rezolutia de lucru',
+     test_calibrarea_din_repo_e_reala_si_pentru_rezolutia_de_lucru),
     ('bringup: unitatea de boot', test_bringup_unitatea_de_boot),
     ('bringup: nu e un al doilea cablaj',
      test_bringup_nu_e_un_al_doilea_cablaj),
