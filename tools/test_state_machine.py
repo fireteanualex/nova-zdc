@@ -603,6 +603,25 @@ def test_nicio_comanda_in_afara_segmentului_autonom():
     return f"IDLE: 0 mesaje; DESCEND_TRACK: emite; {len(EMITTING_PHASES)} faze"
 
 
+def test_linia_de_stare_arata_canalul_de_handover():
+    """Pe teren, singurul loc unde pilotul vede daca cererea a ajuns: linia
+    de stare din jurnal. Trebuie sa arate canalul CONFIGURAT si valoarea lui
+    bruta, nu un canal fix - altfel ai citi AUX 7 cand comutatorul e pe 8."""
+    v = StubVehicle()
+    v.rc = (1500, 1500, 1100, 1500, 1000, 1000, 2000, 1000)
+    sm = LandingStateMachine(
+        v, SequenceConfig(conv=2, aux_channel=8, aux_high_pwm=1500),
+        verbose=False)
+    linia = sm.status_line()
+    assert 'AUX8 1000 jos' in linia, f"canalul 8 jos, linia: {linia}"
+    v.rc = (1500, 1500, 1100, 1500, 1000, 1000, 1000, 1600)
+    linia = sm.status_line()
+    assert 'AUX8 1600 SUS' in linia, f"canalul 8 peste 1500, linia: {linia}"
+    v.rc = ()
+    assert 'AUX8 -' in sm.status_line(), "fara RC_CHANNELS trebuie '-', nu 0"
+    return "AUX8 1000 jos / 1600 SUS / '-' fara date"
+
+
 TESTS = [
     ('secventa completa ajunge la HANDBACK', test_secventa_completa),
     ('SCORING_CAPTURE exact o data', test_scoring_capture_exact_o_data),
@@ -626,6 +645,8 @@ TESTS = [
     ('REGRESIE: autoritate restaurata dupa override',
      test_autoritate_restaurata_dupa_override_in_cablajul_real),
     ('mansa opreste coborarea autonoma', test_mansa_opreste_coborarea_autonoma),
+    ('linia de stare arata canalul de handover',
+     test_linia_de_stare_arata_canalul_de_handover),
 ]
 
 

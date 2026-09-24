@@ -18,11 +18,14 @@ Dacă pui LAND manual: ArduPilot face o aterizare normală, **fără** precision
 landing. `PLND_ENABLED` pornește pe 0 și îl aprinde companion-ul doar pentru
 segmentul autonom (§5.8). Nu te va atrage spre marker.
 
-**Intrarea e un comutator AUX, pe frontul crescător.** Implicit canalul 7,
-reglabil:
+**Intrarea e un comutator cu două poziții pe canalul 8, pe frontul
+crescător: „sus" înseamnă peste 1500 PWM.** Canalul și pragul stau într-un
+singur loc, `config/nova.json` (`aux_channel`, `aux_high_pwm`), deci pornirea
+automată și proba de coborâre ascultă același comutator. Pentru o probă
+anume se poate suprascrie canalul:
 
 ```bash
-pi/descent_test.sh --aux-channel=6
+pi/descent_test.sh --aux-channel=7
 ```
 
 De ce un canal dedicat și nu modul LAND: poarta trebuie să **valideze**
@@ -201,21 +204,26 @@ trec prin exact procesul care ar putea fi cel stricat.
 
 ### 1.3 Canalul de handover
 
-Pe emițător, mapează un **comutator cu două poziții** pe canalul ales
-(RC6 sau RC7).
+Pe emițător, mapează un **comutator cu două poziții** pe **canalul 8**.
 
 În Mission Planner, `Config` → `Full Parameter List`:
 
 ```
-RC6_OPTION = 0        (sau RC7_OPTION, dupa canalul ales)
+RC8_OPTION = 0
 ```
+
+Și verifică că `FLTMODE_CH` **nu** e 8 (implicitul e 5): același comutator ar
+schimba modul de zbor și ar cere segmentul autonom deodată.
+`pi/descent_test.sh` refuză configurația asta.
 
 **0 = „Do Nothing"**, deliberat. Companion-ul citește canalul brut din
 `RC_CHANNELS`; nu vrem ca ArduPilot să facă și altceva la comutare.
 
 Verifică că se mișcă: `Setup` → `Mandatory Hardware` → `Radio Calibration`
-— bara canalului trebuie să sară între ~1000 și ~2000 la comutare. Poarta
-cere **peste 1700** pentru „sus".
+— bara canalului 8 trebuie să sară între ~1000 și ~2000 la comutare, adică
+de o parte și de alta a lui 1500. Poarta cere **peste 1500** pentru „sus"
+(`aux_high_pwm`). Dacă emițătorul dă alte capete — de exemplu 1100/1900 —
+tot merge; contează doar să treacă de 1500.
 
 ### 1.4 Citește înapoi
 

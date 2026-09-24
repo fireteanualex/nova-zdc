@@ -3705,7 +3705,7 @@ pe alta.
 ```
 IDLE
  └→ RACE_MONITOR        detector activ, ZERO comenzi, ring buffer
-     └→ HANDOVER_CHECK  pe FRONTUL CRESCĂTOR al AUX (canal 7), după 1.0 s
+     └→ HANDOVER_CHECK  pe FRONTUL CRESCĂTOR al AUX (config: canal 8, >1500), după 1.0 s
          │              fereastră de așezare — SINGURA cale de intrare
          ├→ REJECT      alt <5m sau >12m, sau dist >6.5m, sau marker nedetectat,
          │              sau manșă în afara neutrului; iese doar cu AUX jos

@@ -1290,8 +1290,32 @@ def test_canalul_de_handover_e_reglabil_si_LAND_nu_declanseaza():
 
     pi_src = open(os.path.join(REPO, 'tools', 'nova_pi.py')).read()
     assert '--aux-channel' in pi_src, "canalul nu e expus in aplicatie"
-    assert 'aux_channel=a.aux_channel' in pi_src, (
-        "flagul exista dar nu ajunge in SequenceConfig")
+    assert 'aux_channel=canal' in pi_src and 'aux_high_pwm=prag' in pi_src, (
+        "canalul/pragul din config nu ajung in SequenceConfig")
+
+    # Canalul si pragul vin din config/nova.json, un singur loc: pornirea
+    # automata si proba de coborare asculta ACELASI comutator. Cand erau
+    # separate, monitorul asculta 7 iar comutatorul era pe 6.
+    from nova import config as nova_config
+    cfg = nova_config.load()
+    assert cfg['aux_channel'] == 8 and cfg['aux_high_pwm'] == 1500, (
+        f"config: canal {cfg['aux_channel']}, prag {cfg['aux_high_pwm']} - "
+        f"echipa a ales canalul 8, sus peste 1500")
+
+    # si pragul chiar decide: comutator cu 2 pozitii pe canalul 8
+    class _V:
+        rc = [1500] * 7 + [1000] + [1500] * 10
+    sm_cfg = SequenceConfig(aux_channel=8, aux_high_pwm=1500)
+    from nova.state_machine import LandingStateMachine
+    m = LandingStateMachine(_V(), sm_cfg, verbose=False)
+    assert m.aux_high() is False, "jos (1000) citit ca SUS"
+    _V.rc = [1500] * 7 + [1990] + [1500] * 10
+    assert m.aux_high() is True, "sus (1990) citit ca jos"
+    _V.rc = [2000] * 7 + [1000] + [2000] * 10
+    assert m.aux_high() is False, "alt canal a declansat cererea"
+    bs = open(os.path.join(REPO, 'pi', 'bringup.sh')).read()
+    assert '--aux-channel' not in bs, (
+        "bringup.sh isi alege propriul canal in loc de cel din config")
 
     dt = open(os.path.join(REPO, 'pi', 'descent_test.sh')).read()
     assert '--aux-channel' in dt, "proba de coborare nu poate schimba canalul"

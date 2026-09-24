@@ -40,7 +40,7 @@ Cu `autonomy_enabled = true`, elicele **demontate**, vehiculul pe masă:
 
 ```bash
 pi/descent_test.sh          # porneste si ramane pornit
-# armezi, lasi mansele libere ~1 s, ridici AUX 7
+# armezi, lasi mansele libere ~1 s, ridici comutatorul de pe canalul 8
 ```
 
 Poarta trebuie să **REFUZE**, cu motiv:
@@ -49,10 +49,10 @@ Poarta trebuie să **REFUZE**, cu motiv:
 !! HANDOVER REFUZAT: altitudine in afara ferestrei: 0.1 m
 ```
 
-Asta dovedește, dintr-o singură apăsare, că: AUX 7 ajunge de la emițător la
+Asta dovedește, dintr-o singură apăsare, că: comutatorul de pe canalul 8 ajunge de la emițător la
 FC și de acolo la companion, poarta îl vede pe frontul crescător, citește
 altitudinea, și refuză cu un motiv care se citește. Dacă nu se întâmplă
-nimic când ridici AUX 7, **nu ai o problemă de zbor — ai o problemă de
+nimic când ridici comutatorul, **nu ai o problemă de zbor — ai o problemă de
 cablaj RC**, și ai aflat-o pe masă.
 
 Repetă cu manșele mișcate: motivul trebuie să se schimbe în „manșă în afara
@@ -300,14 +300,16 @@ tools/check_rc_override.py --conn /dev/serial0 --baud 921600
 
 Verifică precondiția întregului lanț: FC-ul chiar raportează înapoi în
 `RC_CHANNELS` ce primește de la emițător? Dacă **nu**, poarta nu vede
-comutatorul AUX 7 și monitorul de override nu funcționează — iar orice test
+comutatorul AUX și monitorul de override nu funcționează — iar orice test
 cu pilot în buclă n-ar însemna nimic.
 
 Mai trebuie, pe emițător (elementul deschis 20, lipsesc deliberat din
 `nova_flight.parm` pentru că depind de transmițător):
 
-- **AUX 7** pe un comutator cu două/trei poziții — e singura cale de intrare
-  în segmentul autonom, pe **frontul crescător**, cu ≥1700 PWM sus
+- **Canalul 8** pe un comutator cu două poziții — e singura cale de intrare
+  în segmentul autonom, pe **frontul crescător**, cu **peste 1500 PWM** sus.
+  Canalul și pragul sunt în `config/nova.json` (`aux_channel`,
+  `aux_high_pwm`), citite și de pornirea automată, și de proba de coborâre
 - **`FLTMODE_CH` + `FLTMODE1..6`** — abortul robust e un mod de zbor mapat
   direct pe FC, care nu trece prin Pi deloc (16.2.3). Detecția pe manșe e
   necesară pentru 15.1.7, dar nu e singurul strat.
@@ -342,7 +344,7 @@ pi/descent_test.sh --full-sequence  # și urcarea la 5 m (15.2.7)
 ```
 
 Verifică, în ordine, și **refuză** dacă ceva lipsește: E0, calibrarea,
-`FLTMODE_CH`, `RC7_OPTION`, heartbeat-ul, preflight-ul întreg. Apoi arată
+`FLTMODE_CH`, `RC8_OPTION`, heartbeat-ul, preflight-ul întreg. Apoi arată
 un briefing și cere să scrii `ZBOR` — un `y` se apasă din reflex.
 
 **Implicit nu urcă după contact.** Secvența se încheie pe sol și ArduPilot
@@ -354,7 +356,7 @@ Ce face vehiculul:
 
 ```
 pilotul aduce la 5–12 m deasupra markerului, LOITER, manșe libere ~1 s
-pilotul ridică AUX 7   → poarta ACCEPTĂ sau REFUZĂ, cu motiv
+pilotul ridică AUX (8) → poarta ACCEPTĂ sau REFUZĂ, cu motiv
 companion-ul cere LAND → așteaptă confirmarea FC
 coborâre cu PLND       → LANDING_TARGET la 20 Hz
 încadrarea la 0.72     → coborâre verticală
@@ -385,7 +387,7 @@ Apoi, la manșe:
    mai bine.
 4. **LOITER**, manșe libere, ~1 s. Poarta măsoară amplitudinea în fereastra
    asta — dacă tremuri, refuză.
-5. Ridici **AUX 7**. Ori ACCEPT și pornește, ori REJECT cu motiv.
+5. Ridici comutatorul de pe **canalul 8**. Ori ACCEPT și pornește, ori REJECT cu motiv.
 6. **Mâna pe comutatorul de mod** până se termină. ~30 s.
 
 Ce vezi în log, dacă merge:

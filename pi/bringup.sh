@@ -189,7 +189,7 @@ cat <<'NOTA'
     tools/check_rc_override.py --conn /dev/serial0 --baud 921600
         verifica preconditia intregului lant: FC-ul chiar raporteaza inapoi
         in RC_CHANNELS ce primeste de la emitator. Daca nu, poarta nu vede
-        comutatorul AUX 7 si monitorul de override nu functioneaza.
+        comutatorul AUX si monitorul de override nu functioneaza.
 NOTA
 
 # --- 5. preflight ----------------------------------------------------------

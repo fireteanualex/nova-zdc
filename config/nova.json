@@ -14,5 +14,9 @@
   "camera_rotation_deg": 90,
 
   "_flight_parm": "Fisierul de parametri care corespunde firmware-ului de pe FC. Placa ruleaza ArduCopter 4.5.7, unde trei nume si doua unitati difera de 4.7+ (CLAUDE.md §5.4). Daca urci firmware-ul la 4.7.0, schimba in config/nova_flight.parm.",
-  "flight_parm": "config/nova_flight_4.5.parm"
+  "flight_parm": "config/nova_flight_4.5.parm",
+
+  "_aux_channel": "Canalul RC pe care pilotul cere segmentul autonom, pe frontul crescator. Comutator cu 2 pozitii pe canalul 8: sus (peste aux_high_pwm) = cerere de handover. Il citesc si pornirea automata, si proba de coborare. RC8_OPTION trebuie sa fie 0 pe FC.",
+  "aux_channel": 8,
+  "aux_high_pwm": 1500
 }

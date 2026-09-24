@@ -11,7 +11,7 @@
 # ===========================================================================
 #
 #   pilotul aduce vehiculul la 5-12 m deasupra markerului, in LOITER
-#   pilotul ridica AUX 7          -> poarta valideaza si ACCEPTA sau REFUZA
+#   pilotul ridica AUX (can. 8)   -> poarta valideaza si ACCEPTA sau REFUZA
 #   companion-ul cere LAND        -> asteapta confirmarea FC-ului
 #   coborare cu PLND              -> LANDING_TARGET la 20 Hz din camera
 #   incadrarea atinge final_fill  -> coborare verticala, fara corectii
@@ -51,7 +51,7 @@ FULL_SEQ=0
 ASSUME_YES=0
 # Canalul pe care pilotul CERE segmentul autonom, pe frontul crescator.
 # Modul LAND nu declanseaza nimic: intrarea e doar prin canalul asta (§8).
-AUX_CH="${NOVA_AUX_CH:-7}"
+AUX_CH="${NOVA_AUX_CH:-}"       # gol = cel din config/nova.json
 
 say()  { printf '\n\033[1m[coborare]\033[0m %s\n' "$*"; }
 ok()   { printf '  \033[32mOK\033[0m    %s\n' "$*"; }
@@ -85,6 +85,12 @@ if command -v systemctl >/dev/null \
 fi
 [[ -x "$VENV/bin/python" ]] || die "nu gasesc venv-ul la $VENV"
 PY="$VENV/bin/python"
+# Canalul de handover: cel din config/nova.json, acelasi pe care il asculta
+# si pornirea automata. --aux-channel=N il suprascrie doar pentru proba asta.
+if [[ -z "$AUX_CH" ]]; then
+  AUX_CH="$("$PY" -c "import sys; sys.path.insert(0, '$REPO')
+from nova import config; print(config.load()['aux_channel'])")"
+fi
 PROBLEME=0
 nu_e_gata() { bad "$1"; PROBLEME=$((PROBLEME + 1)); }
 
@@ -178,10 +184,15 @@ elif int(ch) == 0:
     print("        Asta e singura cale de abort care functioneaza si daca")
     print("        Pi-ul e mort. Fara ea nu se zboara autonom.")
     probleme += 1
+elif int(ch) == aux_ch:
+    print(f"  LIPSA FLTMODE_CH = {aux_ch}, ACELASI canal cu handover-ul.")
+    print(f"        Comutatorul ar schimba modul de zbor SI ar cere segmentul")
+    print(f"        autonom deodata. Muta unul dintre ele pe alt canal.")
+    probleme += 1
 else:
     print(f"  OK    FLTMODE_CH = {int(ch)} (abort hardware, ocoleste Pi-ul)")
 
-# 2. AUX 7: singura cale de INTRARE in segment (§8).
+# 2. Canalul de handover: singura cale de INTRARE in segment (§8).
 opt = p.get(f'RC{aux_ch}_OPTION')
 if opt is not None and int(opt) != 0:
     print(f"  ATENTIE: RC{aux_ch}_OPTION = {int(opt)}. Canalul are deja o")
@@ -221,7 +232,7 @@ cat <<'NOTA'
 
     tools/check_rc_override.py --conn /dev/serial0 --baud 921600
         FC-ul chiar raporteaza inapoi in RC_CHANNELS ce primeste? Daca nu,
-        poarta nu vede AUX 7 si monitorul de override nu exista.
+        poarta nu vede comutatorul AUX si monitorul de override nu exista.
 NOTA
 
 # --- 5. preflight ----------------------------------------------------------

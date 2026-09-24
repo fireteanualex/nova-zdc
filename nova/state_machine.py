@@ -657,8 +657,20 @@ class LandingStateMachine:
         fresh = det is not None and (self.now - self.last_det_rx) < 0.5
         vis = (f"marker {det.marker_px:6.1f} px  range {det.range_m:5.2f} m"
                if fresh else "MARKER PIERDUT")
+        # Canalul de handover, valoarea bruta si SUS/jos. Cererea se face pe
+        # frontul crescator, deci o singura linie de tranzitie la ridicare;
+        # asta arata pe fiecare linie de stare daca comutatorul chiar ajunge
+        # la Pi - un canal gresit in config sau un RCn_OPTION care il
+        # ocupa se vad aici, nu doar prin lipsa unei tranzitii.
+        ch = self.cfg.aux_channel
+        rc = getattr(self.v, 'rc', None)
+        if rc is not None and len(rc) >= ch:
+            aux = (f"AUX{ch} {rc[ch - 1]:4d} "
+                   f"{'SUS' if self.aux_high() else 'jos'}")
+        else:
+            aux = f"AUX{ch} -"
         return (f"[{self.state:<17}] alt {self.v.alt:6.2f} m | {vis} | "
-                f"LT {self.v.n_lt} DS {self.v.n_ds}")
+                f"{aux} | LT {self.v.n_lt} DS {self.v.n_ds}")
 
 
 def run_loop(vehicle, detector, sm, supervisor=None, on_status=None,

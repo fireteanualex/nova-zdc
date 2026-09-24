@@ -56,6 +56,17 @@ DEFAULTS = {
     #   4.7.0+  config/nova_flight.parm
     #   4.5.x   config/nova_flight_4.5.parm  (generat, nu editat de mana)
     'flight_parm': 'config/nova_flight.parm',
+
+    # Canalul RC pe care pilotul CERE segmentul autonom (frontul crescator).
+    # Intr-un singur loc: pornirea automata si proba de coborare trebuie sa
+    # asculte ACELASI canal. Cand erau parametri separati, monitorul asculta
+    # 7 iar comutatorul era pe 6 - deci in log nu aparea nicio cerere, si
+    # parea ca handover-ul nu ajunge la Pi.
+    'aux_channel': 7,
+    # Peste ce PWM consideram comutatorul "sus". 1700 e pentru comutatoare
+    # de 3 pozitii (~1000/1500/2000: clar in treapta de sus, departe de
+    # mijloc). Pentru unul de 2 pozitii (~1000/2000), 1500 e chiar mijlocul.
+    'aux_high_pwm': 1700,
 }
 
 
