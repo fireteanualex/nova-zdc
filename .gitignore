@@ -12,3 +12,17 @@ sim/models/iris_nova/
 # pastreaza ca evidenta se copiaza explicit, cu tools/collect_session.py.
 data/batch/
 claude-markdown
+
+# CONFIDENTIALE. Atentie: gitignore NU scoate un fisier deja urmarit -
+# un fisier listat aici dar commit-uit inainte ramane in istorie pana e
+# scos explicit (git rm --cached + curatarea istoriei). Tiparele previn
+# clasa de greseala, nu doar un nume.
+ims-backup.key
+*.key
+*.pem
+*.p12
+.env
+.env.*
+id_ed25519*
+id_rsa*
+*.secret
