@@ -1,0 +1,25 @@
+[Desktop Entry]
+# NOVA - ZDC 2026 - pornirea automata, din sesiunea grafica.
+#
+# Instalat de pi/install.sh in ~/.config/autostart/. Il ruleaza desktop-ul
+# la login (cu autologin: la fiecare boot).
+#
+# DE CE UN FISIER DE AUTOSTART, SI NU `WantedBy=graphical-session.target`.
+# Prima varianta lega serviciul de graphical-session.target. Doua probleme,
+# amandoua fara niciun mesaj:
+#   1. nu toate desktop-urile activeaza tinta asta - compozitoarele Wayland
+#      usoare (labwc, pe Raspberry Pi OS) de obicei nu, deci serviciul nu ar
+#      porni niciodata;
+#   2. un serviciu systemd de utilizator NU mosteneste WAYLAND_DISPLAY /
+#      DISPLAY decat daca sesiunea i le da explicit - deci chiar pornit, ar
+#      rula fara fereastra.
+# Aici sesiunea grafica, care STIE ecranul, ii da variabilele lui systemd si
+# abia apoi porneste serviciul. Serviciul ramane serviciu: reporniri la
+# esec, oprire cu SIGINT, `systemctl --user status/stop/start`, jurnal.
+Type=Application
+Name=NOVA bring-up
+Comment=Monitorul NOVA (fara comenzi catre vehicul), cu fereastra pe tot ecranul
+Exec=sh -c 'systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY; systemctl --user start nova-bringup.service'
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

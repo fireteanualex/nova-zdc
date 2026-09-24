@@ -255,7 +255,9 @@ Vrei ca Pi-ul să pornească singur monitorul la fiecare alimentare:
 cd ~/nova-zdc && pi/install.sh
 ```
 
-Instalează un serviciu **de utilizator** legat de sesiunea grafică. Cere
+Instalează un serviciu **de utilizator** și o intrare de autostart: la
+login, desktop-ul îi dă variabilele de ecran și îl pornește. **Fără
+`sudo`**, ca `nova`. Cere
 autologin:
 
 ```

@@ -1394,14 +1394,34 @@ def test_bringup_unitatea_de_boot():
         "StartLimitIntervalSec e in [Service], unde e ignorat tacut")
     assert 'StartLimitBurst' in sec['Unit'] and 'StartLimitBurst' not in srv
 
-    # Serviciu de UTILIZATOR, legat de sesiunea grafica: unul de sistem
-    # porneste inainte sa existe un ecran, deci `imshow` esueaza si
-    # fereastra nu apare niciodata - in timp ce statusul arata verde (§5.28).
-    assert sec['Install']['WantedBy'] == 'graphical-session.target', (
-        f"fara sesiune grafica fereastra nu are unde sa apara: "
-        f"{sec['Install'].get('WantedBy')}")
+    # Serviciu de UTILIZATOR, pornit de SESIUNEA GRAFICA prin autostart, nu
+    # activat cu `enable`. Pe vehicul, legat de graphical-session.target, nu
+    # pornea: labwc (Raspberry Pi OS) nu activeaza tinta, iar un serviciu de
+    # utilizator nu mosteneste WAYLAND_DISPLAY decat daca sesiunea i-l da.
+    assert 'WantedBy' not in unit.split('# FARA [Install]')[0], (
+        "unitatea se activeaza pe o tinta - ar putea porni inaintea "
+        "importului variabilelor de ecran, deci fara fereastra")
+    assert 'Install' not in sec, f"sectiune [Install] ramasa: {sec.get('Install')}"
     assert 'multi-user.target' not in unit, (
         "unitatea pare sa fie de sistem; fereastra OpenCV cere o sesiune")
+
+    auto = open(os.path.join(REPO, 'pi', 'nova-bringup.desktop')).read()
+    exec_ = [l for l in auto.splitlines() if l.startswith('Exec=')]
+    assert exec_, "intrarea de autostart nu are Exec="
+    cmd = exec_[0]
+    i_imp = cmd.find('import-environment')
+    i_start = cmd.find('start nova-bringup')
+    assert -1 < i_imp < i_start, (
+        "autostart-ul porneste serviciul inainte sa-i dea variabilele de "
+        "ecran - ar rula fara fereastra")
+    assert 'WAYLAND_DISPLAY' in cmd and 'DISPLAY' in cmd
+
+    inst = open(os.path.join(REPO, 'pi', 'install.sh')).read()
+    assert '.config/autostart' in inst, "install.sh nu instaleaza autostart-ul"
+    cod = '\n'.join(l for l in inst.splitlines()
+                    if not l.lstrip().startswith('#'))
+    assert 'enable --now' not in cod, (
+        "install.sh inca activeaza unitatea pe o tinta")
 
     # Oprirea trebuie sa arate ca un Ctrl-C, ca raportul sa apuce sa se
     # scrie (§5.47).
@@ -1411,7 +1431,8 @@ def test_bringup_unitatea_de_boot():
     # vezi unde a ajuns.
     assert 'PYTHONUNBUFFERED=1' in srv.get('Environment', ''), (
         "fara PYTHONUNBUFFERED logul e tamponat si pare gol")
-    return "unitate de utilizator, StartLimit in [Unit], SIGINT la oprire"
+    return ("unitate de utilizator pornita din autostart, dupa importul "
+            "ecranului; StartLimit in [Unit], SIGINT la oprire")
 
 
 def test_uneltele_din_ghiduri_se_pot_rula_direct():

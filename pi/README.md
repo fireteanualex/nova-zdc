@@ -222,7 +222,8 @@ remote, dar încet.
 cd ~/nova-zdc && pi/install.sh
 ```
 
-Serviciu **de utilizator**, legat de sesiunea grafică — un serviciu de
+Serviciu **de utilizator**, pornit de sesiunea grafică printr-o intrare de
+autostart (`~/.config/autostart/nova-bringup.desktop`) — un serviciu de
 sistem pornește înainte să existe un ecran, deci `imshow` ar eșua și
 fereastra nu ar apărea niciodată, în timp ce `systemctl status` ar arăta
 verde.

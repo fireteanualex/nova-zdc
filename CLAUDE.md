@@ -207,7 +207,8 @@ criptic. Dacă pornești `sim_vehicle.py` de mână, dă întâi `deactivate`.
 │   ├── bringup.sh            # verificari + monitor cu fereastra fullscreen
 │   ├── descent_test.sh       # proba de coborare autonoma pe vehiculul de test
 │   ├── install.sh            # serviciul de utilizator, pornit la fiecare boot
-│   └── nova-bringup.service  # unitate systemd (graphical-session)
+│   ├── nova-bringup.service  # unitate systemd de utilizator (fara enable)
+│   └── nova-bringup.desktop  # autostart: sesiunea grafica porneste serviciul
 ├── systemd/
 │   └── nova-monitor.service  # generat de nova_service.py --install-unit
 ├── requirements-pi.txt       # pip comun (fără picamera2/numpy/opencv)
@@ -3184,11 +3185,30 @@ moartă într-un sens, fără niciun mesaj nicăieri.
 
 #### Fereastra fullscreen cere o sesiune grafică, deci un serviciu de utilizator
 
-`nova-bringup.service` e **de utilizator**, legat de `graphical-session.target`.
-Un serviciu de sistem pornește înaintea oricărei sesiuni: `imshow` aruncă
-`Can't initialize GUI backend`, `nova/preview.py` se stinge singură și spune
-de ce (§5.28) — deci serviciul ar porni, ar arăta verde în `systemctl
-status`, și nu s-ar vedea nimic pe ecran. Cere autologin pe desktop.
+`nova-bringup.service` e **de utilizator**. Un serviciu de sistem pornește
+înaintea oricărei sesiuni: `imshow` aruncă `Can't initialize GUI backend`,
+`nova/preview.py` se stinge singură și spune de ce (§5.28) — deci serviciul
+ar porni, ar arăta verde în `systemctl status`, și nu s-ar vedea nimic pe
+ecran. Cere autologin pe desktop.
+
+**Și nu se activează cu `enable`, ci din autostart.** Prima variantă îl lega
+de `graphical-session.target`. Pe vehicul nu pornea — două cauze posibile,
+amândouă tăcute, și nu pot confirma de aici care a lovit:
+
+1. compozitoarele Wayland ușoare (labwc, pe Raspberry Pi OS) de obicei **nu
+   activează** `graphical-session.target`, deci o unitate legată de el nu
+   pornește niciodată;
+2. un serviciu systemd de utilizator **nu moștenește** `WAYLAND_DISPLAY` /
+   `DISPLAY` decât dacă sesiunea i le dă — chiar pornit, ar rula fără
+   fereastră.
+
+Acum `pi/nova-bringup.desktop`, în `~/.config/autostart/`, e rulat de
+sesiunea grafică la login: face `systemctl --user import-environment
+DISPLAY WAYLAND_DISPLAY XAUTHORITY` și **apoi** `start`. Serviciul rămâne
+serviciu (reporniri la eșec, SIGINT la oprire, `status/stop/start`), dar nu
+mai depinde de o țintă pe care desktop-ul poate să n-o atingă. Nu are
+`[Install]`: activat pe țintă, ar putea porni *înaintea* importului — adică
+fără fereastră — iar pornirea din autostart ar deveni un no-op.
 
 Pentru vehicul, fără ecran, rămâne `systemd/nova-monitor.service`, care e de
 sistem. **Nu se pornesc amândouă**: se bat pe `/dev/serial0` (§5.27).

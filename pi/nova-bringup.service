@@ -1,8 +1,9 @@
 # NOVA - ZDC 2026 - bring-up la fiecare pornire a Pi-ului
 #
 # SERVICIU DE UTILIZATOR, nu de sistem. Instalat de pi/install.sh in
-# ~/.config/systemd/user/ si pornit cu:
-#     systemctl --user enable --now nova-bringup
+# ~/.config/systemd/user/. NU se activeaza cu `enable`: il porneste la login
+# pi/nova-bringup.desktop (autostart), din sesiunea grafica - vezi acolo de
+# ce. De mana: systemctl --user start|stop|status nova-bringup
 #
 # DE CE DE UTILIZATOR SI NU DE SISTEM
 #
@@ -13,7 +14,7 @@
 #   si spune de ce (§5.28). Deci ar porni, ar parea sanatos in
 #   `systemctl status`, si nu ai vedea nimic pe ecran.
 #
-#   Legat de sesiunea grafica a utilizatorului, serviciul porneste cand
+#   Pornit din sesiunea grafica a utilizatorului, serviciul porneste cand
 #   exista un ecran pe care sa deseneze. Cere autologin (raspi-config ->
 #   System Options -> Boot / Auto Login -> Desktop Autologin).
 #
@@ -48,5 +49,8 @@ RestartSec=5
 KillSignal=SIGINT
 TimeoutStopSec=20
 
-[Install]
-WantedBy=graphical-session.target
+# FARA [Install]: serviciul NU se activeaza cu `systemctl enable`. Il porneste
+# pi/nova-bringup.desktop, din sesiunea grafica, DUPA ce ii da variabilele de
+# ecran (WAYLAND_DISPLAY / DISPLAY). Activat pe graphical-session.target ar
+# fi pornit - pe desktop-urile care activeaza tinta - INAINTEA importului, deci
+# fara fereastra, iar pornirea din autostart ar fi fost apoi un no-op.

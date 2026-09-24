@@ -15,6 +15,11 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UNIT_SRC="$REPO/pi/nova-bringup.service"
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT_DST="$UNIT_DIR/nova-bringup.service"
+# Pornirea la login o face sesiunea grafica, printr-o intrare de autostart -
+# vezi pi/nova-bringup.desktop pentru de ce nu `systemctl enable`.
+AUTO_SRC="$REPO/pi/nova-bringup.desktop"
+AUTO_DIR="$HOME/.config/autostart"
+AUTO_DST="$AUTO_DIR/nova-bringup.desktop"
 
 DRY_RUN=0
 UNINSTALL=0
@@ -48,9 +53,10 @@ if [[ $EUID -eq 0 ]]; then
 fi
 
 if [[ $UNINSTALL -eq 1 ]]; then
-  say "scot serviciul"
-  run systemctl --user disable --now nova-bringup.service || true
-  run rm -f "$UNIT_DST"
+  say "scot pornirea automata"
+  run systemctl --user stop nova-bringup.service || true
+  run systemctl --user disable nova-bringup.service 2>/dev/null || true
+  run rm -f "$AUTO_DST" "$UNIT_DST"
   run systemctl --user daemon-reload
   printf '\n  gata. pi/bringup.sh ramane si se poate rula de mana.\n\n'
   exit 0
@@ -88,13 +94,41 @@ if [[ $DRY_RUN -eq 0 ]]; then
   fi
 fi
 
+say "instalez intrarea de autostart in $AUTO_DIR"
+[[ -f "$AUTO_SRC" ]] || die "nu gasesc $AUTO_SRC"
+run mkdir -p "$AUTO_DIR"
+run cp "$AUTO_SRC" "$AUTO_DST"
+
 run systemctl --user daemon-reload
-run systemctl --user enable --now nova-bringup.service
+# Curata o instalare veche, activata pe graphical-session.target: aia putea
+# porni inaintea importului variabilelor de ecran, adica fara fereastra.
+run systemctl --user disable nova-bringup.service 2>/dev/null || true
+
+# Pornire ACUM doar daca suntem in sesiunea grafica - altfel (prin SSH) nu
+# exista ecran, iar serviciul ar porni fara fereastra.
+if [[ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]]; then
+  say "suntem in sesiunea grafica: pornesc acum"
+  run systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY
+  run systemctl --user start nova-bringup.service
+  PORNIT=1
+else
+  PORNIT=0
+fi
+
+if [[ $PORNIT -eq 0 && $DRY_RUN -eq 0 ]]; then
+  cat <<'SSH'
+
+  NU l-am pornit acum: rulezi prin SSH, fara ecran, deci ar porni fara
+  fereastra. Porneste la urmatorul login pe desktop - adica la reboot, daca
+  ai autologin:
+      sudo reboot
+SSH
+fi
 
 cat <<FIN
 
   ---------------------------------------------------------------
-  Instalat. Porneste la fiecare boot, IN SESIUNEA GRAFICA.
+  Instalat. Porneste la fiecare login pe desktop (autostart).
 
   Cere autologin pe desktop, altfel nu porneste pana nu te loghezi:
       sudo raspi-config
