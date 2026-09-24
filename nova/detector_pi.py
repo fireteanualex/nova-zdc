@@ -89,6 +89,26 @@ CAMERA_CONTROLS = {
 AUTOEXP_MAX_US = CAMERA_CONTROLS['ExposureTime']
 #: Cate cadre lasam AE-ul sa convearga inainte de blocare (~1 s la 30 fps).
 AUTOEXP_FRAMES = 30
+#: Cate cadre asteptam sa se APLICE un control dupa set_controls. Prima
+#: varianta astepta fix 5: pe vehicul, seara, driverul inca raporta vechiul
+#: 32680 us, verificarea dadea ESEC fals, preflight-ul pica si pornirea
+#: automata cadea in monitor - trei boot-uri la rand (§5.61). Se asteapta
+#: VALOAREA, nu un numar de cadre.
+CONTROL_APPLY_FRAMES = 30
+
+
+def asteapta_valoare(citeste, cheie, tinta, max_incercari=CONTROL_APPLY_FRAMES,
+                     tol_rel=0.05):
+    """Apeleaza `citeste()` (dict de metadate) pana cand `cheie` ajunge la
+    `tinta` (toleranta 5%%). True daca s-a aplicat; False la epuizare -
+    atunci nepotrivirea e reala, nu metadate vechi."""
+    for _ in range(max_incercari):
+        md = citeste() or {}
+        got = md.get(cheie)
+        if got is not None and \
+                abs(float(got) - float(tinta)) <= tol_rel * abs(float(tinta)) + 1e-6:
+            return True
+    return False
 
 
 def expunere_blocata(exp_us, gain, exp_max_us=AUTOEXP_MAX_US,
@@ -909,6 +929,8 @@ class PiCameraSource(FrameSource):
                 print("[camera] ATENTIE: AE fara metadate; folosesc "
                       "valorile de banc (2000 us / gain 8)")
             self.picam2.set_controls(fixed)
+            asteapta_valoare(self.picam2.capture_metadata,
+                             'ExposureTime', fixed['ExposureTime'])
             return fixed
         exp_f, gain_f, avert = expunere_blocata(exp, gain,
                                                 gain_min=gain_min,
@@ -923,9 +945,14 @@ class PiCameraSource(FrameSource):
                   f"gain {gain_f:.2f} (plafon blur {AUTOEXP_MAX_US} us)")
             if avert:
                 print(f"[camera] ATENTIE: {avert}")
-        # cateva cadre pana se aplica, altfel verificarea citeste AE-ul
-        for _ in range(5):
-            self.picam2.capture_metadata()
+        # Se asteapta ca valoarea sa se APLICE, nu un numar fix de cadre:
+        # driverul o propaga abia dupa cateva cadre, iar verificarea citita
+        # prea devreme vede inca AE-ul si pica preflight-ul (ESEC fals).
+        if not asteapta_valoare(self.picam2.capture_metadata,
+                                'ExposureTime', fixed['ExposureTime']) \
+                and self.verbose:
+            print(f"[camera] ATENTIE: ExposureTime {fixed['ExposureTime']} us "
+                  f"nu s-a aplicat in {CONTROL_APPLY_FRAMES} cadre")
         return fixed
 
     def _verify_controls(self, wanted):

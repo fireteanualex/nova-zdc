@@ -596,6 +596,30 @@ def test_expunerea_se_masoara_apoi_se_blocheaza():
     return "afara scurt; interior plafonat cu gain compensat; bezna avertizata"
 
 
+def test_verificarea_asteapta_aplicarea_controlului():
+    """Pe vehicul, seara (24.09.2026, b1-b3): blocarea a calculat corect
+    2000 us, dar verificarea a citit metadatele dupa fix 5 cadre, a vazut
+    inca vechiul 32680 al AE-ului, si ESEC-ul fals a trimis pornirea
+    automata in monitor - trei boot-uri, 12 handovere refuzate. Se asteapta
+    VALOAREA, cu un maxim dupa care nepotrivirea e reala."""
+    from nova.detector_pi import asteapta_valoare
+    # driverul raporteaza vechea valoare inca 12 cadre, apoi o aplica
+    valori = [32680] * 12 + [2000] * 30
+    it = iter(valori)
+    assert asteapta_valoare(lambda: {'ExposureTime': next(it)},
+                            'ExposureTime', 2000) is True
+    # NEGATIV: nu se aplica niciodata -> False, nepotrivirea e reala
+    assert asteapta_valoare(lambda: {'ExposureTime': 32680},
+                            'ExposureTime', 2000, max_incercari=8) is False
+    # metadate lipsa nu arunca si nu trec drept aplicare
+    assert asteapta_valoare(lambda: {}, 'ExposureTime', 2000,
+                            max_incercari=3) is False
+    # toleranta de driver: 1990 pentru 2000 cerut e aplicat (ca la banc)
+    assert asteapta_valoare(lambda: {'ExposureTime': 1990},
+                            'ExposureTime', 2000) is True
+    return "12 cadre vechi tolerate; neaplicat -> False; 1990~2000 ok"
+
+
 def test_luminozitatea_ajunge_in_statistici():
     """In zbor nu exista NICIO cifra despre expunere in log - cauza
     probabila (imagine supraexpusa) a ramas o ipoteza. `lum` o face
@@ -622,6 +646,8 @@ TESTS = [
      test_expunerea_se_masoara_apoi_se_blocheaza),
     ('luminozitatea ajunge in statistici',
      test_luminozitatea_ajunge_in_statistici),
+    ('verificarea asteapta aplicarea controlului',
+     test_verificarea_asteapta_aplicarea_controlului),
     ('incadrarea tine cont de rotatia markerului',
      test_incadrarea_tine_cont_de_rotatia_markerului),
     ('direct dedesubt, 8 m', test_direct_dedesubt_8m),

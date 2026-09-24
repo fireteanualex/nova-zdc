@@ -3332,6 +3332,29 @@ ROI). Direcția probabilă: căutare pe imagine redusă la scară cu rafinarea
 colțurilor pe rezoluția plină — de decis, nu de strecurat; e detectorul
 care zboară. Element deschis 37.
 
+#### Prima rulare pe teren a blocării: ESEC fals din metadate vechi
+
+Aceeași seară, proba cu markerul iluminat: AE-ul a cerut **32 680 µs la
+gain 16** (maximul la 30 fps; i-ar fi trebuit gain 261 la plafonul de
+2 ms — noaptea lipsesc ~4 trepte de lumină). Blocarea a calculat corect,
+dar verificarea „cerute = aplicate” a citit metadatele după fix 5 cadre,
+a văzut încă valoarea veche a AE-ului și a raportat `ESEC controale` —
+fals. Preflight-ul a picat, pornirea automată a căzut în monitor **în
+toate cele 3 boot-uri**, iar cele 12 ridicări de comutator din zbor au
+fost refuzate cu motivul monitorului. Că valoarea se aplicase totuși o
+arată `lum 24` din același log.
+
+Reparat: se așteaptă **valoarea**, nu un număr de cadre
+(`asteapta_valoare`, cu maxim după care nepotrivirea e reală). Driverul
+propagă un control abia după câteva cadre — §5.10 are și forma inversă:
+o citire înapoi făcută prea devreme poate contrazice o scriere reușită.
+
+Zborul de noapte cu marker iluminat rămâne **de decis, nu de reglat**
+(element 38): la plafonul de blur scena e legitim întunecată, iar
+auto-expunerea măsoară media scenei, nu markerul. Datele empirice — s-a
+văzut markerul luminat la 2 ms / gain 16? — sunt în `bringup-b2` (zborul
+a rulat în monitor, deci detecția a fost înregistrată).
+
 #### Ceasul Pi-ului minte pe teren — numele logurilor nu identifică zborul
 
 Pi 4 nu are RTC; fără NTP restaurează la boot ultima oră salvată, iar
@@ -3767,6 +3790,7 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 22b | **Campania nu a rulat niciodată.** O secvență a mers; `batch_sim.py` cu N rulări și condiții variate nu a fost pornit, deci nu există distribuții. Mediul de dezvoltare nu poate rula Gazebo (`libEGL: failed to create dri2 screen`), deci rulează operatorul | I4, 8.4.2 |
 | 23 | ~~Cifrele I4 — nicio măsurătoare~~ măsurate pe 20 de rulări (§5.52). Rămâne: coada erorii unghiulare pe `DESCEND_TRACK` (p95 2.26° față de pragul de 0.5°), cauză nelămurită; și latența, care se măsoară pe Pi, nu aici | 8.4.2, Safety Case |
 | 24 | Distanța de frânare la 0.8 și 1.5 m/s, pentru `PROFIL_RAPID` (blocat până atunci) | 15.2.9, I5 |
+| 38 | **Zbor de noapte cu marker iluminat**: la plafonul de blur de 2 ms lipsesc ~4 trepte (AE a cerut gain 261; senzorul dă 16). De decis: expunere fixă aleasă pe markerul luminat (`camera_exposure_us`?), pornire cu markerul în cadru, sau doar zi. Datele din zborul de seară sunt în `bringup-b2` (§5.61) | E2, 8.3.2 |
 | 37 | **Detecția full-frame ia ~320 ms pe Pi 4** (2304×1296): 3–5 fps procesate față de 30 ale camerei, deci intervalul între detecții nu ține pragul de 0.3 s al porții / 0.5 s al supervizorului (§5.61). De decis: căutare pe scară redusă + rafinare pe rezoluția plină, sau ROI mai agresiv | 15.2.3, 8.3.2, E1.4 |
 | 36 | **15.2.5 nu e activ pe vehicul.** `nova/ekf_source.py` e implementat, testat și **măsurat** în sim (10 rulări, comutare confirmată prin citire înapoi, eroare finală neschimbată — §5.54), dar `tools/nova_pi.py` **nu îl instanțiază**. Deci pe aeronavă EKF-ul primește GNSS pe tot segmentul autonom, iar rândul din Compliance Matrix ar afirma ceva ce codul care zboară nu face. Lipsește o singură legătură în aplicația de bord, nu hardware. Blocant pentru orice încercare punctată | **15.2.5**, Compliance Matrix |
 | 35 | **`nova/fence.py` nu e cablat nicăieri.** Modulul e validat în SITL — ciclu complet salvare → încărcare cerc de 10 m pe marker → citire înapoi → restaurare — dar nu îl instanțiază nici `nova_pi.py`, nici `nova_sim.py`, nici `fake_detector.py`. Deci stratul din firmware cerut de 15.2.4 **nu e activ**; rămân doar `_mon_radius` și `_mon_ceiling` din supervizor, care depind de Pi. Aceeași formă ca §5.14: piesa merge, cablajul nu există. Cere și lat/lon-ul markerului, care se deduce din poziția vehiculului plus offsetul măsurat la handover — logică nouă, deci de decis, nu de strecurat | **15.2.4**, Compliance Matrix |
