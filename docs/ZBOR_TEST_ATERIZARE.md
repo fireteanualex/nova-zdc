@@ -131,6 +131,13 @@ verificarea de telemetru" — fără busolă, GPS, INS, baterie, RC. Exact
 invers, și trece orice audit pe valoare: parametrul există și are numărul
 cerut (§5.10).
 
+> **Pe vehiculul de test, `ARMING_CHECK` îl setați voi, de mână** (decizia
+> din 24.09.2026: fără GPS lock în mediul de test). Nu mai e în
+> `config/nova_flight_4.5.parm`, deci preflight-ul nu-l compară și
+> `check_params.py --write` nu-l suprascrie. Singura condiție pentru
+> probă: **bitul 15 (rangefinder) stins**, altfel armarea pică cu
+> `Rangefinder 1: No Data`. `pi/descent_test.sh` îl citește și avertizează.
+
 ### 1.1 Scrie parametrii — de pe Pi, pe nume
 
 **Nu prin Mission Planner.** `PLND_*` și `RNGFND1_*` sunt ascunși din

@@ -1036,9 +1036,10 @@ def test_parametrii_pentru_4_5_sunt_traducerea_corecta():
        placa ar zbura alta configuratie decat cea descrisa;
     2. unitatile: WP_ACC 1.5 m/s/s copiat ca WPNAV_ACCEL 1.5 ar insemna
        1.5 cm/s/s, practic zero corectie laterala;
-    3. masca de armare INVERSATA: 32768 copiat in ARMING_CHECK ar insemna
-       "fa doar verificarea de telemetru" - fara busola, GPS, INS, baterie.
-    Toate trei ar trece orice audit pe valoare (§5.10)."""
+    3. ARMING_CHECK NU e in fisier: decizia echipei (24.09.2026), masca o
+       seteaza ei de mana. Cu el inclus, preflight-ul pica si `--write` ar
+       suprascrie valoarea lor. Omis explicit, cu motivul scris in fisier.
+    Primele doua ar trece orice audit pe valoare (§5.10)."""
     import make_parm_45 as mp
 
     assert open(mp.TINTA).read() == mp.genereaza(), (
@@ -1057,17 +1058,12 @@ def test_parametrii_pentru_4_5_sunt_traducerea_corecta():
     assert abs(gen['RNGFND1_GNDCLEAR'] - sursa['RNGFND1_GNDCLR'] * 100) <= 0.5
     assert gen['WPNAV_RFND_USE'] == sursa['WP_RFND_USE']
 
-    check = int(gen['ARMING_CHECK'])
-    skip = int(sursa['ARMING_SKIPCHK'])
-    assert not check & 1, (
-        "bitul 0 (All) aprins in ARMING_CHECK: ar face TOATE verificarile, "
-        "inclusiv cea pe care sursa o sare")
-    for b in mp.BITI_COPTER_45:
-        sarit = bool(skip & (1 << b))
-        facut = bool(check & (1 << b))
-        assert sarit != facut, (
-            f"bitul {b}: sarit pe 4.7={sarit}, facut pe 4.5={facut} - "
-            f"masca nu e inversul celei din sursa")
+    assert 'ARMING_CHECK' not in gen, (
+        "ARMING_CHECK in fisierul pentru 4.5: echipa il seteaza de mana")
+    assert 'ARMING_SKIPCHK' in mp.OMISI
+    text = open(mp.TINTA).read()
+    assert 'OMIS aici' in text and 'bitul 15' in text, (
+        "omisiunea trebuie scrisa in fisier, cu bitul care conteaza")
 
     # niciun nume care exista doar pe 4.7+
     for doar_47 in ('WP_ACC', 'WP_RFND_USE', 'ARMING_SKIPCHK',
@@ -1076,7 +1072,7 @@ def test_parametrii_pentru_4_5_sunt_traducerea_corecta():
 
     # restul identic
     for nume, v in sursa.items():
-        if nume not in mp.REDENUMIRI:
+        if nume not in mp.REDENUMIRI and nume not in mp.OMISI:
             assert gen.get(nume) == v, f"{nume}: {gen.get(nume)} vs {v}"
 
     # si preflight-ul verifica fisierul care corespunde placii
@@ -1086,8 +1082,30 @@ def test_parametrii_pentru_4_5_sunt_traducerea_corecta():
         'nova_flight_4.5.parm'), (
         "config/nova.json nu indica fisierul pentru 4.5.7, dar placa "
         "ruleaza 4.5.7 - preflight-ul ar pica pe nume inexistente")
-    return (f"WPNAV_ACCEL {gen['WPNAV_ACCEL']:.0f}, ARMING_CHECK {check}, "
+    return (f"WPNAV_ACCEL {gen['WPNAV_ACCEL']:.0f}, ARMING_CHECK omis, "
             f"{len(gen)} parametri, la zi cu sursa")
+
+
+def test_bitii_de_armare_sunt_cei_din_ArduPilot():
+    """Tabela care descompune masca in check_params.py avea bitii 12-14
+    decalati: bitul 12 aparea ca "hardware de siguranta". E GPS_CONFIG - chiar
+    bitul stins pe vehicul, deci ieșirea descria gresit exact schimbarea
+    care conta. Valorile de mai jos sunt din AP_Arming.h (enum Check),
+    identice pe Copter-4.5.7 si pe 4.8-dev."""
+    import check_params as cp
+    din_sursa = {11: 'SWITCH', 12: 'GPS_CONFIG', 13: 'SYSTEM', 14: 'MISSION',
+                 15: 'RANGEFINDER', 16: 'CAMERA'}
+    asteptat = {11: 'comutator de siguranta', 12: 'GPS config',
+                13: 'sistem', 14: 'misiune', 15: 'rangefinder', 16: 'camera'}
+    for bit in din_sursa:
+        assert cp.BITI_ARMARE[bit] == asteptat[bit], (
+            f"bitul {bit} ({din_sursa[bit]}): {cp.BITI_ARMARE[bit]!r}")
+    assert cp.BITMASKS['ARMING_CHECK'] is cp.BITMASKS['ARMING_SKIPCHK']
+    # valoarea de pe vehicul: masca generata inainte, fara bitul 12
+    d = cp.describe_mask('ARMING_CHECK', 1011198)
+    stinse = d.split('STINS  :')[1]
+    assert '12:GPS config' in stinse and '15:rangefinder' in stinse, d
+    return "11-16 ca in AP_Arming.h; 1011198 = GPS config si rangefinder stinse"
 
 
 class _FCFals:
@@ -1894,6 +1912,8 @@ TESTS = [
     ('G4: codul de iesire ca poarta', test_G4_codul_de_iesire_ca_poarta),
     ('preflight numeste parametrul nepotrivit',
      test_preflight_numeste_parametrul_nepotrivit),
+    ('bitii de armare sunt cei din ArduPilot',
+     test_bitii_de_armare_sunt_cei_din_ArduPilot),
     ('autostart zbor doar explicit si cu E0',
      test_autostart_zbor_doar_explicit_si_cu_E0),
     ('motivele de monitor incap in STATUSTEXT',

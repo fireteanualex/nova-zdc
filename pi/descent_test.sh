@@ -176,7 +176,8 @@ except Exception as e:                                        # noqa: BLE001
 
 t0 = time.monotonic()
 aux_ch = int(os.environ.get('NOVA_AUX_CH', '7'))
-for nume in ('FLTMODE_CH', f'RC{aux_ch}_OPTION', 'FENCE_ENABLE'):
+for nume in ('FLTMODE_CH', f'RC{aux_ch}_OPTION', 'FENCE_ENABLE',
+             'ARMING_CHECK', 'ARMING_SKIPCHK'):
     v.request_param(nume)
 while time.monotonic() - t0 < 4.0:
     v.pump()
@@ -211,7 +212,23 @@ if opt is not None and int(opt) != 0:
 else:
     print(f"  OK    RC{aux_ch}_OPTION = 0 (canalul {aux_ch} e liber)")
 
-# 3. Heartbeat: monitorul de legatura al supervizorului depinde de el.
+# 3. Verificarile la armare le seteaza echipa (decizia din 24.09.2026), deci
+#    NU refuzam pe ele. Un singur bit strica proba: verificarea de
+#    rangefinder. Telemetrul e camera, care nu masoara nimic pe sol, deci cu
+#    bitul aprins armarea pica cu "Rangefinder 1: No Data" (§5.13).
+RNG = 1 << 15
+ac, sk = p.get('ARMING_CHECK'), p.get('ARMING_SKIPCHK')
+if ac is not None and (int(ac) & 1 or int(ac) & RNG):
+    print(f"  ATENTIE: ARMING_CHECK = {int(ac)} face verificarea de")
+    print(f"           rangefinder: armarea va pica cu 'Rangefinder 1: No")
+    print(f"           Data'. Stinge bitul 15 (si bitul 0, 'toate').")
+elif sk is not None and not int(sk) & RNG:
+    print(f"  ATENTIE: ARMING_SKIPCHK = {int(sk)} nu sare rangefinder-ul")
+    print(f"           (bitul 15): armarea va pica cu 'Rangefinder 1: No Data'.")
+elif ac is not None or sk is not None:
+    print("  OK    verificarea de rangefinder e oprita la armare")
+
+# 4. Heartbeat: monitorul de legatura al supervizorului depinde de el.
 iv = v.heartbeat_interval() if hasattr(v, 'heartbeat_interval') else None
 if iv:
     print(f"  OK    HEARTBEAT la {1.0 / iv:.1f} Hz (interval {iv * 1000:.0f} ms)")

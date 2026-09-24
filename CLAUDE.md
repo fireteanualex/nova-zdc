@@ -524,6 +524,21 @@ de telemetru** — și sari peste busolă, GPS, INS, baterie, RC. Exact
 invers, și exact genul de valoare care trece orice audit pe valoare
 (§5.10) pentru că parametrul există și are numărul cerut.
 
+> **Decizia echipei, 24.09.2026: pe 4.5.7, `ARMING_CHECK` nu se mai
+> impune.** Mediul de test nu are GPS lock, iar masca generată bloca
+> decolarea; echipa a stins bitul 12 (GPS config) de mână. Cu el în
+> fișier, preflight-ul pica pe „1 nepotriviri”, pornirea automată cădea
+> în monitor, iar `--write` ar fi suprascris valoarea lor. Acum
+> `make_parm_45.py` îl omite explicit (`OMISI`), cu motivul scris în
+> fișierul generat. Rămâne o singură condiție funcțională — bitul 15
+> (rangefinder) stins — pe care `descent_test.sh` o citește și o
+> **semnalează**, fără să refuze.
+>
+> Tot de aici: tabela de biți din `check_params.py` avea 12–14 decalați
+> (bitul 12 apărea ca „hardware de siguranță”; e `GPS_CONFIG`, verificat
+> în `AP_Arming.h`). Descria greșit exact bitul pe care îl schimbase
+> echipa.
+
 **Recomandarea e să urci firmware-ul la 4.7.0, nu să traduci fișierul.**
 4.7.0 e stabil și are toate numele din `nova_flight.parm`; e și cel mai
 apropiat de 4.8.0-dev, adică de ce s-a măsurat în SITL. O configurație

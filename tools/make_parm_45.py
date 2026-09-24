@@ -17,15 +17,24 @@ ArduPilot, nu din memorie - CLAUDE.md §5.4):
     RNGFND1_MIN    m      RNGFND1_MIN_CM  cm    x 100
     RNGFND1_MAX    m      RNGFND1_MAX_CM  cm    x 100
     RNGFND1_GNDCLR m      RNGFND1_GNDCLEAR cm   x 100, intreg
-    ARMING_SKIPCHK        ARMING_CHECK          masca INVERSATA
+    ARMING_SKIPCHK        (NU se genereaza)     decizia echipei, mai jos
 
-DE CE GENERAT SI NU SCRIS DE MANA. Masca de armare se inverseaza:
-SKIPCHK listeaza ce SARI, CHECK listeaza ce FACI. Un 32768 copiat in
-ARMING_CHECK ar insemna "fa DOAR verificarea de telemetru" - fara busola,
-GPS, INS, baterie, RC - si ar trece orice audit pe valoare, fiindca
-parametrul exista si are numarul cerut (§5.10). La fel un 1.5 copiat in
-WPNAV_ACCEL: 1.5 cm/s/s, adica practic zero corectie laterala. Traducerea
-e cod, testata, si se regenereaza cand sursa se schimba.
+DE CE GENERAT SI NU SCRIS DE MANA. Un 1.5 copiat in WPNAV_ACCEL ar fi
+1.5 cm/s/s, adica practic zero corectie laterala - si ar trece orice audit
+pe valoare, fiindca parametrul exista si are numarul cerut (§5.10).
+Traducerea e cod, testata, si se regenereaza cand sursa se schimba.
+
+ARMING_CHECK NU E IN FISIERUL GENERAT. Decizia echipei, 24.09.2026: pe
+vehiculul de test verificarile la armare le seteaza echipa, de mana -
+mediul de test nu are GPS lock, iar masca impusa de noi bloca decolarea.
+Cu el in fisier, preflight-ul pica pe "1 nepotriviri" si `--write` ar fi
+suprascris valoarea echipei. Traducerea lui nu s-a pierdut in sursa:
+masca e INVERSA (SKIPCHK = ce sari, CHECK = ce faci), iar un 32768 copiat
+direct ar insemna "fa DOAR verificarea de telemetru".
+
+Singurul bit de care depinde proba: 15 (rangefinder) trebuie STINS, altfel
+armarea pica cu "Rangefinder 1: No Data" (§5.13). pi/descent_test.sh il
+citeste si avertizeaza; nu refuza.
 """
 
 import argparse
@@ -36,10 +45,10 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SURSA = os.path.join(REPO, 'config', 'nova_flight.parm')
 TINTA = os.path.join(REPO, 'config', 'nova_flight_4.5.parm')
 
-#: Bitii masca ARMING_CHECK pentru Copter pe 4.5.7 (tag Copter-4.5.7,
-#: AP_Arming.cpp, @Bitmask). Bitul 0 = "All"; 9 e Airspeed, doar Plane.
-BITI_COPTER_45 = (1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17,
-                  18, 19)
+#: Parametri din sursa care NU trec in fisierul pentru 4.5.7 - decizii ale
+#: echipei, nu omisiuni. Vezi docstring-ul.
+OMISI = {'ARMING_SKIPCHK': 'verificarile la armare le seteaza echipa de '
+                           'mana (decizia din 24.09.2026)'}
 
 #: nume 4.7+ -> (nume 4.5.7, conversie)
 REDENUMIRI = {
@@ -48,21 +57,11 @@ REDENUMIRI = {
     'RNGFND1_MIN': ('RNGFND1_MIN_CM', lambda v: _intreg(v * 100.0)),
     'RNGFND1_MAX': ('RNGFND1_MAX_CM', lambda v: _intreg(v * 100.0)),
     'RNGFND1_GNDCLR': ('RNGFND1_GNDCLEAR', lambda v: _intreg(v * 100.0)),
-    'ARMING_SKIPCHK': ('ARMING_CHECK', lambda v: arming_check_din_skipchk(v)),
 }
 
 
 def _intreg(x):
     return int(round(x))
-
-
-def arming_check_din_skipchk(skipchk):
-    """Masca de verificari FACUTE, din masca de verificari SARITE.
-
-    Bitul 0 ("All") trebuie stins: aprins, ar insemna "fa tot", inclusiv ce
-    am vrut sa sarim."""
-    skip = int(skipchk)
-    return sum(1 << b for b in BITI_COPTER_45 if not skip & (1 << b))
 
 
 def citeste(cale):
@@ -102,6 +101,12 @@ def genereaza():
         "",
     ]
     for nume, val in citeste(SURSA):
+        if nume in OMISI:
+            linii.append(f"# {nume},{_fmt(val)} pe 4.7+ - OMIS aici: "
+                         f"{OMISI[nume]}")
+            linii.append("#   pe 4.5.7 bitul 15 din ARMING_CHECK (rangefinder)"
+                         " trebuie STINS")
+            continue
         if nume in REDENUMIRI:
             nou, conv = REDENUMIRI[nume]
             v = conv(val)

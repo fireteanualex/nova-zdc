@@ -57,20 +57,28 @@ ABS_TOL = 1e-6
 # plafonul de altitudine cerut de 15.2.4. Pentru mastile de biti raportam
 # fiecare bit separat, cu ce inseamna - asa se vede ce am aprins si, mai
 # important, ce am stins.
+# Bitii verificarilor la armare, din AP_Arming.h (enum Check; identic pe
+# Copter-4.5.7 si pe 4.8-dev). Prima varianta avea 12-14 decalati: bitul 12
+# aparea ca "hardware de siguranta" cand e GPS_CONFIG - adica tocmai bitul
+# pe care echipa l-a stins pe vehicul, descris gresit.
+BITI_ARMARE = {
+    0: 'toate verificarile', 1: 'baro', 2: 'busola', 3: 'GPS',
+    4: 'INS', 5: 'parametri', 6: 'RC', 7: 'tensiune',
+    8: 'baterie', 9: 'airspeed', 10: 'logging',
+    11: 'comutator de siguranta', 12: 'GPS config', 13: 'sistem',
+    14: 'misiune', 15: 'rangefinder', 16: 'camera', 17: 'autorizare aux',
+    18: 'vizual', 19: 'FFT', 20: 'osd',
+}
+
 BITMASKS = {
     'FENCE_TYPE': {
         0: 'plafon de altitudine (FENCE_ALT_MAX)',
         1: 'cerc centrat pe HOME (FENCE_RADIUS)',
         2: 'cercuri/poligoane de incluziune-excluziune',
     },
-    'ARMING_SKIPCHK': {
-        0: 'toate verificarile', 1: 'baro', 2: 'busola', 3: 'GPS',
-        4: 'INS', 5: 'parametri', 6: 'RC', 7: 'tensiune',
-        8: 'baterie', 9: 'airspeed', 10: 'logging', 11: 'siguranta',
-        12: 'hardware de siguranta', 13: 'GPS config', 14: 'sistem',
-        15: 'rangefinder', 16: 'camera', 17: 'auxiliar', 18: 'vizual',
-        19: 'FFT', 20: 'osd',
-    },
+    'ARMING_SKIPCHK': BITI_ARMARE,
+    # 4.5/4.6: aceiasi biti, sens INVERS - aprins = verificarea se FACE
+    'ARMING_CHECK': BITI_ARMARE,
 }
 
 
