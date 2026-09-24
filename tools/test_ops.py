@@ -13,6 +13,7 @@ systemctl/fuser, si variabilele de mediu pentru sesiunea grafica.
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -876,8 +877,11 @@ def _flight(args, config, raspuns='', env=None):
 def _cfg_copy(tmp, valoare='false'):
     sursa = os.path.join(REPO, 'config', 'nova.json')
     dest = os.path.join(tmp, 'nova.json')
-    txt = open(sursa).read().replace('"autonomy_enabled": false',
-                                     f'"autonomy_enabled": {valoare}')
+    # Pornim de la valoarea CERUTA, oricare ar fi cea din repo: acolo E0 e o
+    # decizie a echipei, iar testul nu trebuie sa depinda de ea (§5.40).
+    txt, n = re.subn(r'"autonomy_enabled":\s*(true|false)',
+                     f'"autonomy_enabled": {valoare}', open(sursa).read())
+    assert n == 1, "config/nova.json nu are exact o cheie autonomy_enabled"
     open(dest, 'w').write(txt)
     return dest
 

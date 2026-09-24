@@ -989,6 +989,15 @@ opțiune. Așa `nova/state_machine.py` și `nova/safety.py` rămân neatinse (su
 validate), iar garda are trei teste, inclusiv cel care verifică că fișierul
 din repo e în starea închisă.
 
+> **24.09.2026: E0 deschis în repo, decizia echipei**, pentru proba de
+> coborâre pe vehiculul de test, **fără raport E2**. Împreună cu
+> `"autostart": "zbor"`: la fiecare pornire, comutatorul de pe canalul 8
+> pornește coborârea. Testele care cereau fișierul închis verifică acum că
+> valoarea e un literal și că niciun alt fișier de config nu o ridică; cele
+> care au nevoie de E0 închis îl **injectează** (§5.40), nu îl mai iau din
+> repo. Elementul 14 (E2) rămâne deschis: E0 deschis nu e dovada că
+> detectorul e validat.
+
 ### 5.17 Grila pătrată de calibrare: ambiguă la rotație, dar **nu** strică intrinsecii
 
 Sfatul obișnuit e „folosește o grilă asimetrică, altfel apar erori tăcute în

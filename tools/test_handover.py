@@ -251,21 +251,45 @@ def test_E0_config_implicit_este_dezactivat():
     with open(missing, 'w') as f:
         f.write('{"autonomy_enabled": true}')
     assert nova_config.autonomy_enabled(missing) is True
-    # si fisierul din repo, in starea de acum, trebuie sa fie INCHIS
-    assert nova_config.autonomy_enabled() is False, (
-        "config/nova.json are autonomy_enabled=true; E0 cere false pana la E2")
-    return "lipsa fisier -> fals; \"true\" string -> fals; repo -> fals"
+    # Fisierul din repo: E0 e DESCHIS din 24.09.2026, decizia echipei pentru
+    # proba de coborare pe vehiculul de test, fara raport E2 (commit-ul o
+    # spune). Ce ramane de verificat e ca valoarea e un literal JSON, nu un
+    # text care ar parea deschis si n-ar fi.
+    import json
+    brut = json.load(open(nova_config.DEFAULT_PATH))['autonomy_enabled']
+    assert isinstance(brut, bool), (
+        f"config/nova.json: autonomy_enabled={brut!r} - trebuie true/false")
+    return (f"lipsa fisier -> fals; \"true\" string -> fals; "
+            f"repo -> {str(brut).lower()} (literal)")
 
 
 def test_E0_gate_citeste_config_cand_nu_e_explicit():
     """Aplicatia de bord nu paseaza valoarea: poarta citeste fisierul."""
-    v = StubVehicle(8.0)
-    ov = OverrideMonitor(v)
-    gate = HandoverGate(v, ov)                   # autonomy_enabled=None
-    gate.on_aux_requested(100.0)
-    ok, why = gate.check(100.1, **GOOD)
+    # Fisierul se INJECTEAZA, nu se ia din repo: acolo E0 e o decizie a
+    # echipei care se schimba, iar testul nu trebuie sa depinda de ea (§5.40).
+    import json
+    import os
+    import tempfile
+    from nova import config as nova_config
+    cale = os.path.join(tempfile.mkdtemp(), 'nova.json')
+    vechi = nova_config.DEFAULT_PATH
+    try:
+        nova_config.DEFAULT_PATH = cale
+        rezultate = {}
+        for valoare in (False, True):
+            json.dump({'autonomy_enabled': valoare}, open(cale, 'w'))
+            v = StubVehicle(8.0)
+            gate = HandoverGate(v, OverrideMonitor(v))   # autonomy_enabled=None
+            gate.on_aux_requested(100.0)
+            rezultate[valoare] = gate.check(100.1, **GOOD)
+    finally:
+        nova_config.DEFAULT_PATH = vechi
+    ok, why = rezultate[False]
     assert ok is False and why == Reject.AUTONOMY_DISABLED, (ok, why)
-    return "fara valoare explicita -> politica din config/nova.json"
+    ok, why = rezultate[True]
+    assert why != Reject.AUTONOMY_DISABLED, (
+        "cu fisierul pe true, poarta refuza tot pe E0 - nu citeste fisierul")
+    return "fara valoare explicita -> fisierul decide, in ambele sensuri"
 
 
 

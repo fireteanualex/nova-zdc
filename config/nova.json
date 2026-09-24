@@ -2,7 +2,7 @@
   "_comment": "Configuratia companion-ului. Valorile implicite si sensul fiecarei chei: nova/config.py.",
 
   "_E0": "GARDA DE SIGURANTA. Cat timp autonomy_enabled e false, poarta de handover refuza orice cerere. Se pune pe true DOAR dupa ce E2 (validarea offline a detectorului) a trecut criteriile de acceptare, cu un commit separat care citeaza raportul E2.",
-  "autonomy_enabled": false,
+  "autonomy_enabled": true,
 
   "marker_id": 26,
   "marker_size_m": 0.48,
@@ -21,5 +21,5 @@
   "aux_high_pwm": 1500,
 
   "_autostart": "Ce porneste Pi-ul singur la boot. 'monitor': detector + fereastra, zero comenzi. 'zbor': proba de coborare (pi/descent_test.sh --auto) - aceleasi verificari, fara ZBOR tastat, pentru teren fara retea. 'zbor' are efect DOAR cu autonomy_enabled=true; altfel, sau daca o verificare pica la boot, cade in monitor si trimite motivul prin STATUSTEXT. Cu 'zbor' si E0 deschis, comutatorul de handover porneste coborarea autonoma la fiecare pornire a dronei. Se schimba de mana, cu commit - ca E0.",
-  "autostart": "monitor"
+  "autostart": "zbor"
 }

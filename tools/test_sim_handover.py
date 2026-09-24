@@ -332,9 +332,11 @@ def test_E0_separarea_intre_simulare_si_bord():
     import json
     radacina = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     cfg = json.load(open(os.path.join(radacina, 'config', 'nova.json')))
-    assert cfg['autonomy_enabled'] is False, (
-        "config/nova.json are autonomy_enabled=true; E0 e sursa de adevar "
-        "pentru zbor si ramane false pana la E2")
+    # E0 deschis din 24.09.2026 (decizia echipei, proba de coborare). Ce
+    # conteaza aici e ca e un literal si ca SINGURUL loc care il poate
+    # deschide e config/nova.json - verificat mai jos.
+    assert isinstance(cfg['autonomy_enabled'], bool), (
+        "config/nova.json: autonomy_enabled trebuie literal true/false")
 
     sim = open(os.path.join(radacina, 'tools', 'fake_detector.py')).read()
     assert 'autonomy_enabled=True' in sim, (
@@ -354,13 +356,13 @@ def test_E0_separarea_intre_simulare_si_bord():
 
     # si nu exista un al doilea fisier de config care sa o ridice
     for nume in os.listdir(os.path.join(radacina, 'config')):
-        if not nume.endswith('.json'):
+        if not nume.endswith('.json') or nume == 'nova.json':
             continue
         d = json.load(open(os.path.join(radacina, 'config', nume)))
         if isinstance(d, dict) and d.get('autonomy_enabled') is True:
             raise AssertionError(f"config/{nume} ridica garda E0")
-    return ("config false; simularea ocoleste explicit si anunta; bordul nu "
-            "are cale; niciun alt config nu ridica garda")
+    return ("E0 literal in nova.json; simularea ocoleste explicit si "
+            "anunta; bordul nu are cale; niciun alt config nu ridica garda")
 
 
 TESTS = [
