@@ -275,7 +275,7 @@ systemctl --user stop nova-bringup      # INAINTE de testul de aterizare
 
 > **Unde sunt logurile.** Pe Raspberry Pi OS jurnalul stă implicit în
 > memorie (`/run/log/journal`), iar în modul ăsta serviciile de utilizator
-> nu au fișiere proprii: `journalctl --user -u ...` spune „No journal files
+> nu au fișiere proprii: `journalctl --user` spune „No journal files
 > were found" deși logurile există. Sunt în jurnalul de **sistem**:
 >
 > ```bash
