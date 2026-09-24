@@ -212,7 +212,12 @@ LOG="$LOG_DIR/bringup-$STAMP.log"
 say "pornesc monitorul (E0 INCHIS: zero comenzi catre vehicul)"
 printf '  log: %s\n' "$LOG"
 
-ARGS=(--conn "$CONN" --baud "$BAUD" --stop-service --yes)
+# --monitor: bring-up-ul NU e o cale spre autonomie, nici dupa ce E0 se
+# deschide. Singura cale e pi/descent_test.sh, cu verificarile si
+# confirmarea lui. Fara flag, pornirea automata ar deveni la fiecare boot un
+# sistem autonom viu, pe canalul 7, cu urcare si cu modularea de autoritate
+# - adica altceva decat s-a verificat.
+ARGS=(--conn "$CONN" --baud "$BAUD" --stop-service --yes --monitor)
 if [[ $WINDOW -eq 1 ]]; then
   if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
     ARGS+=(--fullscreen)

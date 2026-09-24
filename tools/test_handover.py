@@ -268,7 +268,43 @@ def test_E0_gate_citeste_config_cand_nu_e_explicit():
     return "fara valoare explicita -> politica din config/nova.json"
 
 
+
+def test_monitorul_fortat_refuza_cu_motivul_lui():
+    """`nova_pi.py --monitor` (pornirea automata) inchide poarta pentru
+    rularea asta, oricare ar fi config/nova.json.
+
+    Motivul trebuie sa fie ALTUL decat cel de E0: dupa ce E0 se deschide, un
+    pilot care citeste "autonomy_enabled=false" ar gasi fisierul pe `true` si
+    n-ar mai intelege de ce e refuzat. Iar poarta nu are voie sa accepte -
+    altfel pornirea automata ar fi o a doua cale spre autonomie, cu alte
+    setari decat proba de coborare."""
+    # E0 DESCHIS - cazul care conteaza: monitorul trebuie sa castige
+    v = StubVehicle(8.0)
+    ov = OverrideMonitor(v)
+    rejects = []
+    gate = HandoverGate(v, ov, on_reject=rejects.append,
+                        autonomy_enabled=True, monitor=True)
+    gate.on_aux_requested(100.0)
+    ok, motiv = gate.check(100.1, **GOOD)
+    assert ok is False, "monitorul a acceptat cu E0 deschis"
+    assert motiv == Reject.MONITOR, motiv
+    assert 'descent_test' in motiv, "motivul nu spune ce sa porneasca"
+    assert 'autonomy_enabled=false' not in motiv
+    settle(gate)
+    ok2, _ = gate.check(SETTLED, **GOOD)
+    assert ok2 is False, "monitorul s-a razgandit dupa asezare"
+
+    # si fara monitor, aceeasi poarta cu E0 deschis accepta: flagul e cel
+    # care inchide, nu altceva din configuratia de test
+    v2, ov2, gate2, _ = build(autonomy=True)
+    settle(gate2)
+    ok3, why3 = gate2.check(SETTLED, **GOOD)
+    assert ok3 is True, f"fara monitor, poarta ar trebui sa accepte: {why3}"
+    return "cu E0 deschis: monitor -> refuz MONITOR; fara monitor -> accept"
+
 TESTS = [
+    ('monitorul fortat refuza cu motivul lui',
+     test_monitorul_fortat_refuza_cu_motivul_lui),
     ('accept in conditii bune', test_accept_in_conditii_bune),
     ('fara decizie in fereastra de asezare', test_nu_decide_in_fereastra_de_asezare),
     ('NEGATIV: mansa deviata', test_refuz_mansa_in_afara_neutrului),

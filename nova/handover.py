@@ -52,6 +52,12 @@ class Reject:
     #: inca validarea offline (E2). Se ridica din config/nova.json, cu commit.
     AUTONOMY_DISABLED = ('autonomie DEZACTIVATA (E0): config/nova.json '
                          'autonomy_enabled=false')
+    #: Poarta inchisa FORTAT pentru rularea asta (`nova_pi.py --monitor`,
+    #: folosit de pornirea automata). Motiv separat de E0: dupa ce E0 se
+    #: deschide, un pilot care ar citi "autonomy_enabled=false" ar merge sa
+    #: verifice fisierul, l-ar gasi `true`, si n-ar mai intelege nimic.
+    MONITOR = ('MONITOR: pornirea automata nu zboara autonom - porneste '
+               'pi/descent_test.sh')
     STICKS = 'mansa in afara neutrului la handover'
     ALTITUDE = 'altitudine in afara ferestrei'
     DISTANCE = 'in afara zonei de 6.5 m'
@@ -76,8 +82,16 @@ class HandoverGate:
                  settle_s=HANDOVER_SETTLE_S,
                  alt_min_m=HANDOVER_ALT_MIN_M, alt_max_m=HANDOVER_ALT_MAX_M,
                  dist_max_m=HANDOVER_DIST_MAX_M,
-                 detection_max_age_s=HANDOVER_DETECTION_MAX_AGE_S):
+                 detection_max_age_s=HANDOVER_DETECTION_MAX_AGE_S,
+                 monitor=False):
         self.v = vehicle
+        #: Poarta inchisa FORTAT pentru rularea asta, indiferent de E0
+        #: (`nova_pi.py --monitor`, folosit de pornirea automata). Parametru
+        #: separat de `autonomy_enabled`, nu o valoare a lui: `False` acolo
+        #: inseamna deja "E0 inchis", cu motivul lui. Aici poarta ramane
+        #: inchisa CHIAR SI cu E0 deschis - altfel pornirea automata ar deveni
+        #: o a doua cale spre autonomie, cu alte setari decat proba.
+        self.monitor = bool(monitor)
         self.ov = override_monitor
         self.on_reject = on_reject
         #: E0. None = citeste config/nova.json la fiecare cerere de handover
@@ -132,7 +146,9 @@ class HandoverGate:
         # E0, inaintea oricarei alte conditii si fara sa astepte asezarea:
         # daca autonomia e dezactivata, pilotul afla imediat, nu dupa 1 s.
         if not self._autonomy_allowed():
-            return self._reject(now, Reject.AUTONOMY_DISABLED)
+            motiv = (Reject.MONITOR if self.monitor
+                     else Reject.AUTONOMY_DISABLED)
+            return self._reject(now, motiv)
 
         if not self.ov.settled(now):
             # Esantionam continuu: throttle-ul se valideaza pe amplitudinea
@@ -173,6 +189,8 @@ class HandoverGate:
         return True, ''
 
     def _autonomy_allowed(self):
+        if self.monitor:
+            return False
         if self.autonomy_enabled is None:
             return nova_config.autonomy_enabled()
         return self.autonomy_enabled is True

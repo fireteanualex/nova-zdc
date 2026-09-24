@@ -1583,7 +1583,20 @@ def test_bringup_nu_e_un_al_doilea_cablaj():
     # ...si chiar spune, in text, ca nu comanda nimic
     assert 'autonomy_enabled' in src, (
         "bring-up-ul nu spune nicaieri ca E0 ramane inchis")
-    return "deleaga lui nova_pi.py, spune ca E0 e inchis, nu il atinge"
+
+    # --monitor: pornirea automata NU e o cale spre autonomie, nici cu E0
+    # deschis. Fara el, fiecare boot ar porni un sistem autonom viu, pe
+    # canalul 7, cu urcare si cu modularea de autoritate.
+    assert '--monitor' in cod, (
+        "bringup.sh nu inchide poarta: dupa deschiderea lui E0, pornirea "
+        "automata ar zbura autonom, cu alte setari decat proba")
+    d = open(os.path.join(REPO, 'pi', 'descent_test.sh')).read()
+    d_cod = '\n'.join(l for l in d.splitlines()
+                      if not l.lstrip().startswith('#'))
+    assert '--monitor' not in d_cod, (
+        "descent_test.sh da --monitor: proba de coborare n-ar putea zbura")
+    return ("deleaga lui nova_pi.py, poarta inchisa fortat (--monitor), "
+            "E0 neatins")
 
 
 def test_setup_uart_cauta_ambele_directoare_de_boot():

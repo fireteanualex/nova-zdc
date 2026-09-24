@@ -297,6 +297,10 @@ def main():
                         f'pe frontul crescator (implicit {AUX_CHANNEL}). '
                         f'Modul LAND NU declanseaza nimic - intrarea e doar '
                         f'prin canalul asta')
+    p.add_argument('--monitor', action='store_true',
+                   help='poarta de handover INCHISA pentru rularea asta, '
+                        'oricare ar fi config/nova.json. Poate doar inchide, '
+                        'niciodata deschide. Folosit de pornirea automata')
     p.add_argument('--no-ascent', action='store_true',
                    help='opreste urcarea de dupa contact (15.2.7). Secventa '
                         'se incheie pe sol. Pentru primele coborari de test, '
@@ -394,7 +398,16 @@ def main():
             pass
 
     # Fara autonomy_enabled= aici: poarta citeste config/nova.json (E0).
-    gate = HandoverGate(vehicle, override, on_reject=signal_reject)
+    # --monitor INCHIDE poarta pentru rularea asta, oricare ar fi fisierul.
+    # Doar in directia asta - E0 nu se deschide din linia de comanda
+    # (§5.16). Folosit de pornirea automata: altfel, dupa deschiderea lui E0,
+    # fiecare boot ar porni un sistem autonom viu, cu alte setari decat
+    # proba de coborare.
+    gate = HandoverGate(vehicle, override, on_reject=signal_reject,
+                        monitor=a.monitor)
+    if a.monitor:
+        print("[bord] MONITOR: poarta inchisa pentru rularea asta, oricare "
+              "ar fi config/nova.json. Coborarea: pi/descent_test.sh")
     # Ecranul are nevoie de ultima detectie (px si varsta). O ia dintr-un
     # invelis peste detector, nu dintr-o modificare in run_loop: bucla e
     # validata si nu vrem sa o atingem pentru afisare.
