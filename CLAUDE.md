@@ -3242,6 +3242,35 @@ sine la fiecare boot. Garda urcă pe arborele de procese până la `MainPID`-ul
 serviciului; în `bringup.sh`, `MainPID == $$`.
 
 
+#### Teren fără rețea: pornirea automată în modul de zbor
+
+Pe teren nu există rețea, deci nici SSH, deci nici `pi/descent_test.sh`
+pornit de mână. `"autostart": "zbor"` în `config/nova.json` face ca
+`bringup.sh` să cheme **`pi/descent_test.sh --auto`** în loc de monitor.
+
+Trei decizii, fiecare cu test:
+
+- **Un singur cablaj de zbor.** Ramura „zbor” nu își construiește piesele:
+  deleagă probei de coborâre, cu verificările ei. Un al doilea drum spre
+  `nova_pi.py` fără `--monitor` ar fi clasa de bug din §5.14.
+- **Decizia e în Python, nu în bash.** `config.autostart_mode()`: „zbor”
+  doar cu `autostart` exact `"zbor"` **și** E0 literal `true`. `"ZBOR"`,
+  `true`, E0 ca text → monitor. Aceeași regulă ca E0 (§5.16).
+- **Căderea e în monitor, nu în zbor „oricum”.** Codul 4 al probei
+  înseamnă „verificări picate, nimic pornit”, iar `bringup.sh` pornește
+  atunci monitorul cu `--monitor-motiv`. Orice alt cod e al aplicației și
+  iese, ca systemd să repornească.
+
+**Motivul trebuie să încapă în 50 de caractere.** Pe teren pilotul îl vede
+doar ca `STATUSTEXT` pe OSD / în GCS, dacă are telemetrie. Prefixul vechi
+(`NOVA handover refuzat: `) lua 23 din 50, iar un motiv ca `ZBOR refuzat:
+verificari picate la boot` ieșea tăiat exact la partea utilă. Un test
+măsoară fiecare motiv cu prefixul lui.
+
+Scrierea lui `"zbor"` în config a fost refuzată de permisiunile asistentului.
+E corect: ca E0, o schimbare care face un comutator să pornească autonomia
+la fiecare boot se face de mână, cu commit.
+
 ### 5.60 Primul preflight pe vehicul: două verificări care măsurau altceva
 
 Primul `preflight_check.py` rulat pe Pi-ul real (Trixie, Python 3.13.5,

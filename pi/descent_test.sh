@@ -5,6 +5,13 @@
 #   pi/descent_test.sh --check        # doar preconditiile, nu zboara nimic
 #   pi/descent_test.sh                # briefing + confirmare + rulare
 #   pi/descent_test.sh --full-sequence  # cu urcarea la 5 m (15.2.7)
+#   pi/descent_test.sh --auto   # din pornirea automata (config: autostart=zbor)
+#
+# --auto e pentru teren FARA RETEA: il cheama pi/bringup.sh la boot, deci
+# nu opreste pornirea automata (ESTE pornirea automata) si nu cere ZBOR
+# tastat - decizia e `"autostart": "zbor"` in config/nova.json, cu E0
+# deschis. Verificarile sunt ACELEASI: daca una pica, iese cu 4 si
+# pornirea automata cade in monitor, cu motivul trimis pilotului.
 #
 # ===========================================================================
 # CE FACE VEHICULUL, PAS CU PAS
@@ -49,6 +56,7 @@ CONFIG="$REPO/config/nova.json"
 CHECK_ONLY=0
 FULL_SEQ=0
 ASSUME_YES=0
+AUTO=0
 # Canalul pe care pilotul CERE segmentul autonom, pe frontul crescator.
 # Modul LAND nu declanseaza nimic: intrarea e doar prin canalul asta (§8).
 AUX_CH="${NOVA_AUX_CH:-}"       # gol = cel din config/nova.json
@@ -65,6 +73,7 @@ for arg in "$@"; do
     --aux-channel=*) AUX_CH="${arg#*=}" ;;
     --full-sequence) FULL_SEQ=1 ;;
     --yes)           ASSUME_YES=1 ;;
+    --auto)          AUTO=1; ASSUME_YES=1 ;;
     -h|--help)       sed -n '2,8p' "$0"; exit 0 ;;
     *) die "optiune necunoscuta: $arg" ;;
   esac
@@ -76,7 +85,8 @@ mkdir -p "$LOG_DIR"
 # are nevoie de amandoua - inclusiv preflight-ul, care deschide camera
 # INAINTEA aplicatiei. Deci se opreste aici, explicit si spus, nu lasat pe
 # seama lui --stop-service din nova_pi.py, care vine prea tarziu.
-if command -v systemctl >/dev/null \
+# Cu --auto scriptul RULEAZA in pornirea automata: oprind-o, s-ar opri pe el.
+if [[ $AUTO -eq 0 ]] && command -v systemctl >/dev/null \
    && systemctl --user is-active --quiet nova-bringup 2>/dev/null; then
   printf '\n\033[1m[coborare]\033[0m opresc pornirea automata (nova-bringup): '
   printf 'tine camera si portul.\n'
@@ -220,8 +230,8 @@ elif [[ $ABORT_COD -ne 0 ]]; then
 fi
 
 # --- 4. emitatorul ---------------------------------------------------------
-say "emitatorul"
-cat <<'NOTA'
+# La boot nu citeste nimeni nota; in jurnal ar fi doar zgomot.
+[[ $AUTO -eq 1 ]] || { say "emitatorul"; cat <<'NOTA'
   Doua masuratori care NU se pot deduce, si care nu se fac in zbor:
 
     tools/calibrate_sticks.py --conn /dev/serial0 --baud 921600
@@ -234,6 +244,7 @@ cat <<'NOTA'
         FC-ul chiar raporteaza inapoi in RC_CHANNELS ce primeste? Daca nu,
         poarta nu vede comutatorul AUX si monitorul de override nu exista.
 NOTA
+}
 
 # --- 5. preflight ----------------------------------------------------------
 say "preflight"
@@ -247,6 +258,8 @@ set -e
 if [[ $PROBLEME -gt 0 ]]; then
   say "NU E GATA: $PROBLEME lucruri de rezolvat"
   printf '  Nimic nu s-a pornit. Rezolva-le si reia.\n\n'
+  # 4 = "verificarile au picat, nimic pornit". pi/bringup.sh il deosebeste
+  # de o aplicatie cazuta: pe 4 cade in monitor, cu motivul spus pilotului.
   exit 4
 fi
 say "toate preconditiile sunt indeplinite"

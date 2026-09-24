@@ -18,5 +18,8 @@
 
   "_aux_channel": "Canalul RC pe care pilotul cere segmentul autonom, pe frontul crescator. Comutator cu 2 pozitii pe canalul 8: sus (peste aux_high_pwm) = cerere de handover. Il citesc si pornirea automata, si proba de coborare. RC8_OPTION trebuie sa fie 0 pe FC.",
   "aux_channel": 8,
-  "aux_high_pwm": 1500
+  "aux_high_pwm": 1500,
+
+  "_autostart": "Ce porneste Pi-ul singur la boot. 'monitor': detector + fereastra, zero comenzi. 'zbor': proba de coborare (pi/descent_test.sh --auto) - aceleasi verificari, fara ZBOR tastat, pentru teren fara retea. 'zbor' are efect DOAR cu autonomy_enabled=true; altfel, sau daca o verificare pica la boot, cade in monitor si trimite motivul prin STATUSTEXT. Cu 'zbor' si E0 deschis, comutatorul de handover porneste coborarea autonoma la fiecare pornire a dronei. Se schimba de mana, cu commit - ca E0.",
+  "autostart": "monitor"
 }

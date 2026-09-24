@@ -288,7 +288,7 @@ def test_monitorul_fortat_refuza_cu_motivul_lui():
     ok, motiv = gate.check(100.1, **GOOD)
     assert ok is False, "monitorul a acceptat cu E0 deschis"
     assert motiv == Reject.MONITOR, motiv
-    assert 'descent_test' in motiv, "motivul nu spune ce sa porneasca"
+    assert 'autostart' in motiv, "motivul nu spune ce setare il tine inchis"
     assert 'autonomy_enabled=false' not in motiv
     settle(gate)
     ok2, _ = gate.check(SETTLED, **GOOD)
@@ -302,9 +302,35 @@ def test_monitorul_fortat_refuza_cu_motivul_lui():
     assert ok3 is True, f"fara monitor, poarta ar trebui sa accepte: {why3}"
     return "cu E0 deschis: monitor -> refuz MONITOR; fara monitor -> accept"
 
+
+def test_monitorul_poarta_motivul_pornirii_automate():
+    """Pornirea automata cade in monitor din mai multe cauze: autostart pe
+    monitor, E0 inchis, verificari picate la boot. Pe teren, fara laptop,
+    pilotul afla care dintre ele doar din motivul refuzului - deci textul dat
+    ajunge neschimbat in refuz, iar poarta ramane la fel de inchisa."""
+    v = StubVehicle(8.0)
+    ov = OverrideMonitor(v)
+    rejects = []
+    motiv_dat = 'ZBOR refuzat: verificari picate'
+    gate = HandoverGate(v, ov, on_reject=rejects.append,
+                        autonomy_enabled=True, monitor=motiv_dat)
+    gate.on_aux_requested(100.0)
+    ok, motiv = gate.check(100.1, **GOOD)
+    assert ok is False, "monitorul cu motiv a acceptat cu E0 deschis"
+    assert motiv == motiv_dat and rejects == [motiv_dat], (motiv, rejects)
+    settle(gate)
+    assert gate.check(SETTLED, **GOOD)[0] is False
+    # un text gol nu deschide nimic si nu lasa refuzul fara motiv
+    gate2 = HandoverGate(v, OverrideMonitor(v), autonomy_enabled=True,
+                         monitor='')
+    assert gate2.monitor is False, "monitor='' trebuie sa insemne fara monitor"
+    return f"refuz cu motivul dat: {motiv_dat!r}"
+
 TESTS = [
     ('monitorul fortat refuza cu motivul lui',
      test_monitorul_fortat_refuza_cu_motivul_lui),
+    ('monitorul poarta motivul pornirii automate',
+     test_monitorul_poarta_motivul_pornirii_automate),
     ('accept in conditii bune', test_accept_in_conditii_bune),
     ('fara decizie in fereastra de asezare', test_nu_decide_in_fereastra_de_asezare),
     ('NEGATIV: mansa deviata', test_refuz_mansa_in_afara_neutrului),

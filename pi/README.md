@@ -363,6 +363,25 @@ coborâre cu PLND       → LANDING_TARGET la 20 Hz
 contact                → pauză pe sol → STOP
 ```
 
+### Pe teren fără rețea
+
+`"autostart": "zbor"` în `config/nova.json`, cu E0 deschis, face ca
+pornirea automată să ruleze **`pi/descent_test.sh --auto`** în loc de
+monitor: aceleași verificări, fără `ZBOR` tastat, fără fereastră, fără SSH.
+Comutatorul de pe canalul 8 pornește coborarea la fiecare pornire a dronei.
+
+| config | la boot |
+|---|---|
+| `autostart` lipsă sau `"monitor"` | monitor, zero comenzi |
+| `"zbor"`, E0 închis | monitor, motiv `autostart=zbor dar E0 inchis` |
+| `"zbor"`, E0 deschis, verificări picate | monitor, motiv `ZBOR refuzat: verificari picate` |
+| `"zbor"`, E0 deschis, verificări trecute | **proba de coborâre, armată** |
+
+Motivul pleacă prin FC ca `STATUSTEXT` (OSD / Mission Planner, dacă ai
+telemetrie) și rămâne în `journalctl --user-unit nova-bringup`. Decizia
+se ia în `nova/config.py:autostart_mode()`, testată; orice valoare
+aproximativă (`"ZBOR"`, `true`) e monitor.
+
 ### Cum decurge zborul
 
 `descent_test.sh` rulează **tot timpul**, deci se pornește **înainte** de

@@ -1677,6 +1677,118 @@ def test_parametrii_de_telemetrie_sunt_in_fisierul_de_zbor():
     return "SERIAL2 = TELEM2 pe 6C, 921600, fara control de flux"
 
 
+# --- pornirea automata in modul de zbor (teren fara retea) ----------------
+
+def test_autostart_zbor_doar_explicit_si_cu_E0():
+    """"zbor" la boot inseamna ca un comutator porneste coborarea autonoma
+    fara nimeni la tastatura. Deci se cere EXACT, din fisierul versionat, si
+    numai cu E0 deschis - acelasi standard ca E0 (§5.16): orice valoare
+    aproximativa e monitor, nu zbor."""
+    from nova import config as nova_config
+    assert nova_config.DEFAULTS['autostart'] == 'monitor', (
+        "implicitul trebuie sa fie monitor: un fisier fara cheie nu zboara")
+
+    def mod(continut):
+        with tempfile.NamedTemporaryFile('w', suffix='.json',
+                                         delete=False) as f:
+            json.dump(continut, f)
+        try:
+            return nova_config.autostart_mode(f.name)
+        finally:
+            os.unlink(f.name)
+
+    assert mod({})[0] == 'monitor'
+    assert mod({'autostart': 'zbor'})[0] == 'monitor', "zbor cu E0 implicit"
+    m, motiv = mod({'autostart': 'zbor', 'autonomy_enabled': False})
+    assert m == 'monitor' and 'E0' in motiv, (m, motiv)
+    assert mod({'autostart': 'zbor', 'autonomy_enabled': True}) == ('zbor', '')
+    for aproape in ('ZBOR', 'Zbor', ' zbor', True, 1, 'true', 'flight'):
+        assert mod({'autostart': aproape,
+                    'autonomy_enabled': True})[0] == 'monitor', aproape
+    assert mod({'autostart': 'zbor',
+                'autonomy_enabled': 'true'})[0] == 'monitor', (
+        "E0 ca text nu e E0 deschis")
+    lipsa = nova_config.autostart_mode('/nu/exista/nova.json')
+    assert lipsa[0] == 'monitor', lipsa
+    return "zbor doar cu 'zbor' exact + E0 true; restul monitor, cu motiv"
+
+
+def test_motivele_de_monitor_incap_in_STATUSTEXT():
+    """Pe teren motivul ajunge la pilot doar prin STATUSTEXT (50 de
+    caractere, cu tot cu prefix). Un motiv taiat la jumatate e exact
+    informatia pierduta."""
+    import re
+    from nova import config as nova_config
+    from nova.handover import Reject
+    motive = ['autostart=monitor', 'autostart=zbor dar E0 inchis',
+              Reject.MONITOR]
+    b = open(os.path.join(REPO, 'pi', 'bringup.sh')).read()
+    motive += re.findall(r'MOTIV="([^"$]+)"', b)
+    assert any('ZBOR refuzat' in m for m in motive), (
+        "nu gasesc motivul de cadere din bringup.sh")
+    for m in motive[:2]:
+        assert m in open(nova_config.__file__).read(), m
+    for m in motive:
+        if m == Reject.MONITOR:
+            continue          # cazul implicit, fara pornire automata
+        for prefix in ('NOVA MONITOR: ', 'NOVA refuz: '):
+            assert len(prefix + m) <= 50, (
+                f"{prefix + m!r}: {len(prefix + m)} > 50, se taie pe OSD")
+    import nova_pi
+    class _G:
+        monitor = False
+        monitor_reason = ''
+    assert len(nova_pi.mesaj_mod(_G, 8, 1500)) <= 50
+    assert 'AUX8' in nova_pi.mesaj_mod(_G, 8, 1500)
+    _G.monitor, _G.monitor_reason = True, 'autostart=zbor dar E0 inchis'
+    assert nova_pi.mesaj_mod(_G, 8, 1500).endswith('E0 inchis')
+    return f"{len(motive) - 1} motive, toate sub 50 de caractere cu prefix"
+
+
+def test_pornirea_automata_de_zbor_e_proba_de_coborare():
+    """Ramura "zbor" din bringup.sh nu are voie sa fie un al doilea cablaj
+    (§5.14): trebuie sa cheme proba de coborare, cu verificarile ei, si sa
+    cada in MONITOR - nu sa zboare oricum - cand ele pica."""
+    import re
+    b = open(os.path.join(REPO, 'pi', 'bringup.sh')).read()
+    b_cod = '\n'.join(l for l in b.splitlines()
+                      if not l.lstrip().startswith('#'))
+    # decizia e in Python, testata mai sus - nu reparsata in bash
+    assert 'config.autostart_mode()' in b_cod
+    assert '"autostart"' not in b_cod and "'autostart'" not in b_cod, (
+        "bringup.sh citeste singur cheia: a doua decizie, netestata")
+    assert 'descent_test.sh" --auto' in b_cod, (
+        "ramura de zbor nu deleaga probei de coborare")
+    i_zbor = b_cod.index('if [[ "$MOD" == "zbor" && $CHECK_ONLY -eq 0 ]]')
+    i_proba = b_cod.index('descent_test.sh" --auto')
+    i_mon = b_cod.index('--monitor-motiv')
+    assert i_zbor < i_proba < i_mon, "ordinea: decizie -> proba -> monitor"
+    # cade in monitor DOAR pe 4 (verificari picate, nimic pornit); orice alt
+    # cod e al aplicatiei si iese, ca systemd sa reporneasca
+    assert '[[ $COD -eq 4 ]] || exit "$COD"' in b_cod
+    # monitorul pastreaza --monitor: poarta inchisa fortat pe ramura asta
+    assert re.search(r'--monitor\s', b_cod), "monitorul a pierdut --monitor"
+
+    d = open(os.path.join(REPO, 'pi', 'descent_test.sh')).read()
+    # --auto nu se opreste pe sine si nu asteapta o tasta la boot
+    assert '--auto)          AUTO=1; ASSUME_YES=1 ;;' in d
+    assert 'if [[ $AUTO -eq 0 ]] && command -v systemctl' in d, (
+        "--auto ar opri nova-bringup, adica chiar procesul care il ruleaza")
+    assert 'read -r raspuns' in d and 'if [[ $ASSUME_YES -eq 0 ]]' in d
+    assert re.search(r'NU E GATA.*?exit 4', d, re.S), (
+        "verificarile picate trebuie sa iasa cu 4 - bringup cade in monitor")
+    return "decizie in config.py, zbor = descent_test --auto, 4 -> monitor"
+
+
+def test_monitor_motiv_ajunge_in_poarta():
+    src = open(os.path.join(REPO, 'tools', 'nova_pi.py')).read()
+    assert "'--monitor-motiv'" in src
+    assert 'monitor = a.monitor_motiv or a.monitor' in src
+    assert 'monitor=monitor)' in src, "--monitor-motiv nu ajunge in poarta"
+    assert 'anunta_modul(vehicle, gate, canal, prag)' in src
+    return "--monitor-motiv -> HandoverGate(monitor=...), anuntat la pornire"
+
+
 TESTS = [
     ('rotatia de afisare pune nasul sus',
      test_rotatia_de_afisare_pune_nasul_sus),
@@ -1752,6 +1864,13 @@ TESTS = [
      test_G4_NEGATIV_controale_neaplicate),
     ('G4: parametrii de zbor', test_G4_parametrii_de_zbor),
     ('G4: codul de iesire ca poarta', test_G4_codul_de_iesire_ca_poarta),
+    ('autostart zbor doar explicit si cu E0',
+     test_autostart_zbor_doar_explicit_si_cu_E0),
+    ('motivele de monitor incap in STATUSTEXT',
+     test_motivele_de_monitor_incap_in_STATUSTEXT),
+    ('pornirea automata de zbor e proba de coborare',
+     test_pornirea_automata_de_zbor_e_proba_de_coborare),
+    ('--monitor-motiv ajunge in poarta', test_monitor_motiv_ajunge_in_poarta),
 ]
 
 

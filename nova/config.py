@@ -67,6 +67,13 @@ DEFAULTS = {
     # de 3 pozitii (~1000/1500/2000: clar in treapta de sus, departe de
     # mijloc). Pentru unul de 2 pozitii (~1000/2000), 1500 e chiar mijlocul.
     'aux_high_pwm': 1700,
+
+    # Ce porneste la boot (pi/bringup.sh, din pornirea automata):
+    #   "monitor" - detector + fereastra, ZERO comenzi, oricare ar fi E0
+    #   "zbor"    - proba de coborare (pi/descent_test.sh --auto): aceleasi
+    #               verificari, fara confirmarea tastata. Doar cu E0 deschis.
+    # Orice alta valoare = monitor. Vezi autostart_mode().
+    'autostart': 'monitor',
 }
 
 
@@ -92,6 +99,26 @@ def autonomy_enabled(path=None):
     e orice altceva decat literalul `true`. Nu exista cale de a-l activa din
     linia de comanda sau din variabile de mediu - doar din fisierul versionat."""
     return load(path).get('autonomy_enabled') is True
+
+
+def autostart_mode(path=None):
+    """(mod, motiv) pentru pornirea automata: ('zbor', '') sau
+    ('monitor', de_ce).
+
+    'zbor' cere DOUA lucruri, amandoua din fisierul versionat: `autostart`
+    exact "zbor" si E0 deschis (literalul `true`, ca in autonomy_enabled()).
+    Nu exista cale din linia de comanda sau din mediu - la fel ca E0 (§5.16):
+    pe teren, fara retea, fisierul de pe Pi e singurul loc unde s-a decis.
+
+    Motivul e scurt deliberat: ajunge in STATUSTEXT (50 de caractere cu tot
+    cu prefix), deci pe OSD / in Mission Planner, unde pilotul il poate citi
+    fara laptop."""
+    cfg = load(path)
+    if cfg.get('autostart') != 'zbor':
+        return 'monitor', 'autostart=monitor'
+    if cfg.get('autonomy_enabled') is not True:
+        return 'monitor', 'autostart=zbor dar E0 inchis'
+    return 'zbor', ''
 
 
 def resolve(cfg, key):

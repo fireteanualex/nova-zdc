@@ -207,6 +207,28 @@ class FereastraBord:
         return getattr(self._inner, name)
 
 
+def mesaj_mod(gate, canal, prag):
+    """Textul STATUSTEXT de la pornire: ce face comutatorul, daca il ridici.
+    Sub 50 de caractere, limita campului."""
+    if gate.monitor:
+        return f"NOVA MONITOR: {gate.monitor_reason}"[:50]
+    return f"NOVA ZBOR gata: AUX{canal} > {prag} = handover"[:50]
+
+
+def anunta_modul(vehicle, gate, canal, prag):
+    """STATUSTEXT o data la pornire. Nu e o comanda: FC-ul il transmite mai
+    departe spre GCS / OSD, daca exista telemetrie. Fara ea, se pierde fara
+    niciun efect - de aceea nu opreste nimic cand esueaza."""
+    text = mesaj_mod(gate, canal, prag)
+    print(f"[bord] {text}")
+    sev = (mavutil.mavlink.MAV_SEVERITY_WARNING if gate.monitor
+           else mavutil.mavlink.MAV_SEVERITY_NOTICE)
+    try:
+        vehicle.m.mav.statustext_send(sev, text.encode('ascii', 'replace'))
+    except Exception:                                           # noqa: BLE001
+        pass
+
+
 def run_preflight(a):
     """H4: preflight OBLIGATORIU inainte de modul de concurs.
 
@@ -302,6 +324,10 @@ def main():
                    help='poarta de handover INCHISA pentru rularea asta, '
                         'oricare ar fi config/nova.json. Poate doar inchide, '
                         'niciodata deschide. Folosit de pornirea automata')
+    p.add_argument('--monitor-motiv', default=None, metavar='TEXT',
+                   help='ca --monitor, cu motivul spus pilotului la refuz si '
+                        'in STATUSTEXT la pornire. Folosit de pornirea '
+                        'automata cand nu poate porni in modul de zbor')
     p.add_argument('--no-ascent', action='store_true',
                    help='opreste urcarea de dupa contact (15.2.7). Secventa '
                         'se incheie pe sol. Pentru primele coborari de test, '
@@ -393,8 +419,7 @@ def main():
         try:
             vehicle.m.mav.statustext_send(
                 mavutil.mavlink.MAV_SEVERITY_WARNING,
-                f"NOVA handover refuzat: {reason}"[:50].encode('ascii',
-                                                               'replace'))
+                f"NOVA refuz: {reason}"[:50].encode('ascii', 'replace'))
         except Exception:                                   # noqa: BLE001
             pass
 
@@ -404,11 +429,12 @@ def main():
     # (§5.16). Folosit de pornirea automata: altfel, dupa deschiderea lui E0,
     # fiecare boot ar porni un sistem autonom viu, cu alte setari decat
     # proba de coborare.
+    monitor = a.monitor_motiv or a.monitor
     gate = HandoverGate(vehicle, override, on_reject=signal_reject,
-                        monitor=a.monitor)
-    if a.monitor:
+                        monitor=monitor)
+    if monitor:
         print("[bord] MONITOR: poarta inchisa pentru rularea asta, oricare "
-              "ar fi config/nova.json. Coborarea: pi/descent_test.sh")
+              f"ar fi config/nova.json. Motiv: {gate.monitor_reason}")
     # Ecranul are nevoie de ultima detectie (px si varsta). O ia dintr-un
     # invelis peste detector, nu dintr-o modificare in run_loop: bucla e
     # validata si nu vrem sa o atingem pentru afisare.
@@ -432,6 +458,9 @@ def main():
                          aux_channel=canal, aux_high_pwm=prag)
     print(f"[bord] handover: frontul crescator pe canalul RC {canal} "
           f"(sus = peste {prag} PWM)")
+    # Pe teren, fara retea, pilotul nu are alt ecran decat OSD-ul / GCS-ul:
+    # modul in care a pornit companion-ul se spune o data, prin FC.
+    anunta_modul(vehicle, gate, canal, prag)
     if a.no_ascent:
         # 15.2.7 oprit: secventa se incheie pe sol, fara NAV_TAKEOFF. Pentru
         # PRIMA coborare autonoma pe un vehicul real asta e ce vrei - o

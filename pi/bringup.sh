@@ -6,15 +6,20 @@
 #   pi/bringup.sh --check      # doar verificarile, nu porneste nimic
 #   pi/bringup.sh --no-window  # fara fereastra (SSH fara X, sau ca serviciu)
 #
+# Cu `"autostart": "zbor"` si E0 deschis in config/nova.json, la boot nu
+# porneste monitorul ci PROBA DE COBORARE (pi/descent_test.sh --auto): teren
+# fara retea, deci fara SSH. Daca verificarile ei pica, cade in monitor.
+#
 # Pornit la fiecare boot de `nova-bringup.service` (vezi pi/install.sh).
 #
 # ===========================================================================
 # CE FACE, SI CE NU FACE
 # ===========================================================================
 #
-# Porneste companion-ul in **RACE_MONITOR**: detectorul merge, telemetria se
-# citeste, fereastra arata ce vede camera - si NU pleaca nicio comanda catre
-# vehicul. E0 (`config/nova.json: autonomy_enabled`) ramane inchis.
+# Implicit porneste companion-ul in **RACE_MONITOR**: detectorul merge,
+# telemetria se citeste, fereastra arata ce vede camera - si NU pleaca nicio
+# comanda catre vehicul, oricare ar fi E0 (`autonomy_enabled`). Exceptia e
+# ramura "zbor" de mai sus, ceruta explicit in config/nova.json.
 #
 # Asta nu e o limitare a bring-up-ului, e chiar ce vrei sa masori primul:
 #   - UART-ul tine 921600 fara sa piarda caractere?
@@ -139,6 +144,45 @@ OCUPAT=$?
 set -e
 [[ $OCUPAT -eq 3 ]] && die "portul sau camera sunt luate de alt proces - vezi mai sus"
 
+# --- 2b. modul de pornire: monitor sau zbor --------------------------------
+# Decizia NU se ia aici, in bash, ci in nova/config.py:autostart_mode(), cu
+# test: "zbor" doar cu `autostart` exact "zbor" SI E0 deschis, ambele din
+# fisierul versionat. Orice altceva - inclusiv un fisier ilizibil - e monitor.
+say "modul de pornire"
+MOD_TXT="$(NOVA_REPO="$REPO" "$PY" - <<'EOF'
+import os, sys
+sys.path.insert(0, os.environ['NOVA_REPO'])
+from nova import config
+mod, motiv = config.autostart_mode()
+print(mod)
+print(motiv)
+EOF
+)" || MOD_TXT=$'monitor\nconfig ilizibil'
+MOD="$(sed -n 1p <<<"$MOD_TXT")"
+MOTIV="$(sed -n 2p <<<"$MOD_TXT")"
+
+if [[ "$MOD" == "zbor" && $CHECK_ONLY -eq 0 ]]; then
+  ok "ZBOR: autostart=zbor si E0 deschis"
+  warn "comutatorul de handover PORNESTE COBORAREA AUTONOMA."
+  warn "Verificarile si aplicatia sunt ale probei de coborare:"
+  warn "pi/descent_test.sh --auto (fara ZBOR tastat, fara fereastra)."
+  # Un singur cablaj pentru zbor: al probei de coborare. Un al doilea,
+  # scris aici, ar fi exact clasa de bug din §5.14.
+  set +e
+  "$REPO/pi/descent_test.sh" --auto
+  COD=$?
+  set -e
+  # 4 = verificarile au picat si nu s-a pornit nimic. Orice alt cod e al
+  # aplicatiei (sau 0): iesim cu el, iar systemd reporneste la esec.
+  [[ $COD -eq 4 ]] || exit "$COD"
+  MOTIV="ZBOR refuzat: verificari picate"
+  warn "$MOTIV - cad in MONITOR (zero comenzi). Motivul: mai sus in jurnal."
+elif [[ "$MOD" == "zbor" ]]; then
+  ok "ZBOR la pornirea automata (--check: nu pornesc nimic)"
+else
+  ok "MONITOR: $MOTIV"
+fi
+
 
 # --- 3. calibrarea camerei -------------------------------------------------
 say "calibrarea camerei"
@@ -209,15 +253,16 @@ fi
 # --- 6. monitorul ----------------------------------------------------------
 STAMP="$(date +%Y%m%d-%H%M%S)"
 LOG="$LOG_DIR/bringup-$STAMP.log"
-say "pornesc monitorul (E0 INCHIS: zero comenzi catre vehicul)"
+say "pornesc monitorul (zero comenzi catre vehicul)"
 printf '  log: %s\n' "$LOG"
 
-# --monitor: bring-up-ul NU e o cale spre autonomie, nici dupa ce E0 se
-# deschide. Singura cale e pi/descent_test.sh, cu verificarile si
-# confirmarea lui. Fara flag, pornirea automata ar deveni la fiecare boot un
-# sistem autonom viu, pe canalul 7, cu urcare si cu modularea de autoritate
-# - adica altceva decat s-a verificat.
-ARGS=(--conn "$CONN" --baud "$BAUD" --stop-service --yes --monitor)
+# --monitor: pe ramura asta bring-up-ul NU e o cale spre autonomie, oricare
+# ar fi E0. Singura cale e pi/descent_test.sh - de mana, sau din ramura
+# "zbor" de mai sus, cu aceleasi verificari. Fara flag, monitorul ar deveni
+# un al doilea sistem autonom, cu alte setari decat proba.
+# Motivul ajunge la pilot: in STATUSTEXT la pornire si la fiecare refuz.
+ARGS=(--conn "$CONN" --baud "$BAUD" --stop-service --yes --monitor
+      --monitor-motiv "${MOTIV:-autostart=monitor}")
 if [[ $WINDOW -eq 1 ]]; then
   if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
     ARGS+=(--fullscreen)

@@ -323,7 +323,7 @@ Cea mai ieftină verificare din tot lanțul. Cinci minute, zero risc.
 
 ```bash
 nano config/nova.json     # autonomy_enabled: true
-pi/descent_test.sh --aux-channel=6
+pi/descent_test.sh
 ```
 
 Armezi, lași manșele libere ~1 s, ridici comutatorul. Poarta trebuie să
@@ -348,12 +348,36 @@ zbor: ai o problemă de cablaj RC, și ai aflat-o pe masă.
 Markerul ArUco **ID 26, latura codată 480 mm**, plan, curat, pe iarbă sau
 pământ moale.
 
+**Cu laptop în rețea cu Pi-ul:**
+
 ```bash
-systemctl --user stop nova-bringup       # elibereaza portul
-pi/descent_test.sh --aux-channel=6       # ramane pornit tot zborul
+pi/descent_test.sh        # opreste singur pornirea automata; ramane pornit tot zborul
 ```
 
 Scriptul verifică precondițiile, cere să scrii `ZBOR`, apoi așteaptă.
+
+**Pe teren fără rețea — pornire automată în modul de zbor.** Se pregătește
+acasă, cu rețea, și se trimite pe Pi înainte de plecare:
+
+```bash
+nano config/nova.json      # "autostart": "zbor"   (si autonomy_enabled: true)
+git commit -am "autostart=zbor pentru proba de coborare <data>"
+pi/deploy.sh nova@<ip-pi>
+```
+
+De acum, **la fiecare pornire a dronei**, Pi-ul rulează singur
+`pi/descent_test.sh --auto`: aceleași verificări, fără `ZBOR` tastat, fără
+fereastră. Comutatorul de pe canalul 8 pornește coborarea autonomă.
+
+- Dacă o verificare pică la boot, sau E0 e închis, cade în **monitor**
+  (zero comenzi) și trimite motivul prin FC ca `STATUSTEXT`.
+- La pornire trimite `NOVA ZBOR gata: AUX8 > 1500 = handover` sau
+  `NOVA MONITOR: <motiv>`. Le vezi pe OSD sau în Mission Planner **doar
+  dacă ai telemetrie** către sol. Fără ea, singurul semn pe teren e că
+  poarta nu reacționează. Motivul rămâne în jurnal pentru după zbor:
+  `journalctl --user-unit nova-bringup`.
+- Înapoi la monitor: `"autostart": "monitor"`, commit, deploy. Pe teren
+  fără rețea nu se poate schimba, deliberat: decizia e în fișier, ca E0.
 
 La manșe:
 

@@ -56,8 +56,8 @@ class Reject:
     #: folosit de pornirea automata). Motiv separat de E0: dupa ce E0 se
     #: deschide, un pilot care ar citi "autonomy_enabled=false" ar merge sa
     #: verifice fisierul, l-ar gasi `true`, si n-ar mai intelege nimic.
-    MONITOR = ('MONITOR: pornirea automata nu zboara autonom - porneste '
-               'pi/descent_test.sh')
+    MONITOR = ('MONITOR: pornirea automata nu zboara autonom '
+               '(config: autostart)')
     STICKS = 'mansa in afara neutrului la handover'
     ALTITUDE = 'altitudine in afara ferestrei'
     DISTANCE = 'in afara zonei de 6.5 m'
@@ -91,6 +91,12 @@ class HandoverGate:
         #: inseamna deja "E0 inchis", cu motivul lui. Aici poarta ramane
         #: inchisa CHIAR SI cu E0 deschis - altfel pornirea automata ar deveni
         #: o a doua cale spre autonomie, cu alte setari decat proba.
+        #: Un text in loc de True = motivul refuzului, spus pilotului. Pornirea
+        #: automata cade in monitor din mai multe cauze (autostart=monitor,
+        #: E0 inchis, verificari picate la boot), iar pe teren, fara laptop,
+        #: motivul e singurul lucru care spune care dintre ele.
+        self.monitor_reason = (monitor if isinstance(monitor, str) and monitor
+                               else Reject.MONITOR)
         self.monitor = bool(monitor)
         self.ov = override_monitor
         self.on_reject = on_reject
@@ -146,7 +152,7 @@ class HandoverGate:
         # E0, inaintea oricarei alte conditii si fara sa astepte asezarea:
         # daca autonomia e dezactivata, pilotul afla imediat, nu dupa 1 s.
         if not self._autonomy_allowed():
-            motiv = (Reject.MONITOR if self.monitor
+            motiv = (self.monitor_reason if self.monitor
                      else Reject.AUTONOMY_DISABLED)
             return self._reject(now, motiv)
 
