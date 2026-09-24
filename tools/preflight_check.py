@@ -44,6 +44,7 @@ ceva. Preflight-ul citeste.
 import argparse
 import json
 import os
+import re
 import platform
 import subprocess
 import sys
@@ -318,6 +319,29 @@ def check_mavlink(conn, baud, timeout=MAVLINK_TIMEOUT_S):
                   f"heartbeat sys={sysid} comp={comp}", {'sysid': sysid})
 
 
+def rezumat_parametri(stdout):
+    """Linia de rezumat a lui check_params.py, plus NUMELE celor care nu se
+    potrivesc. Pe teren, fara retea, jurnalul pornirii automate e singurul
+    loc unde se vede de ce preflight-ul a picat - iar "1 nepotriviri" fara
+    nume trimite operatorul sa ruleze inca o unealta ca sa afle care."""
+    rezumat, diferite, lipsa = '', [], []
+    for line in (stdout or '').splitlines():
+        if 'nepotriviri' in line or 'inexistenti' in line:
+            rezumat = line.strip()
+        m = re.match(r'\s+\S+:\d+\s+(\w+): cerut (\S+), FC raporteaza (\S+)',
+                     line)
+        if m:
+            diferite.append(f"{m.group(1)} cerut {m.group(2)} "
+                            f"citit {m.group(3)}")
+        m = re.match(r'\s+(\w+)\s+cerut .*LIPSESTE', line)
+        if m:
+            lipsa.append(f"{m.group(1)} lipseste")
+    detalii = diferite + lipsa
+    if detalii:
+        rezumat = (rezumat + ' -> ' if rezumat else '') + '; '.join(detalii)
+    return rezumat
+
+
 def check_params(conn, baud, parm=FLIGHT_PARM, timeout=120):
     """tools/check_params.py ca subproces.
 
@@ -336,10 +360,7 @@ def check_params(conn, baud, parm=FLIGHT_PARM, timeout=120):
     except subprocess.TimeoutExpired:
         return Result('parametri', ESEC,
                       f"check_params.py nu a terminat in {timeout} s")
-    rezumat = ''
-    for line in (out.stdout or '').splitlines():
-        if 'nepotriviri' in line or 'inexistenti' in line:
-            rezumat = line.strip()
+    rezumat = rezumat_parametri(out.stdout)
     if out.returncode != 0:
         return Result('parametri', ESEC,
                       rezumat or f"check_params.py a iesit cu "

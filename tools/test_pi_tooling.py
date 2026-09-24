@@ -840,6 +840,34 @@ def test_G4_parametrii_de_zbor():
             f"FS_THR_ENABLE 0 -> 1")
 
 
+def test_preflight_numeste_parametrul_nepotrivit():
+    """Pe vehicul, pornirea automata a cazut in monitor cu "1 nepotriviri"
+    si atat. Numele parametrului era in iesirea lui check_params.py, dar
+    preflight-ul pastra doar linia de rezumat."""
+    import preflight_check as pf
+    iesire = """[check_params] 28 parametri din config/nova_flight_4.5.parm
+  PLND_ENABLED         cerut 0          citit 1            NU SE POTRIVESTE
+  WPNAV_ACCEL          cerut 150        citit -            LIPSESTE  <-- numele nu exista pe acest firmware
+
+  27 ok | 1 nepotriviri | 1 inexistenti
+
+  VALORI DIFERITE DE CE AM CERUT:
+    config/nova_flight_4.5.parm:41  PLND_ENABLED: cerut 0, FC raporteaza 1
+"""
+    r = pf.rezumat_parametri(iesire)
+    assert r.startswith('27 ok | 1 nepotriviri'), r
+    assert 'PLND_ENABLED cerut 0 citit 1' in r, r
+    assert 'WPNAV_ACCEL lipseste' in r, r
+    # fara diferente, rezumatul ramane cel vechi
+    assert pf.rezumat_parametri("\n  28 ok | 0 nepotriviri | 0 inexistenti\n") \
+        == '28 ok | 0 nepotriviri | 0 inexistenti'
+    # formatul chiar e cel pe care il scrie check_params.py
+    cp = open(os.path.join(REPO, 'tools', 'check_params.py')).read()
+    assert '{name}: cerut {want:g}, "' in cp and 'FC raporteaza {got:g}' in cp
+    assert 'LIPSESTE' in cp
+    return r
+
+
 def test_G4_codul_de_iesire_ca_poarta():
     """Codul de iesire prin CLI, pe cele trei cazuri."""
     tmp = tempfile.mkdtemp()
@@ -1864,6 +1892,8 @@ TESTS = [
      test_G4_NEGATIV_controale_neaplicate),
     ('G4: parametrii de zbor', test_G4_parametrii_de_zbor),
     ('G4: codul de iesire ca poarta', test_G4_codul_de_iesire_ca_poarta),
+    ('preflight numeste parametrul nepotrivit',
+     test_preflight_numeste_parametrul_nepotrivit),
     ('autostart zbor doar explicit si cu E0',
      test_autostart_zbor_doar_explicit_si_cu_E0),
     ('motivele de monitor incap in STATUSTEXT',
