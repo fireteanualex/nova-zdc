@@ -11,3 +11,11 @@ sim/models/iris_nova/
 # regenereaza din plan (`--seed`), deci nu are ce cauta in istorie. Ce se
 # pastreaza ca evidenta se copiaza explicit, cu tools/collect_session.py.
 data/batch/
+CLAUDE.md 
+PROMPT_RUNDA4_AUTONOM.md
+RAPORT_RUNDA4.md
+RAPORT_RUNDA5.md
+RAPORT_RUNDA6.md
+SARCINI_RUNDA3.md
+SARCINI_RUNDA4.md
+SARCINI_RUNDA7.md
