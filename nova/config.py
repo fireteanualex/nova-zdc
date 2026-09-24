@@ -68,6 +68,12 @@ DEFAULTS = {
     # mijloc). Pentru unul de 2 pozitii (~1000/2000), 1500 e chiar mijlocul.
     'aux_high_pwm': 1700,
 
+    # Expunerea camerei: masurata pe scena la pornire (AE converge ~1 s),
+    # apoi BLOCATA, cu plafon la 2000 us (limita de blur). False = valorile
+    # fixe de banc (2000 us / gain 8) - care pe teren, la lumina zilei, s-au
+    # dovedit cu ~5-6 trepte prea luminoase (zborul din 24.09.2026).
+    'camera_auto_expose': True,
+
     # Ce porneste la boot (pi/bringup.sh, din pornirea automata):
     #   "monitor" - detector + fereastra, ZERO comenzi, oricare ar fi E0
     #   "zbor"    - proba de coborare (pi/descent_test.sh --auto): aceleasi

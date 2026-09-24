@@ -1835,6 +1835,32 @@ def test_monitor_motiv_ajunge_in_poarta():
     return "--monitor-motiv -> HandoverGate(monitor=...), anuntat la pornire"
 
 
+def test_logurile_poarta_numarul_de_boot():
+    """Pe teren ceasul Pi-ului minte (fara RTC, fara NTP, opriri din
+    baterie): logul zborului din 24.09.2026 se numea "14:30" desi zborul a
+    fost la 16:30, si a fost gasit doar prin eliminare. Numarul de boot
+    identifica zborul indiferent de ceas."""
+    b = open(os.path.join(REPO, 'pi', 'bringup.sh')).read()
+    d = open(os.path.join(REPO, 'pi', 'descent_test.sh')).read()
+    # ambele numesc logurile cu b<numar>- si impart ACELASI contor
+    assert 'numar_boot()' in b and 'pornire-$STAMP.log' in b
+    assert 'STAMP="b${BOOT_N}-' in b and 'STAMP="b${BOOT_N}-' in d
+    for src, nume in ((b, 'bringup.sh'), (d, 'descent_test.sh')):
+        assert '$LOG_DIR/.boot' in src, f"{nume}: alt fisier de contor"
+        assert 'boot_id' in src, f"{nume}: contorul nu e legat de boot_id"
+    # repornirile serviciului in acelasi boot NU umfla contorul:
+    # incrementarea e conditionata de schimbarea boot_id-ului
+    import re
+    fn = b[b.index('numar_boot()'):b.index('numar_boot()') + 600]
+    assert re.search(r'if \[\[ "\$vechi" != "\$bid" \]\]', fn), (
+        "contorul creste neconditionat - fiecare restart ar parea alt boot")
+    # jurnalul e volatil: TOT ce scrie bringup la boot ajunge si in fisier
+    assert re.search(r'exec > >\(tee ', b), (
+        "verificarile de la boot raman doar in jurnal, care se pierde "
+        "la scoaterea bateriei")
+    return "b<N>- in ambele, contor comun pe boot_id, boot-log in fisier"
+
+
 TESTS = [
     ('rotatia de afisare pune nasul sus',
      test_rotatia_de_afisare_pune_nasul_sus),
@@ -1921,6 +1947,7 @@ TESTS = [
     ('pornirea automata de zbor e proba de coborare',
      test_pornirea_automata_de_zbor_e_proba_de_coborare),
     ('--monitor-motiv ajunge in poarta', test_monitor_motiv_ajunge_in_poarta),
+    ('logurile poarta numarul de boot', test_logurile_poarta_numarul_de_boot),
 ]
 
 

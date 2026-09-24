@@ -82,6 +82,44 @@ CAMERA_CONTROLS = {
     'AwbEnable': False,
 }
 
+#: Plafonul de expunere al blocarii automate = valoarea de banc de mai sus:
+#: sub 2000 us blur-ul de miscare ramane sub 1 px pe tot profilul de
+#: coborare. Auto-expunerea are voie sa aleaga ORICAT de scurt (afara va
+#: alege sute de us la gain mic), dar niciodata mai lung.
+AUTOEXP_MAX_US = CAMERA_CONTROLS['ExposureTime']
+#: Cate cadre lasam AE-ul sa convearga inainte de blocare (~1 s la 30 fps).
+AUTOEXP_FRAMES = 30
+
+
+def expunere_blocata(exp_us, gain, exp_max_us=AUTOEXP_MAX_US,
+                     gain_min=1.0, gain_max=16.0):
+    """(exp_us, gain, avertisment) - valorile de FIXAT dupa convergenta AE.
+
+    Regula: expunerea nu depaseste plafonul de blur; ce lipseste se muta in
+    gain, la aceeasi luminozitate (exp*gain constant). Zgomotul de gain e
+    tolerabil pe un patrat alb-negru; blur-ul, nu (comentariul de la
+    CAMERA_CONTROLS).
+
+    Prima valoare fixa (2000 us + gain 8, aleasa pe banc) s-a dovedit pe
+    teren o presupunere despre LUMINA: afara e cu ~5-6 trepte prea multa,
+    iar imaginea aproape alba pierde markerul intermitent - simptomul
+    zborului din 24.09.2026 (det 30-44%%). De aceea expunerea se MASOARA la
+    pornire si abia apoi se blocheaza, in loc sa fie o constanta."""
+    exp_us = float(exp_us)
+    gain = float(gain)
+    avert = None
+    if exp_us > exp_max_us:
+        gain = gain * exp_us / exp_max_us
+        exp_us = float(exp_max_us)
+    if gain > gain_max:
+        avert = (f"prea intuneric pentru plafonul de blur: ar trebui gain "
+                 f"{gain:.1f}, senzorul da maxim {gain_max:.0f}. Fixez "
+                 f"maximul; imaginea va fi mai intunecata decat ideal.")
+        gain = gain_max
+    if gain < gain_min:
+        gain = gain_min
+    return exp_us, gain, avert
+
 #: Calibrare (E1.2): peste asta calibrarea e proasta si se refuza.
 #:
 #: 0.85 px, DECIZIA ECHIPEI (23.09.2026), ridicat de la 0.5. Calibrarea
@@ -375,6 +413,7 @@ class ArucoMarkerDetector:
         self._counts = (0, 0)
         self.n_roi = 0
         self.n_roi_miss = 0
+        self.last_lum = None
         self.n_rejected_fit = 0
         self.n_rejected_id = 0
 
@@ -427,6 +466,12 @@ class ArucoMarkerDetector:
 
         Contoarele se actualizeaza AICI, dupa ce rezultatul e cunoscut, si
         printr-o singura atribuire - vezi `_counts`."""
+        # Luminozitatea medie, subesantionata (~12k px, cost neglijabil).
+        # Zborul din 24.09.2026 nu avea NICIO cifra despre expunere in log,
+        # iar cauza probabila a detectiei intermitente era chiar imaginea
+        # supraexpusa. ~250 = alb ars; ~10 = beznav; util 60-180.
+        if gray is not None:
+            self.last_lum = int(gray[::16, ::16].mean())
         det = self._detect(gray, t_capture)
         cadre, gasite = self._counts
         self._counts = (cadre + 1, gasite + (det is not None))
@@ -522,6 +567,7 @@ class ArucoMarkerDetector:
             'roi_misses': self.n_roi_miss,
             'rejected_fit': self.n_rejected_fit,
             'rejected_other_id': self.n_rejected_id,
+            'lum': self.last_lum,
         }
 
 
@@ -793,7 +839,7 @@ class PiCameraSource(FrameSource):
     nominal_fps = TRACK_FPS
 
     def __init__(self, size=TRACK_SIZE, fps=TRACK_FPS, controls=None,
-                 verbose=True):
+                 verbose=True, auto_expose=True):
         from picamera2 import Picamera2               # noqa: import lenes
         from libcamera import controls as lc
 
@@ -822,8 +868,17 @@ class PiCameraSource(FrameSource):
         ctrl = dict(CAMERA_CONTROLS)
         ctrl.update(controls or {})
         ctrl['AfMode'] = lc.AfModeEnum.Manual
+        if auto_expose:
+            # Focusul si AWB raman fixate; DOAR expunerea converge pe scena
+            # reala, apoi se blocheaza (mai jos). Valorile fixe de banc erau
+            # o presupunere despre lumina - vezi expunere_blocata().
+            ctrl.pop('ExposureTime', None)
+            ctrl.pop('AnalogueGain', None)
+            ctrl['AeEnable'] = True
         self.picam2.set_controls(ctrl)
         self.picam2.start()
+        if auto_expose:
+            ctrl = self._lock_exposure(ctrl)
 
         # Ceasul senzorului e CLOCK_BOOTTIME (ns); time.monotonic() e
         # CLOCK_MONOTONIC. Pe un Pi care nu suspenda, coincid - dar calculam
@@ -832,6 +887,46 @@ class PiCameraSource(FrameSource):
         self._boot_offset = (time.monotonic()
                              - time.clock_gettime(time.CLOCK_BOOTTIME))
         self._verify_controls(ctrl)
+
+    def _lock_exposure(self, ctrl):
+        """Lasa AE-ul sa convearga, apoi fixeaza ce a masurat (plafonat).
+        Intoarce dictionarul de controale FIXATE, pentru citirea inapoi."""
+        limits = (self.picam2.camera_controls or {}).get('AnalogueGain')
+        gain_min, gain_max = (float(limits[0]), float(limits[1])) \
+            if limits else (1.0, 16.0)
+        md = {}
+        for _ in range(AUTOEXP_FRAMES):
+            md = self.picam2.capture_metadata()
+        exp = md.get('ExposureTime')
+        gain = md.get('AnalogueGain')
+        if exp is None or gain is None:
+            # fara metadate nu blocam pe ghicite: cad pe valorile de banc
+            fixed = dict(ctrl)
+            fixed.update(ExposureTime=CAMERA_CONTROLS['ExposureTime'],
+                         AnalogueGain=CAMERA_CONTROLS['AnalogueGain'],
+                         AeEnable=False)
+            if self.verbose:
+                print("[camera] ATENTIE: AE fara metadate; folosesc "
+                      "valorile de banc (2000 us / gain 8)")
+            self.picam2.set_controls(fixed)
+            return fixed
+        exp_f, gain_f, avert = expunere_blocata(exp, gain,
+                                                gain_min=gain_min,
+                                                gain_max=gain_max)
+        fixed = dict(ctrl)
+        fixed.update(ExposureTime=int(round(exp_f)),
+                     AnalogueGain=gain_f, AeEnable=False)
+        self.picam2.set_controls(fixed)
+        if self.verbose:
+            print(f"[camera] expunere masurata pe scena: {exp:.0f} us "
+                  f"gain {gain:.2f} -> BLOCATA la {exp_f:.0f} us "
+                  f"gain {gain_f:.2f} (plafon blur {AUTOEXP_MAX_US} us)")
+            if avert:
+                print(f"[camera] ATENTIE: {avert}")
+        # cateva cadre pana se aplica, altfel verificarea citeste AE-ul
+        for _ in range(5):
+            self.picam2.capture_metadata()
+        return fixed
 
     def _verify_controls(self, wanted):
         """§5.10 aplicat camerei: un control poate fi acceptat si apoi
@@ -1075,7 +1170,8 @@ class PiDetector:
         return (f"cam {f(s['fps'], '4.1f')} fps | det "
                 f"{f(s['detection_rate'], '.0%')} | lat p50 "
                 f"{f(s['latency_p50_ms'], '4.0f')} p99 "
-                f"{f(s['latency_p99_ms'], '4.0f')} ms | roi "
+                f"{f(s['latency_p99_ms'], '4.0f')} ms | lum "
+                f"{f(s.get('aruco_lum'), '3d')} | roi "
                 f"{s['aruco_roi_hits']}/{s['aruco_roi_misses']}")
 
 
@@ -1114,7 +1210,8 @@ def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None,
     if verbose and aruco.camera_rotation_deg:
         print(f"[detector] camera montata rotit: imaginea se roteste cu "
               f"{aruco.camera_rotation_deg} grade la stanga (axe, nu pixeli)")
-    source = PiCameraSource(verbose=verbose)
+    source = PiCameraSource(verbose=verbose,
+                            auto_expose=cfg.get('camera_auto_expose', True))
     if (source.size[0], source.size[1]) != (calib.width, calib.height):
         raise ValueError(
             f"calibrarea e pentru {calib.width}x{calib.height}, camera da "

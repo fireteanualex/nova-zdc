@@ -3295,6 +3295,59 @@ Scrierea lui `"zbor"` în config a fost refuzată de permisiunile asistentului.
 E corect: ca E0, o schimbare care face un comutator să pornească autonomia
 la fiecare boot se face de mână, cu commit.
 
+
+### 5.61 Primul zbor cu handover: lanțul întreg a mers, detecția nu a ținut pasul
+
+**24.09.2026, vehiculul de test, teren fără rețea.** 8 cereri de handover,
+8 răspunsuri corecte ale porții, zero defecte de cablaj — și nicio coborâre
+pornită. Logul: `coborare-*-143056.log` (numele minte, vezi mai jos).
+
+**Refuzurile:** 1× altitudine 4.1 m (sub fereastră); 1× throttle mișcat
+114 PWM în fereastra de așezare; 5× *marker nedetectat*, cu vârste de
+0.37–21 s față de pragul de 0.3 s. O cerere la 70 ms de accept.
+
+**Detectorul e corect, rata nu.** Fiecare detecție din zbor se potrivește
+cu modelul camerei: 40.2 px măsurat la 12.36 m față de 40.3 teoretic;
+67.3 la 7.34 m față de 67.9. Dar `cam 3.6–5.5 fps` (detecția full-frame ia
+~320 ms pe Pi 4, `lat p50 320`), `det` maxim 44% — interval mediu între
+detecții 0.5–0.8 s. Poarta cere 0.3 s; supervizorul, 0.5 s în coborâre.
+**Poarta a refuzat corect o încercare care oricum ar fi fost oprită de
+supervizor.** Nu pragurile se slăbesc; rata se repară.
+
+**Cauza probabilă a ratei: expunerea de banc, afară.** `ExposureTime
+2000 µs + AnalogueGain 8.0` fixate pe banc înseamnă, la lumina zilei pe
+f/2.2, ~5–6 trepte de supraexpunere — imagine aproape albă, marker spălat,
+detecție intermitentă. **Ipoteză, nu măsurătoare** (§5.45): logul nu avea
+nicio cifră de luminozitate. Reparat pe ambele fronturi:
+
+- expunerea se **măsoară pe scenă la pornire** (AE converge ~1 s) și abia
+  apoi se blochează, cu plafon 2000 µs (limita de blur, sub 1 px pe tot
+  profilul); ce lipsește se mută în gain (`expunere_blocata`, cu teste).
+  `camera_auto_expose` în config, implicit true;
+- `lum` (media cadrului, subeșantionată) în fiecare linie de stare, ca
+  supra/subexpunerea să fie o cifră în log, nu o ghicitoare.
+
+**Rămas deschis:** viteza detecției full-frame (320 ms → ~3 fps când nu e
+ROI). Direcția probabilă: căutare pe imagine redusă la scară cu rafinarea
+colțurilor pe rezoluția plină — de decis, nu de strecurat; e detectorul
+care zboară. Element deschis 37.
+
+#### Ceasul Pi-ului minte pe teren — numele logurilor nu identifică zborul
+
+Pi 4 nu are RTC; fără NTP restaurează la boot ultima oră salvată, iar
+salvarea curată nu se întâmplă când oprirea e scoaterea bateriei. Logul
+zborului de la 16:30 se numea `coborare-20260924-143056.log` și a fost
+găsit doar prin eliminare (octeți nuli la coadă = tăiat de curent, singura
+urmă a opririi reale). Reparat: logurile poartă **numărul de boot**
+(`b<N>-`), dintr-un contor legat de `boot_id` (repornirile serviciului nu
+îl umflă), iar `bringup.sh` scrie tot ce se întâmplă la boot și într-un
+fișier (`pornire-*.log`), nu doar în jurnalul volatil.
+
+Tot de acolo: AUX ridicat cu drona dezarmată era ignorat **tăcut**
+(`state_machine._supervise` iese pe `not armed` înainte de poartă) și a
+consumat frontul — pe teren arăta ca o problemă de RC. Acum se spune în
+log și se emite `aux_ignored_disarmed`; frontul tot trebuie refăcut în aer.
+
 ### 5.60 Primul preflight pe vehicul: două verificări care măsurau altceva
 
 Primul `preflight_check.py` rulat pe Pi-ul real (Trixie, Python 3.13.5,
@@ -3714,6 +3767,7 @@ dovada scrisă). Imaginea de touchdown se predă în același set.
 | 22b | **Campania nu a rulat niciodată.** O secvență a mers; `batch_sim.py` cu N rulări și condiții variate nu a fost pornit, deci nu există distribuții. Mediul de dezvoltare nu poate rula Gazebo (`libEGL: failed to create dri2 screen`), deci rulează operatorul | I4, 8.4.2 |
 | 23 | ~~Cifrele I4 — nicio măsurătoare~~ măsurate pe 20 de rulări (§5.52). Rămâne: coada erorii unghiulare pe `DESCEND_TRACK` (p95 2.26° față de pragul de 0.5°), cauză nelămurită; și latența, care se măsoară pe Pi, nu aici | 8.4.2, Safety Case |
 | 24 | Distanța de frânare la 0.8 și 1.5 m/s, pentru `PROFIL_RAPID` (blocat până atunci) | 15.2.9, I5 |
+| 37 | **Detecția full-frame ia ~320 ms pe Pi 4** (2304×1296): 3–5 fps procesate față de 30 ale camerei, deci intervalul între detecții nu ține pragul de 0.3 s al porții / 0.5 s al supervizorului (§5.61). De decis: căutare pe scară redusă + rafinare pe rezoluția plină, sau ROI mai agresiv | 15.2.3, 8.3.2, E1.4 |
 | 36 | **15.2.5 nu e activ pe vehicul.** `nova/ekf_source.py` e implementat, testat și **măsurat** în sim (10 rulări, comutare confirmată prin citire înapoi, eroare finală neschimbată — §5.54), dar `tools/nova_pi.py` **nu îl instanțiază**. Deci pe aeronavă EKF-ul primește GNSS pe tot segmentul autonom, iar rândul din Compliance Matrix ar afirma ceva ce codul care zboară nu face. Lipsește o singură legătură în aplicația de bord, nu hardware. Blocant pentru orice încercare punctată | **15.2.5**, Compliance Matrix |
 | 35 | **`nova/fence.py` nu e cablat nicăieri.** Modulul e validat în SITL — ciclu complet salvare → încărcare cerc de 10 m pe marker → citire înapoi → restaurare — dar nu îl instanțiază nici `nova_pi.py`, nici `nova_sim.py`, nici `fake_detector.py`. Deci stratul din firmware cerut de 15.2.4 **nu e activ**; rămân doar `_mon_radius` și `_mon_ceiling` din supervizor, care depind de Pi. Aceeași formă ca §5.14: piesa merge, cablajul nu există. Cere și lat/lon-ul markerului, care se deduce din poziția vehiculului plus offsetul măsurat la handover — logică nouă, deci de decis, nu de strecurat | **15.2.4**, Compliance Matrix |
 | 34 | **Criteriul pe încadrare nu a rulat încă o campanie în Gazebo.** Pragurile (0.62 / 0.72 / 0.50) sunt derivate din geometrie plus două puncte măsurate de pierdere a detecției (§5.49, §5.54), și verificate pe o baleiere sintetică 0–45° care dă captură la fiecare rotație. Dar cifrele de eroare finală, derivă și rată de succes sunt încă cele de la pragul în pixeli. De rulat: `batch_sim.py --n 10`, cu `scoring_fill` și `tilt_margin_deg` în CSV | 8.3.3, 8.4.2 |

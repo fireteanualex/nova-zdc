@@ -64,6 +64,31 @@ done
 
 mkdir -p "$LOG_DIR"
 
+# Ceasul Pi-ului minte pe teren (fara RTC, fara NTP, opriri din baterie),
+# deci data din numele logului nu identifica zborul (§5.61). Numarul de
+# boot, da: creste la fiecare pornire si e acelasi pentru toate logurile
+# aceluiasi boot. Contorul sta lange loguri; boot_id decide daca s-a
+# schimbat boot-ul, ca repornirile serviciului sa nu-l umfle.
+numar_boot() {
+  local idf="$LOG_DIR/.boot" bid vechi n
+  bid="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo necunoscut)"
+  read -r vechi n < "$idf" 2>/dev/null || { vechi=""; n=0; }
+  if [[ "$vechi" != "$bid" ]]; then
+    n=$((n + 1))
+    echo "$bid $n" > "$idf"
+  fi
+  echo "$n"
+}
+
+# --- 3b. tot ce se intampla la boot, in fisier -----------------------------
+# Jurnalul systemd e volatil pe Pi: la oprirea dronei se pierde exact
+# diagnosticul de care ai nevoie dupa un zbor picat (§5.61). De aici incolo
+# TOT ce scrie scriptul - verificarile, decizia monitor/zbor, iesirea
+# probei de coborare - ajunge si intr-un fisier, nu doar in jurnal.
+BOOT_N="$(numar_boot)"
+STAMP="b${BOOT_N}-$(date +%Y%m%d-%H%M%S)"
+exec > >(tee "$LOG_DIR/pornire-$STAMP.log") 2>&1
+
 # --- 0. o singura instanta -------------------------------------------------
 # Serviciul de pornire automata (pi/install.sh) ruleaza chiar scriptul asta.
 # Pornit si de mana peste el, a doua copie gaseste camera luata ("Pipeline
@@ -251,7 +276,6 @@ if [[ $CHECK_ONLY -eq 1 ]]; then
 fi
 
 # --- 6. monitorul ----------------------------------------------------------
-STAMP="$(date +%Y%m%d-%H%M%S)"
 LOG="$LOG_DIR/bringup-$STAMP.log"
 say "pornesc monitorul (zero comenzi catre vehicul)"
 printf '  log: %s\n' "$LOG"

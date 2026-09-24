@@ -427,6 +427,14 @@ class LandingStateMachine:
         if not self.v.armed:
             if self.state != State.IDLE:
                 self.reset_sequence('dezarmat')
+            # Pe teren, comutatorul ridicat inainte de armare parea "nu face
+            # nimic" si trimitea cautarea spre RC. Se spune, si se aminteste
+            # ca frontul s-a consumat: in aer trebuie coborat si ridicat.
+            if aux_rising:
+                if self.verbose:
+                    print("  !! AUX sus IGNORAT: vehiculul e dezarmat. "
+                          "In aer, coboara si ridica din nou comutatorul.")
+                self._emit('aux_ignored_disarmed')
             return
 
         # HANDBACK / ABORT: se iese doar printr-o cerere noua de handover.

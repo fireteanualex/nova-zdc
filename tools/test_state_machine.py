@@ -622,6 +622,33 @@ def test_linia_de_stare_arata_canalul_de_handover():
     return "AUX8 1000 jos / 1600 SUS / '-' fara date"
 
 
+def test_aux_sus_dezarmat_se_spune_nu_se_tace():
+    """Zborul din 24.09.2026 (log 140417): comutatorul ridicat pe sol,
+    dezarmat, si NIMIC in log - parea o problema de RC. Se spune explicit,
+    si se emite un eveniment. Iar frontul consumat pe sol NU declanseaza
+    dupa armare: trebuie coborat si ridicat din nou - si asta se
+    documenteaza aici, ca sa nu para bug pe teren."""
+    v, det, sm, events, args = build(aux=1000)
+    v.armed = False
+    run(v, det, sm, args, seconds=1.0)
+    v.set_aux(2000)                       # front crescator, pe sol
+    run(v, det, sm, args, seconds=1.0)
+    assert sm.state == State.IDLE
+    assert any(n == 'aux_ignored_disarmed' for n, _ in events), (
+        "AUX sus cu drona dezarmata a fost ignorat TACUT")
+    # armare cu comutatorul ramas sus: fara front nou, nicio cerere
+    v.armed = True
+    run(v, det, sm, args, seconds=1.0)
+    assert sm.state == State.IDLE, "a pornit fara front crescator in aer"
+    # jos si sus din nou, armat: cererea porneste
+    v.set_aux(1000)
+    run(v, det, sm, args, seconds=0.5)
+    v.set_aux(2000)
+    run(v, det, sm, args, seconds=0.5)
+    assert sm.state != State.IDLE, "frontul nou, armat, nu a pornit cererea"
+    return "dezarmat: eveniment + ramane IDLE; front nou dupa armare: merge"
+
+
 TESTS = [
     ('secventa completa ajunge la HANDBACK', test_secventa_completa),
     ('SCORING_CAPTURE exact o data', test_scoring_capture_exact_o_data),
@@ -647,6 +674,8 @@ TESTS = [
     ('mansa opreste coborarea autonoma', test_mansa_opreste_coborarea_autonoma),
     ('linia de stare arata canalul de handover',
      test_linia_de_stare_arata_canalul_de_handover),
+    ('AUX sus dezarmat se spune, nu se tace',
+     test_aux_sus_dezarmat_se_spune_nu_se_tace),
 ]
 
 

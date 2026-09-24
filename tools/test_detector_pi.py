@@ -574,7 +574,54 @@ def test_rotatia_de_montaj_din_cv2_rotate():
             f"nedeclarat: {f_m:+.2f}/{d_m:+.2f}")
 
 
+def test_expunerea_se_masoara_apoi_se_blocheaza():
+    """Zborul din 24.09.2026: 2000 us + gain 8, valori de banc, au ajuns
+    afara cu ~5-6 trepte peste - imagine spalata, detectie 30-44%. Regula
+    blocarii: luminozitatea masurata de AE se pastreaza, expunerea nu
+    depaseste plafonul de blur, restul se muta in gain."""
+    from nova.detector_pi import expunere_blocata, AUTOEXP_MAX_US
+    assert AUTOEXP_MAX_US == 2000, "plafonul de blur s-a mutat fara calcul"
+    # afara: AE alege scurt -> ramane exact ce a masurat, gain mic
+    e, g, w = expunere_blocata(400, 1.0)
+    assert (e, g, w) == (400.0, 1.0, None), (e, g, w)
+    # interior: AE cere 10 ms -> plafonat la 2 ms, gain x5 (lumina egala)
+    e, g, w = expunere_blocata(10000, 1.0)
+    assert (e, g) == (2000.0, 5.0) and w is None, (e, g, w)
+    assert abs(10000 * 1.0 - e * g) < 1e-6, "luminozitatea nu s-a pastrat"
+    # bezna: gain-ul cerut depaseste senzorul -> maxim + AVERTISMENT
+    e, g, w = expunere_blocata(60000, 4.0)
+    assert (e, g) == (2000.0, 16.0) and w is not None, (e, g, w)
+    # gain sub minimul senzorului se ridica la minim
+    assert expunere_blocata(1500, 0.5)[1] == 1.0
+    return "afara scurt; interior plafonat cu gain compensat; bezna avertizata"
+
+
+def test_luminozitatea_ajunge_in_statistici():
+    """In zbor nu exista NICIO cifra despre expunere in log - cauza
+    probabila (imagine supraexpusa) a ramas o ipoteza. `lum` o face
+    masurabila: media cadrului, in fiecare linie de stare."""
+    cal = synthetic_calibration()
+    d = ArucoMarkerDetector(cal)
+    assert d.stats()['lum'] is None, "inainte de primul cadru: None, nu 0"
+    frame, _ = render(cal, R_FLAT, (0.0, 0.0, 8.0))
+    d.detect(frame, 1.0)
+    lum = d.stats()['lum']
+    assert lum is not None and abs(lum - frame[::16, ::16].mean()) < 2, lum
+    # un cadru ars (alb saturat) trebuie sa se VADA in cifra
+    d.detect(np.full_like(frame, 254), 2.0)
+    assert d.stats()['lum'] >= 250, d.stats()['lum']
+    src = ArraySource([frame])
+    pid = PiDetector(src, ArucoMarkerDetector(cal), threaded=False)
+    pid.poll(0.1)
+    assert 'lum' in pid.status_line(), pid.status_line()
+    return f"lum {lum} pe cadrul sintetic; 254 pe cadrul ars; in status_line"
+
+
 TESTS = [
+    ('expunerea se masoara apoi se blocheaza',
+     test_expunerea_se_masoara_apoi_se_blocheaza),
+    ('luminozitatea ajunge in statistici',
+     test_luminozitatea_ajunge_in_statistici),
     ('incadrarea tine cont de rotatia markerului',
      test_incadrarea_tine_cont_de_rotatia_markerului),
     ('direct dedesubt, 8 m', test_direct_dedesubt_8m),

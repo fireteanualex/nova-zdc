@@ -330,7 +330,14 @@ if [[ $ASSUME_YES -eq 0 ]]; then
   [[ "$raspuns" == "ZBOR" ]] || die "anulat"
 fi
 
-STAMP="$(date +%Y%m%d-%H%M%S)"
+# Acelasi contor de boot ca bringup.sh: pe teren data din nume minte
+# (§5.61), numarul de boot nu. Nu incrementam daca bringup a facut-o deja
+# in boot-ul asta - functia compara boot_id-ul.
+BOOT_N="$( idf="$LOG_DIR/.boot"; bid="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo necunoscut)"
+  read -r vechi n < "$idf" 2>/dev/null || { vechi=""; n=0; }
+  if [[ "$vechi" != "$bid" ]]; then n=$((n + 1)); echo "$bid $n" > "$idf"; fi
+  echo "$n" )"
+STAMP="b${BOOT_N}-$(date +%Y%m%d-%H%M%S)"
 LOG="$LOG_DIR/coborare-$STAMP.log"
 say "pornesc. log: $LOG"
 cd "$REPO"
