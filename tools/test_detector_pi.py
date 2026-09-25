@@ -245,14 +245,51 @@ def test_roi_miss_cade_pe_cadrul_intreg():
     return "ratare ROI -> cadru intreg -> detectie corecta"
 
 
-def test_fara_roi_peste_5m():
+def test_roi_gating_pe_prag_si_implicitele_de_zbor():
+    """Mecanismul de prag se testeaza cu pragul INJECTAT (§5.40), nu cu
+    implicitul - implicitul e o decizie care se schimba, si s-a schimbat:
+    5 m -> 15 m dupa zborul din 24.09.2026, in care fereastra de handover
+    (5-12 m) cadea integral pe cautarea lenta din cadrul intreg (§5.62)."""
     cal = synthetic_calibration()
-    d = ArucoMarkerDetector(cal)
+    d = ArucoMarkerDetector(cal, roi_below_m=5.0)
     f, _ = render(cal, R_FLAT, (0.0, 0.0, 7.0))
     d.detect(f, 0.0)
     d.detect(f, 0.1)
-    assert d.n_roi == 0, "ROI folosit peste pragul de 5 m"
-    return "la 7 m se cauta in tot cadrul"
+    assert d.n_roi == 0, "ROI folosit peste pragul injectat de 5 m"
+    # cu implicitul de zbor, aceeasi scena de 7 m FOLOSESTE ROI
+    d2 = ArucoMarkerDetector(cal)
+    assert d2.detect(f, 0.0) is not None
+    assert d2.detect(f, 0.1) is not None and d2.n_roi == 1, (
+        "la 7 m, in fereastra portii, al doilea cadru trebuia sa fie pe ROI")
+    # paritate: config-ul de zbor = implicitele clasei (§5.56)
+    from nova import config as nova_config
+    from nova.detector_pi import ROI_BELOW_M, SEARCH_DOWNSCALE
+    assert ROI_BELOW_M == 15.0 and nova_config.DEFAULTS['roi_below_m'] == 15.0
+    assert nova_config.DEFAULTS['search_downscale'] == SEARCH_DOWNSCALE == 2
+    return "prag injectat: gating ok; implicit 15 m: ROI la 7 m; paritate"
+
+
+def test_cautarea_redusa_gaseste_si_rafineaza():
+    """Cadrul intreg la rezolutia plina lua ~320 ms pe Pi 4 si rata
+    majoritatea cadrelor la 5-7 m (§5.62). Cautarea pe imaginea redusa
+    trebuie sa gaseasca ACELASI marker cu ACEEASI precizie - rafinarea la
+    rezolutia plina e cea care o garanteaza."""
+    cal = synthetic_calibration()
+    t = (0.3, -0.2, 6.0)
+    frame, corners = render(cal, R_FLAT, t)
+    d1 = ArucoMarkerDetector(cal, search_downscale=1)   # drumul vechi
+    det1 = d1.detect(frame, 0.0)
+    d2 = ArucoMarkerDetector(cal)                       # drumul de zbor
+    det2 = d2.detect(frame, 0.0)
+    assert det1 is not None and det2 is not None
+    assert d2.n_half == 1 and d1.n_half == 0
+    check_det(det2, t, corners_px=corners)
+    # rafinarea la rezolutia plina: colturile celor doua drumuri coincid
+    assert float(np.max(np.abs(d1.last_corners - d2.last_corners))) < 0.5, (
+        "colturile de pe drumul redus difera de cele de la rezolutia plina")
+    assert abs(det1.distance_m - det2.distance_m) < 0.01
+    return (f"redus+rafinat: dist {det2.distance_m:.3f} m vs "
+            f"{det1.distance_m:.3f} m, colturi identice sub 0.5 px")
 
 
 def test_pidetector_timestamps_si_statistici():
@@ -654,13 +691,16 @@ TESTS = [
     ('offset lateral, conventia de montaj', test_offset_lateral_conventia_de_montaj),
     ('12 m, ~37 px', test_departe_12m_37px),
     ('0.45 m, inca incape', test_aproape_045m_incape),
+    ('ROI: gating pe prag + implicitele de zbor',
+     test_roi_gating_pe_prag_si_implicitele_de_zbor),
+    ('cautarea redusa gaseste si rafineaza',
+     test_cautarea_redusa_gaseste_si_rafineaza),
     ('NEGATIV: nu incape in cadru (5.2)', test_NEGATIV_nu_incape_in_cadru),
     ('NEGATIV: cadru gol / zgomot', test_NEGATIV_cadru_gol),
     ('NEGATIV: alt ID ignorat', test_NEGATIV_alt_id_ignorat),
     ('plan inclinat: range pe axa optica', test_plan_inclinat_range_pe_axa_optica),
     ('ROI sub 5 m', test_roi_sub_5m),
     ('ratare ROI -> cadru intreg', test_roi_miss_cade_pe_cadrul_intreg),
-    ('fara ROI peste 5 m', test_fara_roi_peste_5m),
     ('PiDetector: timestamp captura pastrat', test_pidetector_timestamps_si_statistici),
     ('PiDetector: latenta reala (desktop)', test_pidetector_latenta_reala_pe_desktop),
     ('PiDetector: fir separat', test_pidetector_fir_separat),

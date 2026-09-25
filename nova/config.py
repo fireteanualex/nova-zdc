@@ -39,7 +39,12 @@ DEFAULTS = {
     # Sub aceasta distanta detectia se face intr-un ROI centrat pe ultima
     # pozitie a markerului (E1.3). Markerul are > 90 px acolo, deci 640x480
     # ajunge, iar saltul de FPS pe Pi 4 e mare.
-    'roi_below_m': 5.0,
+    # Zborul din 24.09.2026 (§5.62): drumul cu ROI dadea 66 ms / det 77%,
+    # cadrul intreg 320 ms / det sub 15% - iar fereastra de handover (5-12 m)
+    # cadea integral pe al doilea. ROI la orice distanta din fereastra, plus
+    # cautare pe imaginea redusa de `search_downscale` ori (1 = dezactivat).
+    'roi_below_m': 15.0,
+    'search_downscale': 2,
     'roi_size_px': [640, 480],
 
     # Cum e montata camera pe VEHICULUL REAL: cu cate grade trebuie rotita

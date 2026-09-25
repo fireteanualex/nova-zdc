@@ -7,7 +7,8 @@
   "marker_id": 26,
   "marker_size_m": 0.48,
   "camera_calibration": "config/camera_pi.yaml",
-  "roi_below_m": 5.0,
+  "roi_below_m": 15.0,
+  "search_downscale": 2,
   "roi_size_px": [640, 480],
 
   "_camera_rotation_deg": "Cum e montata camera pe vehicul: cu cate grade rotesti imaginea bruta SPRE STANGA ca nasul dronei sa ajunga sus (0/90/180/270). Se aplica pe axe, nu pe pixeli. VERIFICA inainte de orice zbor autonom: markerul pus in fata nasului trebuie sa apara in fereastra ca '+X m in fata', nu 'la dreapta'. Daca apare lateral, valoarea corecta e 270. O rotatie gresita face vehiculul sa corecteze perpendicular pe eroare si sa orbiteze (§5.1).",

@@ -161,7 +161,23 @@ MAX_REPROJ_ERR_PX = 0.85
 #: Detectie (E1.3)
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
 MARKER_ID = 26
-ROI_BELOW_M = 5.0
+#: Sub ce distanta se urmareste markerul intr-un ROI centrat pe ultima
+#: pozitie. Era 5.0 ("markerul are > 90 px acolo"); zborul din 24.09.2026
+#: (§5.62) a aratat ca exact FEREASTRA DE HANDOVER (5-12 m) ramanea pe
+#: cautarea in cadrul intreg: 320 ms si det sub 15%, fata de 66 ms si det
+#: 77% pe drumul cu ROI. La 12 m markerul are ~40 px si incape lejer in
+#: 640x480; ratarea ROI cade oricum pe cadrul intreg, in acelasi apel.
+ROI_BELOW_M = 15.0
+#: Cautarea in cadrul intreg se face pe imaginea redusa de k ori
+#: (INTER_AREA), cu rafinarea colturilor la rezolutia plina intr-un ROI in
+#: jurul gasirii. Sub ~5 px pe modul decodarea ArUco pica, deci la 2x
+#: limita practica de achizitie e ~65 px pe latura (8-9 m); pentru capatul
+#: de sus al portii exista plasa de mai jos. 1 = comportamentul vechi.
+SEARCH_DOWNSCALE = 2
+#: Plasa de achizitie: la fiecare al N-lea cadru FARA gasire pe imaginea
+#: redusa se cauta si la rezolutia plina. Achizitia la 10-12 m dureaza deci
+#: pana la N cadre; dupa prima gasire preia ROI-ul, la orice distanta.
+SEARCH_FULLRES_EVERY = 4
 #: Peste cat din cadru consideram ca markerul nu mai incape (§5.2, pe cutie).
 #: Masurat in Gazebo, detectia tine pana la fill ~0.91 la rotatie zero si
 #: ~0.83 la 41 grade, deci pragul asta nu e cel care leaga - `detectMarkers`
@@ -384,7 +400,7 @@ class ArucoMarkerDetector:
 
     def __init__(self, calib, marker_id=MARKER_ID, marker_size_m=MARKER_SIZE_M,
                  roi_below_m=ROI_BELOW_M, roi_size_px=ROI_SIZE_PX,
-                 camera_rotation_deg=0):
+                 camera_rotation_deg=0, search_downscale=SEARCH_DOWNSCALE):
         self.calib = calib
         # Validat aici, la constructie, nu la primul cadru: o valoare gresita
         # trebuie sa opreasca pornirea, nu sa apara in mijlocul unui zbor.
@@ -393,6 +409,8 @@ class ArucoMarkerDetector:
         self.marker_id = int(marker_id)
         self.marker_size_m = float(marker_size_m)
         self.roi_below_m = float(roi_below_m)
+        self.search_downscale = int(search_downscale)
+        self._search_tick = 0
         self.roi_size_px = tuple(int(x) for x in roi_size_px)
         self.cam = calib.camera_model(self.marker_size_m)
 
@@ -433,6 +451,8 @@ class ArucoMarkerDetector:
         self._counts = (0, 0)
         self.n_roi = 0
         self.n_roi_miss = 0
+        self.n_half = 0          # gasiri pe imaginea redusa
+        self.n_full = 0          # gasiri pe plasa de rezolutie plina
         self.last_lum = None
         self.n_rejected_fit = 0
         self.n_rejected_id = 0
@@ -462,7 +482,52 @@ class ArucoMarkerDetector:
                 return corners, True
             self.n_roi_miss += 1
             self.last_center = None          # cadrul intreg data viitoare
-        return self._detect_id(gray), False
+
+        # Cautarea in cadrul intreg. La rezolutia plina (2304x1296) ia
+        # ~320 ms pe Pi 4 si in zbor a ratat majoritatea cadrelor la 5-7 m
+        # (§5.62) - exact fereastra de handover. Redusa de k ori, cautarea
+        # scade la ~80 ms, iar colturile se rafineaza la rezolutia plina
+        # intr-un decupaj in jurul gasirii - acelasi drum care in zbor a
+        # dat 66 ms si det 77%.
+        k = self.search_downscale
+        if k <= 1:
+            return self._detect_id(gray), False
+        small = cv2.resize(gray, None, fx=1.0 / k, fy=1.0 / k,
+                           interpolation=cv2.INTER_AREA)
+        c_small = self._detect_id(small)
+        if c_small is not None:
+            self.n_half += 1
+            c_scaled = c_small * float(k)
+            refined = self._refine_full(gray, c_scaled)
+            # Rafinarea poate rata (rar: marginea cadrului). Colturile
+            # scalate au eroare ~k/2 px - acceptabil ca rezerva, si tot
+            # trece prin solvePnP si prin gardurile de incadrare.
+            return (refined if refined is not None else c_scaled), False
+        self._search_tick += 1
+        if self._search_tick >= SEARCH_FULLRES_EVERY:
+            self._search_tick = 0
+            c = self._detect_id(gray)
+            if c is not None:
+                self.n_full += 1
+            return c, False
+        return None, False
+
+    def _refine_full(self, gray, c_scaled):
+        """Colturile la rezolutia plina, dintr-un decupaj in jurul gasirii
+        de pe imaginea redusa. Decupajul acopera markerul cu marja, oricat
+        de mare ar fi el in cadru."""
+        h, w = gray.shape[:2]
+        x_min, y_min = c_scaled.min(axis=0)
+        x_max, y_max = c_scaled.max(axis=0)
+        rw = max(self.roi_size_px[0], int((x_max - x_min) * 1.6))
+        rh = max(self.roi_size_px[1], int((y_max - y_min) * 1.6))
+        cx, cy = (x_min + x_max) / 2.0, (y_min + y_max) / 2.0
+        x0 = int(min(max(cx - rw / 2, 0), max(w - rw, 0)))
+        y0 = int(min(max(cy - rh / 2, 0), max(h - rh, 0)))
+        c = self._detect_id(gray[y0:min(y0 + rh, h), x0:min(x0 + rw, w)])
+        if c is None:
+            return None
+        return c + np.array([x0, y0], dtype=np.float32)
 
     def _detect_id(self, img):
         corners, ids, _ = self.detector.detectMarkers(img)
@@ -585,6 +650,8 @@ class ArucoMarkerDetector:
             'detection_rate': (gasite / cadre if cadre else 0.0),
             'roi_hits': self.n_roi,
             'roi_misses': self.n_roi_miss,
+            'half_hits': self.n_half,
+            'full_hits': self.n_full,
             'rejected_fit': self.n_rejected_fit,
             'rejected_other_id': self.n_rejected_id,
             'lum': self.last_lum,
@@ -1233,7 +1300,8 @@ def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None,
                                 marker_size_m=cfg['marker_size_m'],
                                 roi_below_m=cfg['roi_below_m'],
                                 roi_size_px=cfg['roi_size_px'],
-                                camera_rotation_deg=cfg['camera_rotation_deg'])
+                                camera_rotation_deg=cfg['camera_rotation_deg'],
+                                search_downscale=cfg['search_downscale'])
     if verbose and aruco.camera_rotation_deg:
         print(f"[detector] camera montata rotit: imaginea se roteste cu "
               f"{aruco.camera_rotation_deg} grade la stanga (axe, nu pixeli)")
