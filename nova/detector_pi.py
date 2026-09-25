@@ -237,6 +237,50 @@ STATS_WINDOW = 300
 
 # --- Calibrare ---------------------------------------------------------------
 
+class StageTimer:
+    """Per-stage wall-clock timings for the detection pipeline (step 0 of
+    the Pi 4 detection work, §5.65). Records durations only; it changes no
+    behaviour. Each stage keeps the last `window` samples; `stats()` gives
+    p50/p99 in ms. Attached by PiDetector to the source and the detector,
+    which record into it only if it is present (`timer is not None`)."""
+
+    STAGES = ('achizitie', 'gri', 'varsta', 'roi', 'scalare', 'detect_redus',
+              'rafinare', 'detect_plin', 'geometrie', 'ring', 'total')
+
+    def __init__(self, window=300):
+        self.window = window
+        self.d = {}
+
+    def add(self, stage, dt_s):
+        self.d.setdefault(stage, collections.deque(maxlen=self.window)).append(dt_s)
+
+    @staticmethod
+    def _pct(vals, p):
+        s = sorted(vals)
+        k = (len(s) - 1) * p
+        lo, hi = int(math.floor(k)), int(math.ceil(k))
+        return s[lo] + (s[hi] - s[lo]) * (k - lo)
+
+    def stats(self):
+        """{stage: (p50_ms, p99_ms, n)}, stages in pipeline order."""
+        out = {}
+        for st in self.STAGES + tuple(k for k in self.d if k not in self.STAGES):
+            v = self.d.get(st)
+            if v:
+                out[st] = (1000.0 * self._pct(v, 0.5), 1000.0 * self._pct(v, 0.99), len(v))
+        return out
+
+    def line(self):
+        return 'etape ' + ' | '.join(f"{st} {p50:.0f}/{p99:.0f}"
+                                    for st, (p50, p99, _) in self.stats().items())
+
+    def table(self):
+        rows = ["etapa           p50 ms   p99 ms      n"]
+        for st, (p50, p99, n) in self.stats().items():
+            rows.append(f"{st:<14} {p50:8.1f} {p99:8.1f} {n:6d}")
+        return '\n'.join(rows)
+
+
 class CameraCalibration:
     """Matricea intrinseca si coeficientii de distorsiune, cu proveniența.
 
@@ -411,6 +455,8 @@ class ArucoMarkerDetector:
         self.roi_below_m = float(roi_below_m)
         self.search_downscale = int(search_downscale)
         self._search_tick = 0
+        #: StageTimer, attached by PiDetector; None = no timing overhead.
+        self.timer = None
         self.roi_size_px = tuple(int(x) for x in roi_size_px)
         self.cam = calib.camera_model(self.marker_size_m)
 
@@ -471,12 +517,19 @@ class ArucoMarkerDetector:
         y0 = int(min(max(cy - rh / 2, 0), max(h - rh, 0)))
         return x0, y0, min(x0 + rw, w), min(y0 + rh, h)
 
+    def _t(self, stage, t0):
+        """Record one stage duration, if a timer is attached."""
+        if self.timer is not None:
+            self.timer.add(stage, time.perf_counter() - t0)
+
     def _find(self, gray):
         """(colturi 4x2 in coordonatele cadrului intreg, folosit_roi)"""
         roi = self._roi(gray.shape)
         if roi is not None:
             x0, y0, x1, y1 = roi
+            t0 = time.perf_counter()
             corners = self._detect_id(gray[y0:y1, x0:x1])
+            self._t('roi', t0)
             if corners is not None:
                 self.n_roi += 1
                 corners = corners + np.array([x0, y0], dtype=np.float32)
@@ -492,14 +545,23 @@ class ArucoMarkerDetector:
         # dat 66 ms si det 77%.
         k = self.search_downscale
         if k <= 1:
-            return self._detect_id(gray), False
+            t0 = time.perf_counter()
+            c = self._detect_id(gray)
+            self._t('detect_plin', t0)
+            return c, False
+        t0 = time.perf_counter()
         small = cv2.resize(gray, None, fx=1.0 / k, fy=1.0 / k,
                            interpolation=cv2.INTER_AREA)
+        self._t('scalare', t0)
+        t0 = time.perf_counter()
         c_small = self._detect_id(small)
+        self._t('detect_redus', t0)
         if c_small is not None:
             self.n_half += 1
             c_scaled = c_small * float(k)
+            t0 = time.perf_counter()
             refined = self._refine_full(gray, c_scaled)
+            self._t('rafinare', t0)
             # Rafinarea poate rata (rar: marginea cadrului). Colturile
             # scalate au eroare ~k/2 px - acceptabil ca rezerva, si tot
             # trece prin solvePnP si prin gardurile de incadrare.
@@ -507,7 +569,9 @@ class ArucoMarkerDetector:
         self._search_tick += 1
         if self._search_tick >= SEARCH_FULLRES_EVERY:
             self._search_tick = 0
+            t0 = time.perf_counter()
             c = self._detect_id(gray)
+            self._t('detect_plin', t0)
             if c is not None:
                 self.n_full += 1
             return c, False
@@ -572,6 +636,15 @@ class ArucoMarkerDetector:
         if corners is None:
             return None
         self.last_corners = corners
+        t_geo = time.perf_counter()
+        try:
+            return self._geometry(gray, corners, t_capture)
+        finally:
+            self._t('geometrie', t_geo)
+
+    def _geometry(self, gray, corners, t_capture):
+        """Fill check, solvePnP and axis convention - everything after the
+        corners are known. Split out only so it can be timed as one stage."""
 
         marker_px = self.side_px(corners)
         # Cat din cadru ocupa CUTIA colturilor. Se ia din forma reala a
@@ -714,10 +787,15 @@ class ImageDirSource(FrameSource):
         self.nominal_fps = fps
         self.i = 0
 
+    timer = None
+
     def read(self):
         if self.i >= len(self.paths):
             return None
+        t0 = time.perf_counter()
         img = cv2.imread(self.paths[self.i], cv2.IMREAD_GRAYSCALE)
+        if self.timer is not None:
+            self.timer.add('achizitie', time.perf_counter() - t0)
         t = self.i / self.nominal_fps
         self.i += 1
         if img is None:
@@ -1047,8 +1125,16 @@ class PiCameraSource(FrameSource):
                 print(f"[camera] ATENTIE control neaplicat: {p}")
         self.control_problems = problems
 
+    #: StageTimer attached by PiDetector (None = no timing).
+    timer = None
+    #: Metadata of the last frame (ExposureTime, AnalogueGain,
+    #: LensPosition, SensorTimestamp), for the recording/bench tools.
+    last_metadata = None
+
     def read(self):
+        t0 = time.perf_counter()
         req = self.picam2.capture_request()
+        t1 = time.perf_counter()
         try:
             arr = req.make_array('main')
             md = req.get_metadata()
@@ -1056,8 +1142,16 @@ class PiCameraSource(FrameSource):
             req.release()
         h = self.size[1]
         gray = np.ascontiguousarray(arr[:h, :self.size[0]])   # planul Y
+        t2 = time.perf_counter()
+        self.last_metadata = md
         ts = md.get('SensorTimestamp')
         t = (ts * 1e-9 + self._boot_offset) if ts else time.monotonic()
+        if self.timer is not None:
+            self.timer.add('achizitie', t1 - t0)   # wait for a request
+            self.timer.add('gri', t2 - t1)         # Y-plane copy, no cvtColor
+            # Age of the frame when it leaves the source: queue depth shows
+            # up here (step 5 of §5.65), not in the detection stages.
+            self.timer.add('varsta', time.monotonic() - t)
         return gray, t
 
     def capture_scoring_frame(self):
@@ -1106,6 +1200,15 @@ class PiDetector:
         self.source = source
         self.det = detector
         self.clock = clock or time.monotonic
+        #: Stage timings (step 0, §5.65). One timer shared by the source,
+        #: the detector and this loop; attached here so production wiring
+        #: gets it without any caller knowing about it.
+        self.timer = StageTimer()
+        try:
+            self.det.timer = self.timer
+            self.source.timer = self.timer
+        except AttributeError:
+            pass
         #: Ultimul cadru citit, pastrat DOAR daca cineva cere explicit.
         #: Serveste la diagnostic: cand detectia se pierde, vrei pixelii
         #: care au picat, nu o teorie despre ei. Oprit implicit - pe Pi
@@ -1195,6 +1298,7 @@ class PiDetector:
     def _process_one(self):
         """Un cadru: citeste, detecteaza, publica. False cand sursa s-a
         terminat."""
+        t_start = time.perf_counter()
         item = self.source.read()
         if item is None:
             self.exhausted = True
@@ -1206,9 +1310,12 @@ class PiDetector:
             # Impins INAINTE de detectie: cadrul trebuie sa fie in ring chiar
             # daca detectia pe el esueaza. Cadrul de contact e tocmai unul pe
             # care markerul nu mai incape in cadru (§5.2).
+            t0 = time.perf_counter()
             self.ring.push(gray, t_cap)
+            self.timer.add('ring', time.perf_counter() - t0)
         det = self.det.detect(gray, t_cap)
         t_pub = time.monotonic()
+        self.timer.add('total', time.perf_counter() - t_start)
         with self.lock:
             self.frame_times.append(t_pub)
             self.frame_detected.append(det is not None)
@@ -1268,6 +1375,10 @@ class PiDetector:
             d['latency_p99_ms'] = 1000.0 * self._percentile(lat, 0.99)
         d.update({'aruco_' + k: v for k, v in self.det.stats().items()})
         return d
+
+    def stage_line(self):
+        """One line with p50/p99 ms per pipeline stage (step 0, §5.65)."""
+        return self.timer.line()
 
     def status_line(self):
         s = self.stats()

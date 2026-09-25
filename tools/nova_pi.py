@@ -332,6 +332,9 @@ def main():
                    help='opreste urcarea de dupa contact (15.2.7). Secventa '
                         'se incheie pe sol. Pentru primele coborari de test, '
                         'unde o urcare automata dupa touchdown e o surpriza')
+    p.add_argument('--etape', type=float, default=10.0, metavar='S',
+                   help='tipareste timpii pe etape ai detectorului la '
+                        'fiecare S secunde (0 = oprit). Doar masurare')
     p.add_argument('--max-rms', type=float, default=None,
                    help='ridica pragul de reproiectie al calibrarii DOAR '
                         'pentru rularea asta. Pentru bring-up la banc cu o '
@@ -473,11 +476,22 @@ def main():
 
     ecran = race_screen.RaceScreen() if a.race else None
 
+    # Step 0 (§5.65): stage timings every --etape seconds, from the timer
+    # that PiDetector attaches to the source and the detector. Measurement
+    # only; nothing in the loop changes.
+    etape_la = {'t': None}
+
     def status(now):
         if ecran is None:
             print(f"{sm.status_line()} | {detector.status_line()} | "
                   f"{sup.status()}"
                   + ('' if autoritate is None else f" | {autoritate.status()}"))
+            if a.etape > 0 and (etape_la['t'] is None
+                                or now - etape_la['t'] >= a.etape):
+                etape_la['t'] = now
+                linie = getattr(detector, 'stage_line', None)
+                if linie is not None:
+                    print(f"[etape] {linie()}")
             return
         # Verdictul de handover se CITESTE din poarta la fiecare redesenare,
         # nu se tine intr-o variabila proprie actualizata prin callback. Un

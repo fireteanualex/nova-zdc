@@ -674,6 +674,76 @@ def test_ratarile_consecutive_pe_clasa_din_productie():
     return f"contor pe cadre: {urme}"
 
 
+def test_timpii_pe_etape_se_masoara_pe_clasele_din_productie():
+    """Step 0 (§5.65): per-stage timings must come from the production
+    wiring - PiDetector attaches one StageTimer to the source and the
+    detector - and must not change any result. Measured on ArraySource
+    frames: stages present, p50 <= p99, and the same Detection as without
+    a timer."""
+    from nova.detector_pi import StageTimer
+    tm = StageTimer(window=10)
+    for v in (0.001, 0.003, 0.002):
+        tm.add('x', v)
+    st = tm.stats()['x']
+    assert abs(st[0] - 2.0) < 1e-6 and st[1] <= 3.0 + 1e-6 and st[2] == 3, st
+    assert 'x 2/3' in tm.line() and 'etapa' in tm.table()
+
+    cal = synthetic_calibration()
+    frame, _ = render(cal, R_FLAT, (0.2, -0.1, 6.0))
+    gol = np.full_like(frame, 110)
+    src = ArraySource([frame, gol, frame])
+    det = ArucoMarkerDetector(cal)
+    pid = PiDetector(src, det, threaded=False, ring_frames=5)
+    assert det.timer is pid.timer and src.timer is pid.timer, (
+        "timer-ul nu ajunge la detector/sursa prin cablajul din productie")
+    dets = []
+    for i in range(3):
+        dets += pid.poll(0.1 * i)
+    assert len(dets) == 2
+    s = pid.timer.stats()
+    for st in ('geometrie', 'ring', 'total'):
+        assert st in s, f"etapa {st} lipseste din {list(s)}"
+    assert 'detect_redus' in s or 'detect_plin' in s
+    assert s['total'][0] <= s['total'][1]
+    # timing changes nothing: same corners as a detector without timer
+    d2 = ArucoMarkerDetector(cal)
+    ref = d2.detect(frame, 0.0)
+    assert abs(ref.distance_m - dets[0].distance_m) < 1e-9
+    return f"etape: {', '.join(s)}; rezultat identic cu/fara timer"
+
+
+def test_bench_offline_ruleaza_cele_trei_pipeline_uri():
+    """tools/bench_detect.py on a directory of rendered frames: the three
+    pipelines (plain cv2.aruco, ArucoMarkerDetector, PiDetector) all see
+    the same frames and report a detection rate that matches what was
+    rendered - 4 frames with marker out of 6."""
+    import json
+    import tempfile
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import bench_detect as bd
+    cal = synthetic_calibration()
+    d = tempfile.mkdtemp()
+    frame, _ = render(cal, R_FLAT, (0.1, 0.1, 5.0))
+    gol = np.full_like(frame, 110)
+    for i, g in enumerate([frame, gol, frame, frame, gol, frame]):
+        cv2.imwrite(os.path.join(d, f"f{i:05d}.png"), g)
+    json.dump({'frames': [{'LensPosition': 1.63}], 'fps_measured': 30.0},
+              open(os.path.join(d, 'meta.json'), 'w'))
+    cfg = {'marker_id': 26, 'marker_size_m': MARKER_M, 'roi_below_m': 15.0,
+           'roi_size_px': (640, 480), 'camera_rotation_deg': 0,
+           'search_downscale': 2}
+    r = bd.run_bench(d, cal, cfg, variants=True)
+    assert r['n'] == 6
+    for k in ('plain', 'aruco'):
+        assert abs(r[k]['rate'] - 4 / 6) < 1e-9, (k, r[k])
+        assert r[k]['p99'] >= r[k]['p50'] > 0
+    assert abs(r['pi']['rate'] - 4 / 6) < 1e-9, r['pi']
+    assert 'achizitie' in r['pi']['stats'] and 'geometrie' in r['pi']['stats']
+    assert len(r['variants']) == 4
+    assert all(abs(v['rate'] - 4 / 6) < 1e-9 for v in r['variants'].values())
+    return "plain/aruco/pi: 4/6 fiecare; 4 variante; etape cu achizitie"
+
+
 def test_luminozitatea_ajunge_in_statistici():
     """In zbor nu exista NICIO cifra despre expunere in log - cauza
     probabila (imagine supraexpusa) a ramas o ipoteza. `lum` o face
@@ -704,6 +774,10 @@ TESTS = [
      test_verificarea_asteapta_aplicarea_controlului),
     ('ratarile consecutive pe clasa din productie',
      test_ratarile_consecutive_pe_clasa_din_productie),
+    ('timpii pe etape, pe clasele din productie',
+     test_timpii_pe_etape_se_masoara_pe_clasele_din_productie),
+    ('bench offline: cele trei pipeline-uri',
+     test_bench_offline_ruleaza_cele_trei_pipeline_uri),
     ('incadrarea tine cont de rotatia markerului',
      test_incadrarea_tine_cont_de_rotatia_markerului),
     ('direct dedesubt, 8 m', test_direct_dedesubt_8m),
