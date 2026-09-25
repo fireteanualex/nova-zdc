@@ -662,7 +662,8 @@ def test_distanta_laterala_vine_doar_din_camera():
     sm.last_det = Detection(t=0.0, angle_x=0.0, angle_y=0.0,
                             distance_m=9.02, marker_px=55.3, range_m=8.86)
     lat = sm.marker_offset_m()
-    assert 1.5 < lat < 1.9, f"lateral {lat:.2f} m - camera zice ~1.7 m"
+    # unghiul din camera (1.69/8.86) x inaltimea barometrica 6.15 = 1.17 m
+    assert 1.0 < lat < 1.35, f"lateral {lat:.2f} m - asteptat ~1.17 m"
     # formula veche, pentru contrast: ar fi refuzat la poarta de 6.5 m
     vechi = math.sqrt(9.02 ** 2 - 6.15 ** 2)
     assert vechi > 6.5
@@ -670,7 +671,22 @@ def test_distanta_laterala_vine_doar_din_camera():
     sm.last_det = Detection(t=0.0, angle_x=0.0, angle_y=0.0,
                             distance_m=9.00, marker_px=55.4, range_m=9.33)
     assert sm.marker_offset_m() == 0.0
-    return f"b4: vechi {vechi:.2f} m (refuz) -> camera {lat:.2f} m"
+    # INVARIANTA LA SCARA (b10-b12, §5.63): markerul real ~337 mm, config
+    # 480 mm -> camera scaleaza toate distantele cu 1.43. Lateralul nu are
+    # voie sa se schimbe.
+    k = 1.43
+    sm.last_det = Detection(t=0.0, angle_x=0.0, angle_y=0.0,
+                            distance_m=9.02 * k, marker_px=55.3 / k,
+                            range_m=8.86 * k)
+    assert abs(sm.marker_offset_m() - lat) < 1e-9, (
+        "marimea markerului a schimbat distanta laterala")
+    # sub 1 m barometrul nu e referinta: ramane doar camera
+    v.z = -0.5
+    sm.last_det = Detection(t=0.0, angle_x=0.0, angle_y=0.0,
+                            distance_m=1.0, marker_px=500.0, range_m=0.8)
+    assert abs(sm.marker_offset_m() - 0.6) < 1e-9
+    return (f"b4: vechi {vechi:.2f} m (refuz) -> baro x unghi {lat:.2f} m; "
+            f"invariant la marimea markerului")
 
 
 TESTS = [
@@ -700,7 +716,7 @@ TESTS = [
      test_linia_de_stare_arata_canalul_de_handover),
     ('AUX sus dezarmat se spune, nu se tace',
      test_aux_sus_dezarmat_se_spune_nu_se_tace),
-    ('distanta laterala vine doar din camera',
+    ('distanta laterala: baro x unghiul camerei',
      test_distanta_laterala_vine_doar_din_camera),
 ]
 

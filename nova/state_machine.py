@@ -116,6 +116,11 @@ AUX_CHANNEL = 7
 #: Peste asta consideram comutatorul pe "sus". Comutatoarele de 3 pozitii dau
 #: ~1000/1500/2000; 1700 e clar in treapta de sus si departe de mijloc.
 AUX_HIGH_PWM = 1700
+
+#: Sub atat, barometrul nu e o referinta de inaltime utila (zgomot, efect
+#: de sol, derivalaturi relativ mari) si distanta laterala se ia doar din
+#: camera. Poarta lucreaza oricum la 5-12 m.
+BARO_MIN_ALT_M = 1.0
 #: ACQUIRE: cat asteptam ca FC-ul sa confirme LAND dupa ACCEPT.
 ACQUIRE_TIMEOUT_S = 3.0
 ACQUIRE_RETRY_S = 0.2
@@ -515,14 +520,27 @@ class LandingStateMachine:
         markerului (1.7 m). 19 din 25 de refuzuri din zborurile din
         25.09.2026 au fost pe acest motiv.
 
+        A doua corectie, dupa b10-b12 (§5.63): camera masoara ~1.43x mai mult
+        decat barometrul, la ORICE altitudine - un raport, nu un decalaj, deci
+        o marime gresita a markerului (latura reala ~337 mm, config 480 mm).
+        Distantele camerei sunt atunci toate scalate, dar UNGHIUL fata de
+        verticala nu: e un raport intre doua marimi scalate la fel. Deci:
+        barometrul da inaltimea (sursa de adevar, decizia echipei), camera
+        doar directia. Rezultatul nu mai depinde de marimea markerului.
+
         None daca nu avem detectie."""
         if self.last_det is None:
             return None
         d = self.last_det.distance_m
-        h = getattr(self.last_det, 'range_m', None)
-        if h is None:
-            h = self.v.alt              # detector fara range: vechiul calcul
-        return math.sqrt(max(0.0, d * d - h * h))
+        h_cam = getattr(self.last_det, 'range_m', None)
+        if h_cam is None:
+            h_cam = self.v.alt          # detector fara range: vechiul calcul
+        lateral_cam = math.sqrt(max(0.0, d * d - h_cam * h_cam))
+        alt = self.v.alt
+        if h_cam > 0.05 and alt is not None and alt >= BARO_MIN_ALT_M:
+            # tan(unghi fata de verticala), independent de scara, x baro
+            return alt * lateral_cam / h_cam
+        return lateral_cam
 
     def detection_age(self, now):
         if self.last_det is None:
