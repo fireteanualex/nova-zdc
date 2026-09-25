@@ -1861,6 +1861,29 @@ def test_logurile_poarta_numarul_de_boot():
     return "b<N>- in ambele, contor comun pe boot_id, boot-log in fisier"
 
 
+def test_poza_de_verificare_e_cablata_corect():
+    """pi/poza.sh: verificarea de orientare fara ecran. Cu ea s-a gasit pe
+    25.09.2026 ca rotatia de montaj era gresita cu 180 de grade (90 in loc
+    de 270) - adica corectiile de aterizare ar fi impins drona exact
+    invers. Scriptul trebuie sa roteasca poza CA IN DETECTOR (din config),
+    altfel verificarea valideaza altceva decat zboara."""
+    cale = os.path.join(REPO, 'pi', 'poza.sh')
+    src = open(cale).read()
+    assert os.access(cale, os.X_OK), "pi/poza.sh nu e executabil"
+    assert 'rpicam-still' in src
+    # camera e exclusiva: serviciul se opreste si se REPORNESTE
+    assert 'stop nova-bringup' in src and 'start nova-bringup' in src
+    # rotatia vine din config, nu scrisa de mana in script
+    assert "camera_rotation_deg" in src
+    for lit in ('rot = 90', 'rot = 270'):
+        assert lit not in src, f"rotatie scrisa de mana: {lit}"
+    # si valoarea de zbor e cea verificata cu poza
+    from nova import config as nova_config
+    assert nova_config.load()['camera_rotation_deg'] == 270, (
+        "config: rotatia verificata cu poza pe 25.09.2026 e 270")
+    return "poza rotita din config; serviciul oprit+repornit; config 270"
+
+
 TESTS = [
     ('rotatia de afisare pune nasul sus',
      test_rotatia_de_afisare_pune_nasul_sus),
@@ -1948,6 +1971,8 @@ TESTS = [
      test_pornirea_automata_de_zbor_e_proba_de_coborare),
     ('--monitor-motiv ajunge in poarta', test_monitor_motiv_ajunge_in_poarta),
     ('logurile poarta numarul de boot', test_logurile_poarta_numarul_de_boot),
+    ('poza de verificare e cablata corect',
+     test_poza_de_verificare_e_cablata_corect),
 ]
 
 
