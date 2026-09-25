@@ -126,6 +126,49 @@ def test_fara_contor_ramane_regula_pe_timp():
     return "miss_streak=None -> BRAKE la 0.6 s, ca inainte"
 
 
+def test_incercarea_noua_elibereaza_zavorul_confirmat():
+    """b14 (§5.64): BRAKE -> pilotul preia (OVERRIDE, confirmat) -> poarta
+    accepta un handover NOU -> masina de stari comanda LAND -> zavorul inca
+    activ re-comanda LOITER in aceeasi secunda. Trei acceptari, zero
+    coborari. O incercare noua trebuie sa porneasca cu zavorul eliberat."""
+    v, sup = build()
+    act = sup.update(100.7, 0.6, 'DESCEND_TRACK')          # BRAKE
+    assert act == Action.BRAKE and v.mode == MODE_BRAKE
+    sup.update(100.8, 0.7, 'DESCEND_TRACK')                  # confirmare
+    assert sup._mode_confirmed is not None
+    # masina de stari a vazut modul schimbat -> IDLE; zavorul ramane
+    sup.update(101.0, 0.9, 'IDLE')
+    assert sup.latched == Action.BRAKE
+    n_before = len(v.mode_reqs)
+    # incercare NOUA: poarta a acceptat, masina de stari a comandat LAND
+    v.mode = MODE_LAND
+    sup.update(120.0, 0.05, 'ACQUIRE')
+    assert sup.latched == Action.NONE, "zavorul confirmat a supravietuit"
+    assert any(e.monitor == 'latch_release' for e in sup.log)
+    sup.update(120.1, 0.05, 'DESCEND_TRACK')
+    assert v.mode == MODE_LAND and len(v.mode_reqs) == n_before, (
+        f"zavorul vechi a re-comandat modul: {v.mode_reqs[n_before:]}")
+    assert sup.armed, "supervizorul nu s-a re-armat pe incercarea noua"
+    # si supravegheaza din nou: pierderea detectiei da BRAKE, nu tacere
+    act = sup.update(121.0, 0.9, 'DESCEND_TRACK')
+    assert act == Action.BRAKE, act
+    return "BRAKE confirmat -> IDLE -> ACQUIRE nou: eliberat, re-armat, vigilent"
+
+
+def test_zavorul_neconfirmat_NU_se_elibereaza():
+    """NEGATIV: daca FC-ul nu a adoptat inca modul comandat, o cerere noua
+    nu are voie sa lase actiunea de siguranta nelivrata."""
+    v, sup = build()
+    v.accept_mode = False                    # FC ignora comenzile
+    sup.update(100.7, 0.6, 'DESCEND_TRACK')  # BRAKE cerut, neconfirmat
+    assert sup.latched == Action.BRAKE and sup._mode_confirmed is None
+    sup.update(101.0, 0.9, 'IDLE')
+    sup.update(120.0, 0.05, 'ACQUIRE')
+    assert sup.latched == Action.BRAKE, "zavor neconfirmat eliberat"
+    assert not any(e.monitor == 'latch_release' for e in sup.log)
+    return "BRAKE neconfirmat -> ramane zavorat prin incercarea noua"
+
+
 def test_exceptia_final_descent():
     """Sub 0.38 m markerul iese din cadru prin constructie (5.2). Monitorul
     NU are voie sa se aplice acolo, altfel abortam in ultimul metru mereu."""
@@ -449,6 +492,10 @@ TESTS = [
      test_detector_blocat_tot_opreste_coborarea),
     ('fara contor ramane regula pe timp',
      test_fara_contor_ramane_regula_pe_timp),
+    ('incercarea noua elibereaza zavorul confirmat',
+     test_incercarea_noua_elibereaza_zavorul_confirmat),
+    ('NEGATIV: zavorul neconfirmat NU se elibereaza',
+     test_zavorul_neconfirmat_NU_se_elibereaza),
     ('exceptia FINAL_DESCENT', test_exceptia_final_descent),
     ('detectie complet absenta', test_detectie_lipsa_complet),
     ('raza -> RTL', test_raza_declanseaza_rtl),

@@ -227,6 +227,7 @@ class SafetySupervisor:
         self.latched = Action.NONE
         self.latched_monitor = None
         self.log = []
+        self._last_phase = 'IDLE'
 
         self._descent_since = None
         self._tilt_since = None
@@ -299,6 +300,30 @@ class SafetySupervisor:
         # dezarmarea ar opri si reincercarile de mod, o comanda pierduta ar
         # ramane definitiv nelivrata - exact actiunea de siguranta ar esua
         # tacut. Odata declansata, ducem comanda la capat indiferent de rest.
+        # Un zavor CONFIRMAT nu supravietuieste unei incercari NOI. Zborul
+        # b14 (§5.64): dupa BRAKE si preluarea pilotului, poarta a acceptat
+        # inca doua handovere, masina de stari a comandat LAND - iar zavorul
+        # de OVERRIDE, inca activ, a re-comandat LOITER in aceeasi secunda.
+        # Trei acceptari, zero coborari. O cerere noua trecuta prin poarta
+        # (front crescator + validare) e intentia explicita a pilotului, deci
+        # zavorul vechi si-a facut treaba. Unul NECONFIRMAT ramane: actiunea
+        # de siguranta nu se pierde pentru ca s-a apasat un comutator.
+        new_attempt = (phase in AUTONOMOUS_PHASES
+                       and self._last_phase not in AUTONOMOUS_PHASES)
+        self._last_phase = phase
+        if (self.latched != Action.NONE and new_attempt
+                and self._mode_confirmed is not None):
+            self._emit(now, 'latch_release', self.latched,
+                       f"incercare noua acceptata de poarta ({phase}): "
+                       f"zavorul {Action.NAMES[self.latched]}, confirmat, "
+                       f"se elibereaza", phase)
+            self.latched = Action.NONE
+            self.latched_monitor = None
+            self._want_mode = None
+            self._mode_confirmed = None
+            self.passive = False
+            self.armed = False          # re-armare curata din faza, mai jos
+
         if self.latched != Action.NONE:
             # Singura escaladare permisa peste un zavor: pilotul. 15.1.7 ii da
             # autoritate oricand, inclusiv peste un RTL pe care tocmai l-am
