@@ -30,10 +30,16 @@ import time
 #: rularea lui tools/calibrate_sticks.py pe emitatorul de concurs.
 STICK_NOISE_PWM = 30
 
-#: Pragul de declansare. ~2.7x zgomotul: destul de sus ca zgomotul sa nu
-#: treaca, destul de jos ca o miscare reala sa fie prinsa imediat.
-#: Se seteaza la cel putin 3*sigma peste maximul observat la calibrare.
-STICK_DEADBAND_PWM = 80
+#: Pragul de declansare. Destul de sus ca zgomotul sa nu treaca, destul de
+#: jos ca o miscare reala sa fie prinsa imediat (o mansa deliberata face
+#: 350-500 PWM). Se seteaza la cel putin 3*sigma peste maximul observat la
+#: calibrare (tools/calibrate_sticks.py).
+#:
+#: DECIZIA ECHIPEI, 25.09.2026: 80 -> 100. In zborul b4, o secventa
+#: autonoma a fost taiata de override la o miscare marunta de mansa;
+#: pragul ramane PROVIZORIU pana la masuratoarea cu emitatorul de concurs
+#: (element 13) - daca zgomotul masurat cere alta valoare, ea castiga.
+STICK_DEADBAND_PWM = 100
 
 #: Depasire sustinuta, nu un varf izolat. O miscare reala de mansa dureaza
 #: mult peste 100 ms; un spike de zgomot, nu.
