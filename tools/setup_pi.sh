@@ -295,7 +295,7 @@ cat <<EOF
     python3 tools/preflight_check.py          # camera, calibrare, MAVLink
     python3 tools/calibrate_camera.py --help  # E1.2, inainte de orice zbor
 
-  Serviciul de monitorizare NU e activat (E0). Dupa ce E2 trece:
-    sudo systemctl enable --now nova-monitor
+  Pornirea automata la boot se instaleaza separat, fara sudo:
+    pi/install.sh
 
 EOF

@@ -473,7 +473,7 @@ Ca să ajungi la coborârea autonomă, ordinea e:
    # dupa ce E2 trece
    nano config/nova.json          # autonomy_enabled: true
    git commit -am "E0 ridicat: raport E2 <data>"
-   tools/start_flight.sh          # cere confirmare
+   pi/descent_test.sh             # verificari + confirmare ZBOR
    ```
 
 Pasul 3 editează un fișier și nu exportă o variabilă, pentru că o gardă

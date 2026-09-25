@@ -701,7 +701,7 @@ class ArraySource(FrameSource):
 
 
 class ImageDirSource(FrameSource):
-    """Director de imagini (E2: tools/measure_detection.py). Timestamp-urile
+    """Director de imagini (E2: tools/run_e2.py). Timestamp-urile
     sunt sintetice, echidistante, doar ca sa existe."""
 
     EXT = ('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff')

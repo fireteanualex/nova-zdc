@@ -3,7 +3,7 @@
 NOVA - ZDC 2026
 Verificator INDEPENDENT de detectie ArUco (F3).
 
-Pornit din tools/script_cristi.py, adaptat pentru E2. Nu inlocuieste
+Scris independent (dintr-un script de banc al echipei), adaptat pentru E2. Nu inlocuieste
 nova/detector_pi.py - exista tocmai ca a doua implementare, scrisa separat,
 cu care se verifica incrucisat rezultatele de pe imagini statice.
 

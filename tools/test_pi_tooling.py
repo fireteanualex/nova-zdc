@@ -1261,8 +1261,7 @@ def test_proba_de_coborare_nu_ridica_singura_E0():
 
     # verifica garda, dar nu o SCRIE
     assert 'autonomy_enabled' in cod, "nu verifica deloc E0"
-    for tipar in ('json.dump', "nova.json'", 'sed -i', '> "$CONFIG"',
-                  'start_flight.sh'):
+    for tipar in ('json.dump', "nova.json'", 'sed -i', '> "$CONFIG"'):
         assert tipar not in cod, (
             f"pi/descent_test.sh pare sa scrie in config ({tipar}): "
             f"E0 se ridica deliberat, nu dintr-un script de pornire")
@@ -1398,8 +1397,7 @@ def test_pragul_de_calibrare_e_decizia_echipei_si_acelasi_peste_tot():
         f"Daca e deliberat, actualizeaza testul SI comentariul din "
         f"detector_pi.py cu motivul")
 
-    for nume in ('pi/bringup.sh', 'pi/descent_test.sh',
-                 'tools/start_flight.sh', 'tools/race_mode.py'):
+    for nume in ('pi/bringup.sh', 'pi/descent_test.sh', 'tools/race_mode.py'):
         cale = os.path.join(REPO, nume)
         if not os.path.exists(cale):
             continue
@@ -1644,7 +1642,7 @@ def test_bringup_nu_e_un_al_doilea_cablaj():
     # cuvantul ar pedepsi exact documentatia pe care o vrem.
     cod = '\n'.join(l for l in src.splitlines()
                     if not l.lstrip().startswith('#'))
-    for tipar in ('autonomy_enabled', 'nova.json', 'start_flight.sh'):
+    for tipar in ('autonomy_enabled', 'nova.json'):
         assert tipar not in cod, (
             f"pi/bringup.sh atinge {tipar} in COD: E0 se ridica deliberat, "
             f"din fisierul versionat, cu commit")
