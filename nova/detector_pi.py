@@ -451,6 +451,7 @@ class ArucoMarkerDetector:
         self._counts = (0, 0)
         self.n_roi = 0
         self.n_roi_miss = 0
+        self.miss_streak = 0     # cadre consecutive fara marker
         self.n_half = 0          # gasiri pe imaginea redusa
         self.n_full = 0          # gasiri pe plasa de rezolutie plina
         self.last_lum = None
@@ -560,6 +561,9 @@ class ArucoMarkerDetector:
         det = self._detect(gray, t_capture)
         cadre, gasite = self._counts
         self._counts = (cadre + 1, gasite + (det is not None))
+        # Ratari CONSECUTIVE - regula de abort a echipei (safety,
+        # DETECTION_MAX_MISSES). O singura atribuire, citita din alt fir.
+        self.miss_streak = 0 if det is not None else self.miss_streak + 1
         return det
 
     def _detect(self, gray, t_capture):
@@ -1124,6 +1128,13 @@ class PiDetector:
         self.frame_detected = collections.deque(maxlen=STATS_WINDOW)
         self.n_published = 0
         self.n_dropped = 0
+
+    @property
+    def miss_streak(self):
+        """Cadre consecutive fara marker, pentru supervizor. Delegat, ca
+        n_frames: un atribut care lipseste pe clasa din productie ar face
+        regula de abort inerta, fara nicio eroare (§5.56)."""
+        return getattr(self.det, 'miss_streak', None)
 
     @property
     def n_frames(self):

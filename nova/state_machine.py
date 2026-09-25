@@ -506,13 +506,23 @@ class LandingStateMachine:
     def marker_offset_m(self):
         """Distanta orizontala pana la marker, din ultima detectie.
 
-        Detectia da distanta 3D; componenta orizontala e ce compara 15.2.3.
+        DOAR din camera: distanta 3D si distanta pe axa optica pana la planul
+        markerului vin din ACELASI solvePnP. Prima varianta scadea altitudinea
+        barometrica din distanta camerei - doua instrumente diferite intr-o
+        formula prost conditionata langa verticala: in zborul b4 (§5.63)
+        barometrul arata 6.15 m, camera 8.86 m pana la plan, iar poarta a
+        calculat 6.6 m lateral si a refuzat cu drona practic DEASUPRA
+        markerului (1.7 m). 19 din 25 de refuzuri din zborurile din
+        25.09.2026 au fost pe acest motiv.
+
         None daca nu avem detectie."""
         if self.last_det is None:
             return None
-        alt = self.v.alt
         d = self.last_det.distance_m
-        return math.sqrt(max(0.0, d * d - alt * alt))
+        h = getattr(self.last_det, 'range_m', None)
+        if h is None:
+            h = self.v.alt              # detector fara range: vechiul calcul
+        return math.sqrt(max(0.0, d * d - h * h))
 
     def detection_age(self, now):
         if self.last_det is None:
@@ -714,7 +724,8 @@ def run_loop(vehicle, detector, sm, supervisor=None, on_status=None,
 
         if supervisor is not None:
             age = None if last_det_t is None else (now - last_det_t)
-            supervisor.update(now, age, sm.state)
+            supervisor.update(now, age, sm.state,
+                              miss_streak=getattr(detector, 'miss_streak', None))
 
         # Modularea de autoritate ruleaza DUPA supervizor si INAINTEA masinii
         # de stari, ca si el, si se armeaza/elibereaza tot din faza (§5.14).

@@ -40,6 +40,19 @@ from .vehicle import MODE_BRAKE, MODE_LAND, MODE_LOITER, MODE_RTL
 #: real, unde rata de pierdere a markerului e alta decat in sintetic.
 DETECTION_MAX_AGE_S = 0.5
 
+#: DECIZIA ECHIPEI, 25.09.2026: BRAKE abia dupa atatea cadre CONSECUTIVE
+#: procesate fara marker, nu la prima pauza de 0.5 s. Cand detectorul
+#: raporteaza contorul, regula de mai sus (pe timp) e inlocuita de asta.
+#: La ~10 cadre/s (masurat in zbor, §5.63) 5 cadre ~ 0.5 s; la rate mai
+#: mici, coborarea oarba se lungeste - de-asta plafonul de mai jos.
+DETECTION_MAX_MISSES = 5
+
+#: Plasa pentru un detector BLOCAT: daca nu proceseaza cadre, contorul de
+#: ratari nu creste niciodata - si fara plafon supervizorul ar lasa
+#: coborarea oarba la infinit. Peste atat, BRAKE oricum. 1.5 s la
+#: 0.5 m/s = 0.75 m de coborare oarba, plus frana (1.00 m masurat).
+DETECTION_HARD_MAX_AGE_S = 1.5
+
 #: 15.2.4 - raza fata de punctul de handover si plafonul deasupra lui.
 GEOFENCE_RADIUS_M = 10.0
 CEILING_AGL_M = 30.0
@@ -186,6 +199,11 @@ class SafetySupervisor:
         self.verbose = verbose
 
         self.detection_max_age_s = detection_max_age_s
+        self.detection_max_misses = DETECTION_MAX_MISSES
+        self.detection_hard_max_age_s = DETECTION_HARD_MAX_AGE_S
+        #: ratari consecutive raportate de detector; None = detectorul nu le
+        #: numara, si atunci ramane regula veche pe timp
+        self.miss_streak = None
         self.geofence_radius_m = geofence_radius_m
         self.ceiling_agl_m = ceiling_agl_m
         self.max_descent_rate_ms = max_descent_rate_ms
@@ -263,13 +281,17 @@ class SafetySupervisor:
         return [str(e) for e in self.log]
 
     # -- bucla -------------------------------------------------------------
-    def update(self, now=None, detection_age_s=None, phase='IDLE'):
+    def update(self, now=None, detection_age_s=None, phase='IDLE',
+               miss_streak=None):
         """De apelat la viteza buclei, inaintea masinii de stari.
 
         detection_age_s: secunde de la ultima detectie valida, sau None daca
         nu a existat niciuna. NU primeste detectia in sine (15.2.10).
+        miss_streak: cadre consecutive procesate fara marker, daca detectorul
+        le numara; None pastreaza regula veche, pe timp.
         """
         now = now if now is not None else time.monotonic()
+        self.miss_streak = miss_streak
 
         # Zavorul se verifica INAINTEA armarii, deliberat. Cand supervizorul
         # comanda BRAKE, masina de stari vede ca nu mai e in LAND si isi
@@ -400,6 +422,20 @@ class SafetySupervisor:
         if age is None:
             return (Action.BRAKE, 'detection_age',
                     'nicio detectie valida de la intrarea in faza')
+        streak = self.miss_streak
+        if streak is not None:
+            # Regula echipei: cadre CONSECUTIVE ratate, nu o pauza de timp.
+            if streak >= self.detection_max_misses:
+                return (Action.BRAKE, 'detection_age',
+                        f"{streak} cadre consecutive fara marker "
+                        f"(prag {self.detection_max_misses}), "
+                        f"ultima detectie acum {age:.2f} s")
+            if age > self.detection_hard_max_age_s:
+                return (Action.BRAKE, 'detection_age',
+                        f"ultima detectie acum {age:.2f} s, peste plafonul "
+                        f"de {self.detection_hard_max_age_s:.1f} s "
+                        f"(detector blocat? doar {streak} ratari numarate)")
+            return Action.NONE, None, ''
         if age > self.detection_max_age_s:
             return (Action.BRAKE, 'detection_age',
                     f"ultima detectie acum {age:.2f} s "

@@ -23,6 +23,7 @@ Ce acopera, si de ce:
   - PLND_ENABLED e armat la intrarea in secventa si stins la iesire (A1)
 """
 
+import math
 import os
 import sys
 import time
@@ -206,7 +207,8 @@ def run_app(v, det, sm, sup, args, seconds=40.0, dt=0.002, stop_states=(),
         for d in dets:
             last_det_t = d.t if last_det_t is None else max(last_det_t, d.t)
         age = None if last_det_t is None else (now - last_det_t)
-        sup.update(now, age, sm.state)
+        sup.update(now, age, sm.state,
+                   miss_streak=getattr(det, 'miss_streak', None))
         if authority is not None:
             authority.update(now, v.alt, sm.state, latency_s=0.05)
         for d in dets:
@@ -649,6 +651,28 @@ def test_aux_sus_dezarmat_se_spune_nu_se_tace():
     return "dezarmat: eveniment + ramane IDLE; front nou dupa armare: merge"
 
 
+def test_distanta_laterala_vine_doar_din_camera():
+    """Zborul b4 (§5.63): barometru 6.15 m, camera 8.86 m pana la planul
+    markerului, 9.02 m distanta 3D. Formula veche (camera minus barometru)
+    dadea 6.6 m lateral -> refuz, cu drona practic deasupra markerului.
+    Doar din camera: 1.7 m. 19 din 25 de refuzuri din 25.09.2026."""
+    from nova.detection import Detection
+    v = StubVehicle(6.15)
+    sm = LandingStateMachine(v, SequenceConfig(conv=2), verbose=False)
+    sm.last_det = Detection(t=0.0, angle_x=0.0, angle_y=0.0,
+                            distance_m=9.02, marker_px=55.3, range_m=8.86)
+    lat = sm.marker_offset_m()
+    assert 1.5 < lat < 1.9, f"lateral {lat:.2f} m - camera zice ~1.7 m"
+    # formula veche, pentru contrast: ar fi refuzat la poarta de 6.5 m
+    vechi = math.sqrt(9.02 ** 2 - 6.15 ** 2)
+    assert vechi > 6.5
+    # drona exact deasupra: 0, nu un numar inventat de barometru
+    sm.last_det = Detection(t=0.0, angle_x=0.0, angle_y=0.0,
+                            distance_m=9.00, marker_px=55.4, range_m=9.33)
+    assert sm.marker_offset_m() == 0.0
+    return f"b4: vechi {vechi:.2f} m (refuz) -> camera {lat:.2f} m"
+
+
 TESTS = [
     ('secventa completa ajunge la HANDBACK', test_secventa_completa),
     ('SCORING_CAPTURE exact o data', test_scoring_capture_exact_o_data),
@@ -676,6 +700,8 @@ TESTS = [
      test_linia_de_stare_arata_canalul_de_handover),
     ('AUX sus dezarmat se spune, nu se tace',
      test_aux_sus_dezarmat_se_spune_nu_se_tace),
+    ('distanta laterala vine doar din camera',
+     test_distanta_laterala_vine_doar_din_camera),
 ]
 
 

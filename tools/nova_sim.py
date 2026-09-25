@@ -326,7 +326,8 @@ class SimApp:
 
         age = None if self.last_det_t is None else (now - self.last_det_t)
         self._diagnostic_pierdere(age, now)
-        self.sup.update(now, age, self.sm.state)
+        self.sup.update(now, age, self.sm.state,
+                        miss_streak=getattr(self.detector, 'miss_streak', None))
 
         if self.ekf is not None:
             self.ekf.update(now, self.sm.state)

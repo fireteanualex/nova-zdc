@@ -657,6 +657,23 @@ def test_verificarea_asteapta_aplicarea_controlului():
     return "12 cadre vechi tolerate; neaplicat -> False; 1990~2000 ok"
 
 
+def test_ratarile_consecutive_pe_clasa_din_productie():
+    """Regula de abort a echipei atarna de contorul de ratari. Verificat pe
+    PiDetector, nu pe un dublu: un atribut care lipseste pe clasa care
+    zboara face monitorul inert fara nicio eroare (§5.56)."""
+    cal = synthetic_calibration()
+    frame, _ = render(cal, R_FLAT, (0.0, 0.0, 6.0))
+    gol = np.full_like(frame, 110)
+    src = ArraySource([frame, gol, gol, gol, frame, gol])
+    pid = PiDetector(src, ArucoMarkerDetector(cal), threaded=False)
+    urme = []
+    for _ in range(6):
+        pid.poll(0.1)
+        urme.append(pid.miss_streak)
+    assert urme == [0, 1, 2, 3, 0, 1], urme
+    return f"contor pe cadre: {urme}"
+
+
 def test_luminozitatea_ajunge_in_statistici():
     """In zbor nu exista NICIO cifra despre expunere in log - cauza
     probabila (imagine supraexpusa) a ramas o ipoteza. `lum` o face
@@ -685,6 +702,8 @@ TESTS = [
      test_luminozitatea_ajunge_in_statistici),
     ('verificarea asteapta aplicarea controlului',
      test_verificarea_asteapta_aplicarea_controlului),
+    ('ratarile consecutive pe clasa din productie',
+     test_ratarile_consecutive_pe_clasa_din_productie),
     ('incadrarea tine cont de rotatia markerului',
      test_incadrarea_tine_cont_de_rotatia_markerului),
     ('direct dedesubt, 8 m', test_direct_dedesubt_8m),

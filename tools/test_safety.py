@@ -83,6 +83,49 @@ def test_detectie_veche_declanseaza_brake():
     return f"BRAKE la varsta 0.60 s (prag {sup.detection_max_age_s:.2f})"
 
 
+def test_abort_abia_dupa_5_ratari_consecutive():
+    """Decizia echipei, 25.09.2026: BRAKE dupa 5 cadre CONSECUTIVE fara
+    marker, nu la prima pauza de 0.5 s. Caz negativ inclus: sub 5 ratari,
+    aceeasi varsta care inainte dadea BRAKE (0.6 s) acum NU mai da."""
+    from nova.safety import DETECTION_MAX_MISSES
+    assert DETECTION_MAX_MISSES == 5
+    v, sup = build()
+    assert sup.update(100.1, 0.6, 'DESCEND_TRACK', miss_streak=4) == Action.NONE, (
+        "4 ratari consecutive au declansat - regula echipei cere 5")
+    assert not v.mode_reqs
+    act = sup.update(100.2, 0.7, 'DESCEND_TRACK', miss_streak=5)
+    assert act == Action.BRAKE and v.mode_reqs[0] == MODE_BRAKE, act
+    ev = [e for e in sup.log if e.monitor == 'detection_age'][-1]
+    assert '5 cadre consecutive' in ev.detail, ev.detail
+    return "4 ratari la 0.6 s -> nimic; 5 ratari -> BRAKE, cu motivul in log"
+
+
+def test_detector_blocat_tot_opreste_coborarea():
+    """Plasa: un detector blocat nu proceseaza cadre, deci contorul de
+    ratari nu creste - fara plafon, coborarea oarba ar continua la infinit.
+    NEGATIV pentru regula noua: cu contor mic dar varsta peste plafon,
+    BRAKE oricum."""
+    from nova.safety import DETECTION_HARD_MAX_AGE_S
+    v, sup = build()
+    assert sup.update(100.1, 1.4, 'DESCEND_TRACK', miss_streak=1) == Action.NONE
+    act = sup.update(100.2, DETECTION_HARD_MAX_AGE_S + 0.1, 'DESCEND_TRACK',
+                     miss_streak=1)
+    assert act == Action.BRAKE, f"detector blocat, {act}"
+    ev = [e for e in sup.log if e.monitor == 'detection_age'][-1]
+    assert 'blocat' in ev.detail, ev.detail
+    return f"1 ratare dar {DETECTION_HARD_MAX_AGE_S + 0.1:.1f} s -> BRAKE"
+
+
+def test_fara_contor_ramane_regula_pe_timp():
+    """Un detector care nu numara ratari (sim sintetic, teste vechi) pastreaza
+    regula veche - altfel introducerea contorului ar fi facut monitorul inert
+    exact acolo unde nu e cablat."""
+    v, sup = build()
+    act = sup.update(100.7, 0.6, 'DESCEND_TRACK', miss_streak=None)
+    assert act == Action.BRAKE, act
+    return "miss_streak=None -> BRAKE la 0.6 s, ca inainte"
+
+
 def test_exceptia_final_descent():
     """Sub 0.38 m markerul iese din cadru prin constructie (5.2). Monitorul
     NU are voie sa se aplice acolo, altfel abortam in ultimul metru mereu."""
@@ -400,6 +443,12 @@ def test_fereastra_de_asezare():
 
 TESTS = [
     ('detectie veche -> BRAKE', test_detectie_veche_declanseaza_brake),
+    ('abort abia dupa 5 ratari consecutive',
+     test_abort_abia_dupa_5_ratari_consecutive),
+    ('NEGATIV: detector blocat tot opreste coborarea',
+     test_detector_blocat_tot_opreste_coborarea),
+    ('fara contor ramane regula pe timp',
+     test_fara_contor_ramane_regula_pe_timp),
     ('exceptia FINAL_DESCENT', test_exceptia_final_descent),
     ('detectie complet absenta', test_detectie_lipsa_complet),
     ('raza -> RTL', test_raza_declanseaza_rtl),
