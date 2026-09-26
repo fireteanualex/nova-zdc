@@ -741,6 +741,55 @@ def test_B9_firul_mort_nu_arata_sanatos():
             f"viu: fps {f1:.0f} -> {f2:.0f} dupa 0.3 s fara cadre")
 
 
+def test_B8_timpii_pe_etape_se_citesc_in_timp_ce_firul_adauga_etape():
+    """26.09.2026 seara (B8). `StageTimer.stats()` e apelat din bucla
+    principala (--etape, la 10 s) cat firul detectorului adauga probe - si
+    CHEI noi, cand o etapa ruleaza prima data (detect_mare la ~1.5-2 m).
+    Generatorul vechi peste dict ridica RuntimeError in on_status, care nu
+    e protejat in run_loop: aplicatia iesea in zbor. Stres: un fir adauga
+    chei noi fara pauza, bucla citeste de mii de ori."""
+    import threading
+    from nova.detector_pi import StageTimer
+    timer = StageTimer()
+    stop = threading.Event()
+    erori = []
+
+    n_chei = [0]
+
+    def adauga():
+        # chei noi tot timpul, si scoase la fel de repede: marimea
+        # dictionarului se schimba continuu, fara sa creasca la nesfarsit
+        i = 0
+        while not stop.is_set():
+            timer.add(f"etapa{i}", 0.001)
+            if i >= 60:
+                timer.d.pop(f"etapa{i - 60}", None)
+            i += 1
+        n_chei[0] = i
+
+    fir = threading.Thread(target=adauga, daemon=True)
+    fir.start()
+    try:
+        for _ in range(2000):
+            timer.stats()
+            timer.line()
+    except RuntimeError as e:
+        erori.append(str(e))
+    finally:
+        stop.set()
+        fir.join(timeout=5.0)
+    assert not erori, erori[0]
+    # si afisarea din aplicatia de bord e protejata: on_status nu poate
+    # opri zborul, oricare ar fi eroarea
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'nova_pi.py')).read()
+    i = src.index('def status(now):')
+    j = src.index('def _status(now):')
+    assert i < j and 'except Exception' in src[i:j], (
+        "status() din nova_pi.py nu prinde exceptiile afisarii")
+    return f"{n_chei[0]} chei rotite din alt fir, 2000 de citiri fara eroare"
+
+
 def test_timpii_pe_etape_se_masoara_pe_clasele_din_productie():
     """Step 0 (§5.65): per-stage timings must come from the production
     wiring - PiDetector attaches one StageTimer to the source and the
@@ -939,6 +988,8 @@ TESTS = [
     ('ratarile consecutive pe clasa din productie',
      test_ratarile_consecutive_pe_clasa_din_productie),
     ('B9: firul mort nu arata sanatos', test_B9_firul_mort_nu_arata_sanatos),
+    ('B8: etapele se citesc cat firul adauga chei',
+     test_B8_timpii_pe_etape_se_citesc_in_timp_ce_firul_adauga_etape),
     ('REGRESIE 1 m: marker mare deplasat intre cadre',
      test_regresie_1m_marker_mare_deplasat_intre_cadre),
     ('parametrii de urmarire nu pierd markerul in ROI',

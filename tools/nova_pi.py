@@ -503,6 +503,17 @@ def main():
     etape_la = {'t': None}
 
     def status(now):
+        # Display only. Nothing here may stop the flight: run_loop does
+        # not guard on_status, and one exception in a status line would
+        # exit the app mid-descent (B8) - then systemd restarts it in
+        # flight mode. Say the error, keep flying.
+        try:
+            _status(now)
+        except Exception as e:                              # noqa: BLE001
+            print(f"[bord] afisarea a picat ({type(e).__name__}: {e}); "
+                  f"zborul continua")
+
+    def _status(now):
         if ecran is None:
             print(f"{sm.status_line()} | {detector.status_line()} | "
                   f"{sup.status()}"

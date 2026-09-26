@@ -274,12 +274,25 @@ class StageTimer:
         return s[lo] + (s[hi] - s[lo]) * (k - lo)
 
     def stats(self):
-        """{stage: (p50_ms, p99_ms, n)}, stages in pipeline order."""
+        """{stage: (p50_ms, p99_ms, n)}, stages in pipeline order.
+
+        Called from the main loop while the worker thread adds samples,
+        and adds KEYS the first time a stage runs (`detect_mare`,
+        `rafinare` on the first big-marker frame, ~1.5-2 m). The old
+        generator over `self.d` then raised "dictionary changed size
+        during iteration" - out of on_status, which run_loop does not
+        guard, so the app would exit mid-descent (B8, 26.09.2026).
+        `list(dict)` and `list(deque)` are single C calls under the GIL:
+        atomic snapshots, no generator in between."""
         out = {}
-        for st in self.STAGES + tuple(k for k in self.d if k not in self.STAGES):
+        keys = list(self.d)
+        for st in self.STAGES + tuple(k for k in keys if k not in self.STAGES):
             v = self.d.get(st)
             if v:
-                out[st] = (1000.0 * self._pct(v, 0.5), 1000.0 * self._pct(v, 0.99), len(v))
+                vals = list(v)
+                if vals:
+                    out[st] = (1000.0 * self._pct(vals, 0.5),
+                               1000.0 * self._pct(vals, 0.99), len(vals))
         return out
 
     def line(self):
