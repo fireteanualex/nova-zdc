@@ -796,6 +796,51 @@ def test_parametrii_de_urmarire_nu_pierd_markerul_in_roi():
     return f"ROI cu parametri de urmarire: colturi la {err:.2f} px"
 
 
+def test_captura_proaspata_e_cablata_si_are_rezerva():
+    """Step 5: the flight build passes camera_fresh_capture into
+    PiCameraSource, whose _capture() asks picamera2 for a frame captured
+    AFTER the call (flush=True) and falls back to the old queue - once,
+    with a message - when this picamera2 has no `flush`. Tested on the
+    production class with a fake picam2 (no camera on the desktop)."""
+    import inspect
+    from nova import config as nova_config
+    from nova.detector_pi import PiCameraSource, build_pi_detector
+    assert nova_config.DEFAULTS['camera_fresh_capture'] is True
+    src = inspect.getsource(build_pi_detector)
+    assert "fresh=cfg.get('camera_fresh_capture', True)" in src, (
+        "build_pi_detector nu paseaza camera_fresh_capture")
+
+    class _Cam:
+        def __init__(self, flush_supported):
+            self.calls = []
+            self.flush_supported = flush_supported
+
+        def capture_request(self, flush=None):
+            if flush is not None and not self.flush_supported:
+                raise TypeError("unexpected keyword 'flush'")
+            self.calls.append(flush)
+            return 'req'
+
+    s = PiCameraSource.__new__(PiCameraSource)      # fara __init__: fara camera
+    s.fresh, s._flush_ok, s.verbose = True, None, False
+    s.picam2 = _Cam(flush_supported=True)
+    assert s._capture() == 'req' and s.picam2.calls == [True]
+    assert s._flush_ok is True
+    s2 = PiCameraSource.__new__(PiCameraSource)
+    s2.fresh, s2._flush_ok, s2.verbose = True, None, False
+    s2.picam2 = _Cam(flush_supported=False)
+    assert s2._capture() == 'req' and s2.picam2.calls == [None]
+    assert s2._flush_ok is False
+    assert s2._capture() == 'req' and s2.picam2.calls == [None, None], (
+        "dupa un TypeError trebuie sa nu mai incerce flush")
+    s3 = PiCameraSource.__new__(PiCameraSource)
+    s3.fresh, s3._flush_ok, s3.verbose = False, None, False
+    s3.picam2 = _Cam(flush_supported=True)
+    s3._capture()
+    assert s3.picam2.calls == [None], "fresh=False trebuie sa ia coada veche"
+    return "flush=True cand exista; rezerva o singura data; fresh=False = coada"
+
+
 def test_luminozitatea_ajunge_in_statistici():
     """In zbor nu exista NICIO cifra despre expunere in log - cauza
     probabila (imagine supraexpusa) a ramas o ipoteza. `lum` o face
@@ -830,6 +875,8 @@ TESTS = [
      test_regresie_1m_marker_mare_deplasat_intre_cadre),
     ('parametrii de urmarire nu pierd markerul in ROI',
      test_parametrii_de_urmarire_nu_pierd_markerul_in_roi),
+    ('captura proaspata e cablata si are rezerva',
+     test_captura_proaspata_e_cablata_si_are_rezerva),
     ('timpii pe etape, pe clasele din productie',
      test_timpii_pe_etape_se_masoara_pe_clasele_din_productie),
     ('bench offline: cele trei pipeline-uri',

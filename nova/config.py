@@ -78,6 +78,10 @@ DEFAULTS = {
     # fixe de banc (2000 us / gain 8) - care pe teren, la lumina zilei, s-au
     # dovedit cu ~5-6 trepte prea luminoase (zborul din 24.09.2026).
     'camera_auto_expose': True,
+    # Step 5 (§5.65): take the NEWEST completed frame (capture_request
+    # flush=True) instead of the oldest queued one. Measured before: frame
+    # already 50-90 ms old when it left the camera. False = old queue.
+    'camera_fresh_capture': True,
 
     # Ce porneste la boot (pi/bringup.sh, din pornirea automata):
     #   "monitor" - detector + fereastra, ZERO comenzi, oricare ar fi E0

@@ -1084,12 +1084,20 @@ class PiCameraSource(FrameSource):
     nominal_fps = TRACK_FPS
 
     def __init__(self, size=TRACK_SIZE, fps=TRACK_FPS, controls=None,
-                 verbose=True, auto_expose=True):
+                 verbose=True, auto_expose=True, fresh=True):
         from picamera2 import Picamera2               # noqa: import lenes
         from libcamera import controls as lc
 
         self.verbose = verbose
         self.size = tuple(size)
+        # Step 5 (§5.65): `capture_request()` returns the OLDEST completed
+        # request, so with buffer_count=4 a frame was already 50-90 ms old
+        # when it left the source (measured: 'varsta' p50 50 ms). With
+        # flush=True picamera2 returns a frame captured AFTER the call:
+        # no queue, one ISP latency. If this picamera2 has no `flush`, the
+        # old behaviour stays and the log says so.
+        self.fresh = bool(fresh)
+        self._flush_ok = None
         try:
             self.picam2 = Picamera2()
         except RuntimeError as e:
@@ -1209,7 +1217,7 @@ class PiCameraSource(FrameSource):
 
     def read(self):
         t0 = time.perf_counter()
-        req = self.picam2.capture_request()
+        req = self._capture()
         t1 = time.perf_counter()
         try:
             arr = req.make_array('main')
@@ -1229,6 +1237,20 @@ class PiCameraSource(FrameSource):
             # up here (step 5 of §5.65), not in the detection stages.
             self.timer.add('varsta', time.monotonic() - t)
         return gray, t
+
+    def _capture(self):
+        """One completed request: the newest (flush) when supported."""
+        if self.fresh and self._flush_ok is not False:
+            try:
+                req = self.picam2.capture_request(flush=True)
+                self._flush_ok = True
+                return req
+            except TypeError:
+                self._flush_ok = False
+                if self.verbose:
+                    print("[camera] picamera2 fara capture_request(flush=): "
+                          "raman pe coada veche (varsta cadrului ramane)")
+        return self.picam2.capture_request()
 
     def capture_scoring_frame(self):
         """Cadru la rezolutie nativa, prin comutare de mod (~0.3-0.5 s fara
@@ -1504,7 +1526,8 @@ def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None,
         print(f"[detector] camera montata rotit: imaginea se roteste cu "
               f"{aruco.camera_rotation_deg} grade la stanga (axe, nu pixeli)")
     source = PiCameraSource(verbose=verbose,
-                            auto_expose=cfg.get('camera_auto_expose', True))
+                            auto_expose=cfg.get('camera_auto_expose', True),
+                            fresh=cfg.get('camera_fresh_capture', True))
     if (source.size[0], source.size[1]) != (calib.width, calib.height):
         raise ValueError(
             f"calibrarea e pentru {calib.width}x{calib.height}, camera da "
