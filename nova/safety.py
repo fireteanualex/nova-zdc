@@ -126,9 +126,14 @@ class Action:
     LOITER = 2
     RTL = 3          # abort (15.2.4)
     OVERRIDE = 4     # pilotul a preluat (15.3.1, 15.1.7)
+    #: ExtNav (27.09.2026): the single action of ExtNavSupervisor. It is
+    #: not a mode - the state machine executes the ordered exit (SRC1
+    #: restored and read back, then LOITER, then ALT_HOLD; never RTL on
+    #: SRC2). The supervisor only asks for it.
+    EXIT = 5
 
     NAMES = {NONE: 'NONE', BRAKE: 'BRAKE', LOITER: 'LOITER', RTL: 'RTL',
-             OVERRIDE: 'OVERRIDE'}
+             OVERRIDE: 'OVERRIDE', EXIT: 'EXIT'}
     MODES = {BRAKE: MODE_BRAKE, LOITER: MODE_LOITER, RTL: MODE_RTL,
              OVERRIDE: MODE_LOITER}
 
@@ -209,6 +214,12 @@ class SafetySupervisor:
         self.max_descent_rate_ms = max_descent_rate_ms
         self.max_tilt_deg = max_tilt_deg
         self.link_max_age_s = link_max_age_s
+
+        #: Phase sets the monitors consult. Instance attributes so a
+        #: variant (ExtNavSupervisor) can run the SAME monitors over other
+        #: phase names; the module constants keep the PLND behaviour.
+        self.autonomous_phases = AUTONOMOUS_PHASES
+        self.link_phases = DETECTION_MONITORED_PHASES
 
         self.armed = False
         self.auto_arm = True      # se armeaza singur din faza primita
@@ -363,7 +374,7 @@ class SafetySupervisor:
         # mai potrivit niciodata si supervizorul a ramas inert, tacut, cu
         # TOATE monitoarele oprite. Legat de faza, nu se mai poate intampla.
         if self.auto_arm:
-            in_segment = phase in AUTONOMOUS_PHASES
+            in_segment = phase in self.autonomous_phases
             if in_segment and not self.armed:
                 self.arm(now, self.v.x, self.v.y, self.v.alt)
             elif not in_segment and self.armed:
@@ -552,7 +563,7 @@ class SafetySupervisor:
         formulat asa deliberat, ca introducerea monitorului sa nu strice ce
         mergea; testele care CHIAR verifica monitorul folosesc un vehicul
         care o expune."""
-        if phase not in DETECTION_MONITORED_PHASES:
+        if phase not in self.link_phases:
             return Action.NONE, None, ''
         fn = getattr(self.v, 'time_since_heartbeat', None)
         if fn is None:
@@ -570,7 +581,7 @@ class SafetySupervisor:
 
     def _mon_radius(self, now, age, phase):
         """15.2.4: raza fata de punctul de handover."""
-        if phase not in AUTONOMOUS_PHASES:
+        if phase not in self.autonomous_phases:
             return Action.NONE, None, ''
         d = ((self.v.x - self.origin_n) ** 2 +
              (self.v.y - self.origin_e) ** 2) ** 0.5
@@ -582,7 +593,7 @@ class SafetySupervisor:
 
     def _mon_ceiling(self, now, age, phase):
         """15.2.4: plafon deasupra punctului de handover."""
-        if phase not in AUTONOMOUS_PHASES:
+        if phase not in self.autonomous_phases:
             return Action.NONE, None, ''
         agl = self.v.alt - self.origin_alt
         if agl > self.ceiling_agl_m:
@@ -596,7 +607,7 @@ class SafetySupervisor:
         Singura parghie a unui companion e schimbarea de mod; limitarea
         propriu-zisa a vitezei sta in FC (LAND_SPD_MS, WP_SPD_DN). Aici doar
         oprim coborarea."""
-        if phase not in AUTONOMOUS_PHASES:
+        if phase not in self.autonomous_phases:
             self._descent_since = None
             return Action.NONE, None, ''
         if self.v.vz <= self.max_descent_rate_ms:
@@ -611,7 +622,7 @@ class SafetySupervisor:
         return Action.NONE, None, ''
 
     def _mon_tilt(self, now, age, phase):
-        if phase not in AUTONOMOUS_PHASES:
+        if phase not in self.autonomous_phases:
             self._tilt_since = None
             return Action.NONE, None, ''
         tilt = max(abs(self.v.roll), abs(self.v.pitch))
@@ -645,6 +656,145 @@ class SafetySupervisor:
             conf = 'PASIV - pilotul/FC-ul a preluat modul'
         return (f"SAFETY {Action.NAMES[self.latched]} "
                 f"({self.latched_monitor}), mod {conf}")
+
+
+# --- ExtNav (27.09.2026, claude-markdown/REPROIECTARE_EXTNAV.md §6) --------
+
+#: Phases of nova/extnav_landing.py in which the supervisor is armed.
+#: Positive list, like AUTONOMOUS_PHASES.
+EXTNAV_PHASES = ('GATE_SEARCH', 'ENGAGE', 'MOVE', 'CENTER_CHECK', 'DESCEND',
+                 'FINAL_ALIGN', 'LAND', 'TOUCHDOWN')
+#: Phases after ENGAGE: the EKF runs on SRC2 with the camera as position
+#: source, and the vehicle is guided on it. Here a lost link or an invalid
+#: EKF position means the guidance has nothing to stand on -> EXIT.
+#: GATE_SEARCH is before the switch (pilot in LOITER, we command nothing);
+#: ENGAGE is the switch itself, guarded by its own timeout in the state
+#: machine (a reset of position is expected there).
+EXTNAV_ENGAGED_PHASES = ('MOVE', 'CENTER_CHECK', 'DESCEND', 'FINAL_ALIGN',
+                         'LAND', 'TOUCHDOWN')
+#: EKF_STATUS_REPORT is requested at 5 Hz (vehicle.EKF_HZ). Older than
+#: this, or never received while engaged, the position is unknown - and
+#: unknown is not valid.
+EKF_REPORT_MAX_AGE_S = 2.0
+
+
+class ExtNavSupervisor(SafetySupervisor):
+    """Supervisor for the ExtNav landing (brief §6). Same monitors, minus
+    the detection one (between detections the EKF holds the position, and
+    a missing detection is the state machine's window logic, not a fault),
+    plus the validity of the EKF position. One action, EXIT, executed by
+    the state machine through `on_exit(reason)` in a fixed order (SRC1
+    restored and read back, LOITER, ALT_HOLD). This class sends NO mode
+    command - so the incident class of §5.66 has no path here.
+
+        sup = ExtNavSupervisor(vehicle, override=ov, on_exit=sm.request_exit)
+        sup.update(now, phase)
+    """
+
+    def __init__(self, vehicle, on_exit=None, **kw):
+        super().__init__(vehicle, **kw)
+        self.on_exit = on_exit
+        self.autonomous_phases = EXTNAV_PHASES
+        self.link_phases = EXTNAV_ENGAGED_PHASES
+        self.ekf_phases = EXTNAV_ENGAGED_PHASES
+        self.ekf_report_max_age_s = EKF_REPORT_MAX_AGE_S
+        self._engaged_since = None
+
+    def update(self, now=None, phase='IDLE', detection_age_s=None,
+               miss_streak=None):
+        """(now, phase). The detection arguments are accepted and ignored
+        so a loop written for SafetySupervisor keeps working."""
+        now = now if now is not None else time.monotonic()
+        new_attempt = (phase in self.autonomous_phases
+                       and self._last_phase not in self.autonomous_phases)
+        self._last_phase = phase
+        if phase in self.ekf_phases:
+            if self._engaged_since is None:
+                self._engaged_since = now
+        else:
+            self._engaged_since = None
+
+        if self.latched != Action.NONE:
+            # EXIT was asked once; the state machine owns it from there.
+            # A new attempt through the gate starts clean.
+            if new_attempt:
+                self._emit(now, 'latch_release', self.latched,
+                           f"incercare noua ({phase}): EXIT-ul anterior "
+                           f"s-a consumat", phase)
+                self.latched = Action.NONE
+                self.latched_monitor = None
+                self.passive = False
+                self.armed = False
+            else:
+                return self.latched
+
+        if not self.v.have_pos:
+            return Action.NONE
+        if self.auto_arm:
+            in_segment = phase in self.autonomous_phases
+            if in_segment and not self.armed:
+                self.arm(now, self.v.x, self.v.y, self.v.alt)
+            elif not in_segment and self.armed:
+                self.disarm(now, f"faza {phase}")
+        if not self.armed:
+            return Action.NONE
+
+        worst, monitor, detail = Action.NONE, None, ''
+        for mon in (self._mon_override, self._mon_link, self._mon_ekf,
+                    self._mon_radius, self._mon_ceiling,
+                    self._mon_descent_rate, self._mon_tilt):
+            act, name, why = mon(now, None, phase)
+            if act > worst:
+                worst, monitor, detail = act, name, why
+        if worst != Action.NONE:
+            self._trigger_exit(now, monitor, detail, phase)
+            return Action.EXIT
+        return Action.NONE
+
+    def _trigger_exit(self, now, monitor, detail, phase):
+        self.latched = Action.EXIT
+        self.latched_monitor = monitor
+        self.passive = monitor == 'pilot_override'
+        self._emit(now, monitor, Action.EXIT, detail, phase)
+        if self.on_exit is not None:
+            self.on_exit(f"{monitor}: {detail}")
+
+    def _mon_ekf(self, now, age, phase):
+        """Brief §6: the EKF must hold a valid horizontal position while
+        the vehicle is guided on it. False -> EXIT; no report for longer
+        than EKF_REPORT_MAX_AGE_S while engaged -> EXIT (unknown is not
+        valid)."""
+        if phase not in self.ekf_phases:
+            return Action.NONE, None, ''
+        fn = getattr(self.v, 'ekf_pos_horiz_ok', None)
+        if fn is None:
+            return Action.NONE, None, ''
+        ok = fn()
+        t_rep = getattr(self.v, 'ekf_t', None)
+        if ok is None or t_rep is None:
+            since = self._engaged_since if self._engaged_since is not None else now
+            if now - since > self.ekf_report_max_age_s:
+                return (Action.EXIT, 'ekf_position',
+                        f"niciun EKF_STATUS_REPORT de {now - since:.1f} s "
+                        f"(prag {self.ekf_report_max_age_s:.1f} s)")
+            return Action.NONE, None, ''
+        if now - t_rep > self.ekf_report_max_age_s:
+            return (Action.EXIT, 'ekf_position',
+                    f"EKF_STATUS_REPORT vechi de {now - t_rep:.1f} s")
+        if not ok:
+            return (Action.EXIT, 'ekf_position',
+                    'EKF fara pozitie orizontala valida (EKF_POS_HORIZ_REL)')
+        return Action.NONE, None, ''
+
+    def status(self):
+        if not self.armed:
+            return 'SAFETY dezarmat'
+        if self.latched == Action.NONE:
+            fn = getattr(self.v, 'ekf_pos_horiz_ok', None)
+            ok = fn() if fn is not None else None
+            ekf = '-' if ok is None else ('ok' if ok else 'INVALID')
+            return f"SAFETY activ | {self.override.status()} | ekf {ekf}"
+        return f"SAFETY EXIT ({self.latched_monitor}), executat de masina de stari"
 
 
 # Modurile in care supervizorul considera ca vehiculul nu mai e in segmentul

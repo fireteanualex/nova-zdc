@@ -653,7 +653,188 @@ def test_fereastra_de_asezare():
     return "1.0 s de asezare, neutru memorat la validare"
 
 
+# --- ExtNav (27.09.2026) -----------------------------------------------------
+
+class ExtNavStub(StubVehicle):
+    """StubVehicle + ce cere supervizorul ExtNav: validitatea EKF si
+    varsta legaturii."""
+
+    def __init__(self):
+        super().__init__()
+        self.mode = 4                    # GUIDED
+        self.ekf_ok = True
+        self.ekf_t = 100.0
+        self.hb_t = 100.0
+
+    def ekf_pos_horiz_ok(self):
+        return self.ekf_ok
+
+    def time_since_heartbeat(self, now=None):
+        return None if self.hb_t is None else (now - self.hb_t)
+
+
+def build_extnav():
+    from nova.safety import ExtNavSupervisor
+    v = ExtNavStub()
+    v.rc_t = 100.0
+    exits = []
+    sup = ExtNavSupervisor(v, verbose=False, on_exit=exits.append)
+    return v, sup, exits
+
+
+def ruleaza_extnav(v, sup, faze, t0, dt=0.1, n=None):
+    t = t0
+    for faza in faze if n is None else [faze] * n:
+        v.rc_t = t
+        v.ekf_t = t if v.ekf_t is not None else None
+        v.hb_t = t if v.hb_t is not None else None
+        sup.update(t, faza)
+        t += dt
+    return t
+
+
+def test_ExtNav_fara_monitor_de_detectie_si_fara_comenzi_de_mod():
+    """Brief §6: intre detectii pozitia o tine EKF-ul; o detectie lipsa nu
+    e o defectiune, e logica de fereastra a masinii de stari. Supervizorul
+    ExtNav nu trimite NICIO comanda de mod: cere EXIT si atat."""
+    v, sup, exits = build_extnav()
+    t = ruleaza_extnav(v, sup, 'GATE_SEARCH', 100.0, n=5)
+    assert sup.armed, "nu s-a armat din faza"
+    t = ruleaza_extnav(v, sup, 'MOVE', t, n=30)         # 3 s fara detectii
+    assert sup.latched == Action.NONE and not exits
+    assert v.mode_reqs == [], v.mode_reqs
+    # iar argumentele vechi (varsta detectiei, ratari) sunt ignorate
+    assert sup.update(t, 'MOVE', detection_age_s=99.0, miss_streak=50) == Action.NONE
+    assert v.mode_reqs == [] and not exits
+    return "3 s fara detectii in MOVE: nimic; 0 comenzi de mod"
+
+
+def test_ExtNav_EKF_invalid_cere_EXIT_o_singura_data():
+    """Validitatea pozitiei EKF e monitorul nou. Invalid in MOVE -> EXIT,
+    predat masinii de stari o data; apoi nimic pana la o incercare noua."""
+    v, sup, exits = build_extnav()
+    t = ruleaza_extnav(v, sup, 'GATE_SEARCH', 100.0, n=3)
+    t = ruleaza_extnav(v, sup, 'ENGAGE', t, n=3)
+    t = ruleaza_extnav(v, sup, 'MOVE', t, n=3)
+    v.ekf_ok = False
+    v.rc_t = v.ekf_t = v.hb_t = t
+    assert sup.update(t, 'MOVE') == Action.EXIT
+    assert exits and exits[0].startswith('ekf_position'), exits
+    assert sup.latched == Action.EXIT and 'EXIT' in sup.status()
+    n = len(exits)
+    ruleaza_extnav(v, sup, 'MOVE', t + 0.1, n=10)
+    ruleaza_extnav(v, sup, 'IDLE', t + 1.2, n=5)
+    assert len(exits) == n, "EXIT cerut de mai multe ori"
+    assert v.mode_reqs == [], "supervizorul ExtNav a comandat un mod"
+    # incercare noua: zavorul se elibereaza, re-armare, iar EKF ok -> nimic
+    v.ekf_ok = True
+    t2 = ruleaza_extnav(v, sup, 'GATE_SEARCH', t + 2.0, n=3)
+    assert sup.latched == Action.NONE and sup.armed
+    assert any(e.monitor == 'latch_release' for e in sup.log)
+    ruleaza_extnav(v, sup, 'MOVE', t2, n=5)
+    assert len(exits) == n
+    return "EKF invalid in MOVE -> EXIT o data, 0 moduri; eliberat la incercare noua"
+
+
+def test_ExtNav_fara_raport_EKF_e_necunoscut_nu_valid():
+    """Fara EKF_STATUS_REPORT (None) mai mult de 2 s cat vehiculul e
+    ghidat pe EKF -> EXIT. In GATE_SEARCH (inainte de comutare) lipsa
+    raportului nu conteaza."""
+    v, sup, exits = build_extnav()
+    v.ekf_ok = None
+    v.ekf_t = None
+    t = ruleaza_extnav(v, sup, 'GATE_SEARCH', 100.0, n=40)   # 4 s
+    assert not exits, exits
+    t = ruleaza_extnav(v, sup, 'MOVE', t, n=15)              # 1.5 s
+    assert not exits, "a iesit inainte de prag"
+    t = ruleaza_extnav(v, sup, 'MOVE', t, n=10)              # 2.5 s
+    assert exits and 'EKF_STATUS_REPORT' in exits[0], exits
+    # raport vechi (a fost, dar a incetat): la fel
+    v, sup, exits = build_extnav()
+    t = ruleaza_extnav(v, sup, 'MOVE', 100.0, n=3)
+    v.ekf_t = t - 3.0
+    v.rc_t = v.hb_t = t
+    assert sup.update(t, 'MOVE') == Action.EXIT and 'vechi' in exits[0]
+    return "None > 2 s in MOVE -> EXIT; in GATE_SEARCH nu; raport vechi -> EXIT"
+
+
+def test_ExtNav_celelalte_monitoare_dau_tot_EXIT():
+    """Manse, legatura, inclinare, raza, plafon, rata de coborare: pastrate
+    (brief §6), toate cu aceeasi actiune, EXIT, si fara comenzi de mod.
+    Legatura si EKF-ul doar dupa ENGAGE; manse si geometrie in toate fazele."""
+    from nova.rc import OVERRIDE_HOLD_S
+    cazuri = []
+    # manse in DESCEND
+    v, sup, exits = build_extnav()
+    t = ruleaza_extnav(v, sup, 'DESCEND', 100.0, n=3)
+    for i in range(4):
+        v.set_rc(2, 1500 + 300, t)
+        v.ekf_t = v.hb_t = t
+        act = sup.update(t, 'DESCEND')
+        t += OVERRIDE_HOLD_S / 2 + 0.01
+    assert act == Action.EXIT and exits[0].startswith('pilot_override'), exits
+    assert sup.passive
+    cazuri.append('manse')
+    # legatura in MOVE, dar nu in GATE_SEARCH
+    v, sup, exits = build_extnav()
+    t = ruleaza_extnav(v, sup, 'GATE_SEARCH', 100.0, n=3)
+    v.hb_t = t - 5.0
+    v.rc_t = v.ekf_t = t
+    assert sup.update(t, 'GATE_SEARCH') == Action.NONE
+    assert sup.update(t + 0.1, 'MOVE') == Action.EXIT and exits[0].startswith('link_age')
+    cazuri.append('legatura')
+    # inclinare 35 grade, 0.3 s, in CENTER_CHECK
+    v, sup, exits = build_extnav()
+    t = ruleaza_extnav(v, sup, 'CENTER_CHECK', 100.0, n=3)
+    v.roll = 35 * 3.14159265 / 180
+    t = ruleaza_extnav(v, sup, 'CENTER_CHECK', t, n=5)
+    assert exits and exits[0].startswith('tilt'), exits
+    cazuri.append('inclinare')
+    # raza si plafon in FINAL_ALIGN, rata de coborare in LAND
+    for camp, val, mon, faza in (('x', 12.0, 'geofence_radius', 'FINAL_ALIGN'),
+                                 ('z', -40.0, 'ceiling', 'FINAL_ALIGN'),
+                                 ('vz', 3.0, 'descent_rate', 'LAND')):
+        v, sup, exits = build_extnav()
+        t = ruleaza_extnav(v, sup, faza, 100.0, n=3)
+        setattr(v, camp, val)
+        ruleaza_extnav(v, sup, faza, t, n=8)
+        assert exits and exits[0].startswith(mon), (mon, exits)
+        assert v.mode_reqs == []
+        cazuri.append(mon)
+    return ', '.join(cazuri) + ' -> EXIT, 0 comenzi de mod'
+
+
+def test_ExtNav_nu_schimba_supervizorul_PLND():
+    """Varianta e o subclasa; constantele si fazele supervizorului PLND
+    raman exact cele de dinainte (simulatorul zboara pe ele)."""
+    from nova.safety import (AUTONOMOUS_PHASES, DETECTION_MONITORED_PHASES,
+                             EXTNAV_PHASES, EXTNAV_ENGAGED_PHASES)
+    assert AUTONOMOUS_PHASES == ('ACQUIRE', 'DESCEND_TRACK', 'SCORING_CAPTURE',
+                                 'FINAL_DESCENT', 'TOUCHDOWN_CONFIRM', 'ASCENT')
+    assert DETECTION_MONITORED_PHASES == ('ACQUIRE', 'DESCEND_TRACK',
+                                          'SCORING_CAPTURE')
+    v, sup = build()
+    assert sup.autonomous_phases == AUTONOMOUS_PHASES
+    assert sup.link_phases == DETECTION_MONITORED_PHASES
+    assert not set(EXTNAV_PHASES) & set(AUTONOMOUS_PHASES)
+    assert set(EXTNAV_ENGAGED_PHASES) < set(EXTNAV_PHASES)
+    # supervizorul PLND nu reactioneaza la fazele ExtNav si invers
+    sup.update(100.5, 0.0, 'MOVE')
+    assert not sup.armed
+    return "fazele PLND neschimbate; seturile de faze disjuncte"
+
+
 TESTS = [
+    ('ExtNav: fara monitor de detectie, fara comenzi de mod',
+     test_ExtNav_fara_monitor_de_detectie_si_fara_comenzi_de_mod),
+    ('ExtNav: EKF invalid -> EXIT o singura data',
+     test_ExtNav_EKF_invalid_cere_EXIT_o_singura_data),
+    ('ExtNav: fara raport EKF = necunoscut, nu valid',
+     test_ExtNav_fara_raport_EKF_e_necunoscut_nu_valid),
+    ('ExtNav: celelalte monitoare dau tot EXIT',
+     test_ExtNav_celelalte_monitoare_dau_tot_EXIT),
+    ('ExtNav: supervizorul PLND neschimbat',
+     test_ExtNav_nu_schimba_supervizorul_PLND),
     ('detectie veche -> BRAKE', test_detectie_veche_declanseaza_brake),
     ('abort abia dupa 5 ratari consecutive',
      test_abort_abia_dupa_5_ratari_consecutive),
