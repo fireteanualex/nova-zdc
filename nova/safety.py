@@ -331,7 +331,14 @@ class SafetySupervisor:
             # comandat noi - altfel ne-am bate cu el pe comenzi. Un geofence
             # breach se declanseaza instantaneu, override-ul are nevoie de
             # OVERRIDE_HOLD_S, deci fara asta RTL ar castiga mereu cursa.
-            if self.latched != Action.OVERRIDE and self.override.update(now):
+            # Not once PASSIVE (B1, found 26.09.2026 after the crash of
+            # §5.66): passive means the pilot's switch or an FC failsafe
+            # already owns the mode. Escalating on a stick movement there
+            # would send LOITER over the pilot's STABILIZE, or over the
+            # battery failsafe's LAND - the incident on another path.
+            # Passive stays passive until a new attempt through the gate.
+            if (self.latched != Action.OVERRIDE and not self.passive
+                    and self.override.update(now)):
                 self._trigger(now, Action.OVERRIDE, 'pilot_override',
                               f"pilotul a preluat peste "
                               f"{Action.NAMES[self.latched]}", phase)

@@ -210,6 +210,43 @@ def test_INCIDENT_zavorul_confirmat_nu_retrimite_peste_pilot_sau_failsafe():
             "PASIV; vigilent din nou doar la o incercare noua")
 
 
+def test_B1_supervizorul_pasiv_nu_escaladeaza_la_override():
+    """26.09.2026 seara (B1). Dupa mode_taken supervizorul e PASIV: pilotul
+    sau un failsafe are modul. O miscare de mansa nu mai are peste ce sa
+    escaladeze - LOITER ar pleca peste STABILIZE-ul pilotului sau peste
+    LAND-ul failsafe-ului de baterie. Zero comenzi, zero evenimente."""
+    from nova.vehicle import MODE_STABILIZE
+    for luat_de, mod in (('pilot', MODE_STABILIZE), ('failsafe', MODE_LAND)):
+        v, sup = build()
+        sup.update(100.7, 0.6, 'DESCEND_TRACK')          # BRAKE
+        sup.update(100.8, 0.7, 'DESCEND_TRACK')          # confirmat
+        sup.update(101.0, 0.9, 'IDLE')                   # sm -> IDLE
+        v.mode = mod                                     # cineva a luat modul
+        sup.update(160.0, 60.0, 'IDLE')
+        assert sup.passive and sup._want_mode is None
+        n = len(v.mode_reqs)
+        for t in (161.0, 161.1, 161.2, 161.3, 162.0):    # throttle +300, 1 s
+            v.set_rc(3, 1400, t)
+            sup.update(t, 60.0, 'IDLE')
+        assert len(v.mode_reqs) == n, (
+            f"{luat_de}: a comandat peste modul luat: {v.mode_reqs[n:]}")
+        assert v.mode == mod and sup.latched == Action.BRAKE
+        assert not any(e.monitor == 'pilot_override' for e in sup.log)
+    # NEGATIV: zavor confirmat, FC INCA in BRAKE (nimeni nu a luat modul):
+    # mansa escaladeaza la OVERRIDE -> LOITER, ca pana acum
+    v, sup = build()
+    sup.update(100.7, 0.6, 'DESCEND_TRACK')
+    sup.update(100.8, 0.7, 'DESCEND_TRACK')
+    sup.update(101.0, 0.9, 'IDLE')
+    assert not sup.passive
+    for t in (161.0, 161.1, 161.2):
+        v.set_rc(3, 1400, t)
+        sup.update(t, 60.0, 'IDLE')
+    assert sup.latched == Action.OVERRIDE and v.mode == MODE_LOITER, (
+        sup.latched, v.mode)
+    return "PASIV (pilot / failsafe) + mansa: 0 comenzi; FC inca in BRAKE + mansa: LOITER"
+
+
 def test_zavorul_neconfirmat_inca_retrimite_pana_la_plafon():
     """NEGATIV pentru reparatia de mai sus: cat timp FC-ul NU a adoptat
     modul, livrarea se reincearca (o comanda pierduta pe serial e reala),
@@ -582,6 +619,8 @@ TESTS = [
      test_fara_contor_ramane_regula_pe_timp),
     ('INCIDENT: zavorul confirmat nu retrimite peste pilot/failsafe',
      test_INCIDENT_zavorul_confirmat_nu_retrimite_peste_pilot_sau_failsafe),
+    ('B1: supervizorul PASIV nu escaladeaza la override',
+     test_B1_supervizorul_pasiv_nu_escaladeaza_la_override),
     ('NEGATIV: zavorul neconfirmat inca retrimite pana la plafon',
      test_zavorul_neconfirmat_inca_retrimite_pana_la_plafon),
     ('INCIDENT: pilotul castiga si in fereastra de reincercare',
