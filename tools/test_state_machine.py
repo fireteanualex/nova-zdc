@@ -85,6 +85,13 @@ class StubVehicle:
         self.takeoffs = []
         self.mode_reqs = []
         self.target_alt = None
+        #: Modes the FC never adopts (lost command / refused), and how
+        #: long it takes to adopt the others (0 = same call). Both model
+        #: the real FC + heartbeat latency that ACQUIRE lives in (B3).
+        self.refuse_modes = ()
+        self.mode_delay_s = 0.0
+        self._mode_pending = []
+        self.last_mode_req = None
 
     @property
     def alt(self):
@@ -131,7 +138,14 @@ class StubVehicle:
 
     def request_mode(self, m):
         self.mode_reqs.append(m)
-        self.mode = m
+        self.last_mode_req = m
+        if m in self.refuse_modes:
+            return True
+        if self.mode_delay_s <= 0:
+            self.mode = m
+        else:
+            self._mode_pending.append((self.now + self.mode_delay_s, m))
+        return True
 
     def send_takeoff(self, alt):
         self.takeoffs.append(alt)
@@ -142,6 +156,8 @@ class StubVehicle:
 
     def step(self, dt, marker_n, marker_e):
         """Fizica de mucava: coboara in LAND, urca dupa NAV_TAKEOFF."""
+        while self._mode_pending and self._mode_pending[0][0] <= self.now:
+            self.mode = self._mode_pending.pop(0)[1]
         if self.target_alt is not None:
             self.landed_state = LANDED_IN_AIR
             self.vz = -1.5
@@ -250,6 +266,7 @@ def run(v, det, sm, args, seconds=40.0, dt=0.002, stop_states=()):
     while t < seconds:
         now = 1000.0 + t          # ceas injectat, timp accelerat
         v.rc_t = now              # fluxul RC e proaspat
+        v.now = now
         for d in det.poll(now):
             sm.on_detection(d, now)
         sm.update(now)
@@ -408,6 +425,84 @@ def test_neutrul_se_memoreaza_la_accept():
 
 
 # --- cablajul aplicatiei (regresia raportata din zbor) ---------------------
+
+def test_B3_pilotul_in_ACQUIRE_incheie_secventa():
+    """26.09.2026 seara (B3, docs/PRECISION_LANDING.md §9). In ACQUIRE
+    LAND se retrimitea la 0.2 s peste orice mod pus intre timp de pilot.
+    Acum un mod diferit de cel de la ACCEPT incheie secventa, cu PLND 0."""
+    from nova.vehicle import MODE_STABILIZE
+    v, det, sm, events, args = build()
+    v.refuse_modes = (MODE_LAND,)                # LAND nu ajunge (serial)
+    run(v, det, sm, args, seconds=3.0, stop_states=(State.ACQUIRE,))
+    assert sm.state == State.ACQUIRE, sm.state
+    n_land = v.mode_reqs.count(MODE_LAND)
+    v.mode = MODE_STABILIZE                      # pilotul, din comutator
+    run(v, det, sm, args, seconds=1.0)
+    assert sm.state == State.IDLE, sm.state
+    assert v.mode_reqs.count(MODE_LAND) == n_land, (
+        f"LAND retrimis peste pilot: {v.mode_reqs}")
+    assert v.mode == MODE_STABILIZE
+    assert v.param_sets[-1] == ('PLND_ENABLED', 0.0), v.param_sets[-1]
+    # NEGATIV: FC-ul doar intarzie LAND (0.5 s), niciun alt mod: se
+    # retrimite si secventa porneste
+    v, det, sm, events, args = build()
+    v.mode_delay_s = 0.5
+    states = run(v, det, sm, args, seconds=2.0,
+                 stop_states=(State.DESCEND_TRACK,))
+    assert State.DESCEND_TRACK in states, states
+    assert v.mode_reqs.count(MODE_LAND) >= 2, v.mode_reqs
+    return "STABILIZE in ACQUIRE -> IDLE, 0 LAND in plus; LAND intarziat -> retrimis, coboara"
+
+
+def test_B3_BRAKE_al_supervizorului_in_ACQUIRE_in_cablajul_real():
+    """Forma grava din §9: supervizorul cere BRAKE in ACQUIRE (marker
+    pierdut), masina de stari retrimitea LAND dupa el, FC-ul ajungea in
+    LAND, supervizorul vedea "al treilea mod" si devenea PASIV - coborare
+    fara niciun monitor. Cursa e de un ciclu: FC-ul nu a raportat inca
+    BRAKE cand LAND ar pleca, deci decizia se ia pe CEREREA supervizorului
+    (Vehicle.last_mode_req), nu doar pe modul raportat."""
+    from nova.vehicle import MODE_BRAKE, MODE_LOITER
+    v, det, sm, sup, events, args = build_app()
+    v.refuse_modes = (MODE_LAND,)                # LAND pierdut -> ACQUIRE tine
+    v.mode_delay_s = 0.15                        # FC + heartbeat, realist
+    mark = {'cut': None}
+
+    def on_step(t, vv, ssm, ssup):
+        if mark['cut'] is None and ssm.state == State.ACQUIRE:
+            mark['cut'] = t
+            det.dropout = 1.0                    # markerul dispare in ACQUIRE
+
+    run_app(v, det, sm, sup, args, seconds=4.0, on_step=on_step)
+    assert mark['cut'] is not None, "scenariul nu s-a produs (fara ACQUIRE)"
+    assert MODE_BRAKE in v.mode_reqs, v.mode_reqs
+    i_brake = v.mode_reqs.index(MODE_BRAKE)
+    assert MODE_LAND not in v.mode_reqs[i_brake + 1:], (
+        f"LAND retrimis dupa BRAKE-ul supervizorului: {v.mode_reqs[i_brake:]}")
+    assert v.mode == MODE_BRAKE and sm.state == State.IDLE, (v.mode, sm.state)
+    assert sup.latched == Action.BRAKE and sup._mode_confirmed is not None
+    assert not sup.passive, "supervizorul a devenit pasiv din cauza noastra"
+    assert v.param_sets[-1] == ('PLND_ENABLED', 0.0), v.param_sets[-1]
+    # iesirea pilotului ramane: AUX jos peste BRAKE -> LOITER
+    v.set_aux(1000)
+    run_app(v, det, sm, sup, args, seconds=1.0)
+    assert v.mode_reqs[-1] == MODE_LOITER and v.mode == MODE_LOITER, v.mode_reqs[-3:]
+    return "BRAKE in ACQUIRE: 0 LAND dupa el, IDLE, supervizor confirmat si activ; AUX jos -> LOITER"
+
+
+def test_B3_Vehicle_retine_ultima_cerere_de_mod():
+    """Clasa din productie, nu un dublu (§5.56): fara atributul asta pe
+    Vehicle, regula din ACQUIRE ar fi inerta, tacut (getattr -> None)."""
+    import types
+    from nova.vehicle import Vehicle, MODE_BRAKE
+    veh = Vehicle('udpin:127.0.0.1:1')           # fara connect(): link cazut
+    veh.m = types.SimpleNamespace(               # doar ca _send sa poata cadea
+        target_system=1, target_component=1,
+        mav=types.SimpleNamespace(command_long_send=lambda *a, **k: None))
+    assert veh.last_mode_req is None
+    assert veh.request_mode(MODE_BRAKE) is False  # nimic nu pleaca
+    assert veh.last_mode_req == MODE_BRAKE, "intentia se noteaza si fara link"
+    return "Vehicle.last_mode_req = intentie, si cu legatura cazuta"
+
 
 def test_AUX_jos_in_coborare_e_abort_cerut_de_pilot():
     """Decizia echipei 26.09.2026 (dupa §5.66): acelasi comutator care
@@ -855,6 +950,9 @@ TESTS = [
     ('mansa opreste coborarea autonoma', test_mansa_opreste_coborarea_autonoma),
     ('linia de stare arata canalul de handover',
      test_linia_de_stare_arata_canalul_de_handover),
+    ('B3: pilotul in ACQUIRE incheie secventa', test_B3_pilotul_in_ACQUIRE_incheie_secventa),
+    ('B3: BRAKE in ACQUIRE, cablajul real', test_B3_BRAKE_al_supervizorului_in_ACQUIRE_in_cablajul_real),
+    ('B3: Vehicle retine ultima cerere de mod', test_B3_Vehicle_retine_ultima_cerere_de_mod),
     ('AUX jos in coborare = abort cerut de pilot',
      test_AUX_jos_in_coborare_e_abort_cerut_de_pilot),
     ('NEGATIV: AUX jos in afara segmentului nu face nimic',

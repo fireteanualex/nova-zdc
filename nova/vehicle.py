@@ -116,6 +116,13 @@ class Vehicle:
         self.params_t = {}
         self._param_pending = {}     # nume -> [valoare, tries, last_send]
 
+        #: Last mode asked for through request_mode(), sent or not. The
+        #: state machine reads it in ACQUIRE (B3): a LAND retry must not
+        #: follow a BRAKE the supervisor asked for in the same loop, before
+        #: the FC even reported it. Intent, not delivery - hence set even
+        #: when the link is down and nothing left the port.
+        self.last_mode_req = None
+
         # statistici de emisie
         self.n_lt = 0
         self.n_ds = 0
@@ -486,6 +493,7 @@ class Vehicle:
             return False
 
     def request_mode(self, mode):
+        self.last_mode_req = mode
         return self._send(
             self.m.mav.command_long_send,
             self.m.target_system, self.m.target_component,

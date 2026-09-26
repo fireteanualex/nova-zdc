@@ -267,6 +267,10 @@ class LandingStateMachine:
         self.was_armed = False
         self.prev_mode = None
         self.acquire_req_t = 0.0
+        #: FC mode at ACCEPT (B3): LAND is re-sent in ACQUIRE only while
+        #: the FC is still in it. Any third mode belongs to the pilot or
+        #: to a failsafe (same rule as the supervisor, §5.66).
+        self._acquire_from_mode = None
         self.precland_on = None       # None = necunoscut, nu s-a comandat inca
 
     # -- evenimente --------------------------------------------------------
@@ -298,6 +302,7 @@ class LandingStateMachine:
         self.rel_alt_touchdown = None
         self.takeoff_tries = 0
         self.takeoff_alt_cmd = None
+        self._acquire_from_mode = None
         self._abort_from_mode = None
         self._abort_req_t = None
         self._abort_req_n = 0
@@ -565,7 +570,7 @@ class LandingStateMachine:
             return
 
         if self.state == State.ACQUIRE:
-            self._run_acquire(now, alt)
+            self._run_acquire(now, alt, aux_high)
             return
 
         # Starile de coborare presupun ca ArduPilot e inca in LAND. Daca
@@ -671,12 +676,38 @@ class LandingStateMachine:
                    neutral=self.gate.ov.neutral)
         self.arm_precland(now)
         self.acquire_req_t = now
+        self._acquire_from_mode = self.v.mode
         self.v.request_mode(MODE_LAND)
         self.set_state(State.ACQUIRE, f"alt {alt:.2f} m")
 
-    def _run_acquire(self, now, alt):
+    def _run_acquire(self, now, alt, aux_high):
         if self.v.mode == MODE_LAND:
             self.set_state(State.DESCEND_TRACK, f"alt {alt:.2f} m")
+            return
+        # B3 (26.09.2026 seara). Until now LAND was re-sent every 0.2 s no
+        # matter who had changed the mode in between: over the pilot's
+        # switch, and over the supervisor's BRAKE - after which the
+        # supervisor saw the FC leave BRAKE for "our" LAND, took it for the
+        # pilot's decision, went PASSIVE, and the descent ran unsupervised.
+        # Two checks, both end the segment like "mod schimbat" does in
+        # DESCEND_TRACK, with PLND off:
+        #  1. someone else asked the vehicle for a mode since our LAND
+        #     (the supervisor, in this very loop cycle - the FC has not
+        #     reported anything yet, so mode alone cannot show it);
+        #  2. the FC is in a mode other than the one it had at ACCEPT: the
+        #     pilot's switch or a failsafe. A lost serial command cannot
+        #     produce a third mode.
+        # What remains possible: ONE LAND already on the wire before the
+        # BRAKE - the same "at most one command" property as §5.66.
+        foreign = getattr(self.v, 'last_mode_req', None)
+        if foreign is not None and foreign != MODE_LAND:
+            self.reset_sequence(f"alt mod cerut in ACQUIRE ({foreign})")
+            self._aux_release_pending = aux_high
+            return
+        if (self._acquire_from_mode is not None
+                and self.v.mode != self._acquire_from_mode):
+            self.reset_sequence(f"mod schimbat in ACQUIRE ({self.v.mode})")
+            self._aux_release_pending = aux_high
             return
         if now - self.acquire_req_t > ACQUIRE_RETRY_S:
             self.acquire_req_t = now
