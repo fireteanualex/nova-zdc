@@ -58,6 +58,11 @@ def main():
     p.add_argument('--stop-service', action='store_true',
                    help='stop nova-bringup first (it holds the camera)')
     p.add_argument('--config', default=None)
+    p.add_argument('--format', choices=('png', 'jpg'), default='png',
+                   help='png = lossless, ~0.15 s/frame on a Pi 4; '
+                        'jpg (quality 97) ~10x faster, tiny lossy cost')
+    p.add_argument('--max-frames', type=int, default=0,
+                   help='stop the recording after N frames (0 = by time/RAM)')
     a = p.parse_args()
 
     if a.stop_service:
@@ -89,6 +94,8 @@ def main():
                   if src.last_metadata and k in src.last_metadata}
             frames.append((gray.copy(), t, md))
             used += gray.nbytes
+            if a.max_frames and len(frames) >= a.max_frames:
+                break
             if used >= budget:
                 print(f"[record] memory budget reached after "
                       f"{len(frames)} frames; stopping early")
@@ -100,18 +107,36 @@ def main():
     print(f"[record] {len(frames)} frames in {dur:.1f} s = {fps:.1f} fps "
           f"(camera nominal {src.nominal_fps})")
 
-    meta = []
-    for i, (gray, t, md) in enumerate(frames):
-        name = f"f{i:05d}.png"
-        cv2.imwrite(os.path.join(out, name),
-                    gray, [cv2.IMWRITE_PNG_COMPRESSION, 1])
-        meta.append({'file': name, 't': t, **md})
-    with open(os.path.join(out, 'meta.json'), 'w') as f:
-        json.dump({'frames': meta, 'fps_measured': fps,
-                   'size': list(src.size), 'config': {
-                       k: cfg.get(k) for k in ('camera_rotation_deg',
-                                               'camera_auto_expose',
-                                               'marker_size_m')}}, f, indent=1)
+    # meta.json FIRST: writing 500+ PNGs takes over a minute on a Pi 4 and a
+    # Ctrl-C in the middle must not lose the timestamps and camera metadata
+    # of the frames that did get written.
+    ext = '.png' if a.format == 'png' else '.jpg'
+    flags = ([cv2.IMWRITE_PNG_COMPRESSION, 1] if a.format == 'png'
+             else [cv2.IMWRITE_JPEG_QUALITY, 97])
+    meta = [{'file': f"f{i:05d}{ext}", 't': t, **md}
+            for i, (_, t, md) in enumerate(frames)]
+    meta_path = os.path.join(out, 'meta.json')
+
+    def write_meta(n_written):
+        with open(meta_path, 'w') as f:
+            json.dump({'frames': meta, 'written': n_written, 'fps_measured': fps,
+                       'format': a.format, 'size': list(src.size),
+                       'config': {k: cfg.get(k) for k in
+                                  ('camera_rotation_deg', 'camera_auto_expose',
+                                   'marker_size_m')}}, f, indent=1)
+    write_meta(0)
+    print(f"[record] writing {len(frames)} {a.format} files "
+          f"(png ~0.15 s each on a Pi 4; --format jpg is ~10x faster)")
+    n = 0
+    try:
+        for i, (gray, _, _) in enumerate(frames):
+            cv2.imwrite(os.path.join(out, meta[i]['file']), gray, flags)
+            n += 1
+            if n % 50 == 0:
+                print(f"[record]   {n}/{len(frames)}")
+    except KeyboardInterrupt:
+        print(f"\n[record] interrupted: {n} frames written, meta kept")
+    write_meta(n)
     md0 = frames[0][2] if frames else {}
     print(f"[record] LensPosition={md0.get('LensPosition')} "
           f"ExposureTime={md0.get('ExposureTime')} us "
