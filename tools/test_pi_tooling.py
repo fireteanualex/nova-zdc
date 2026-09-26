@@ -1801,10 +1801,11 @@ def test_pornirea_automata_de_zbor_e_proba_de_coborare():
     assert 'config.autostart_mode()' in b_cod
     assert '"autostart"' not in b_cod and "'autostart'" not in b_cod, (
         "bringup.sh citeste singur cheia: a doua decizie, netestata")
-    assert 'descent_test.sh" --auto' in b_cod, (
-        "ramura de zbor nu deleaga probei de coborare")
+    assert 'ZBOR_ARGS=(--auto)' in b_cod and \
+        'descent_test.sh" "${ZBOR_ARGS[@]}"' in b_cod, (
+        "ramura de zbor nu deleaga probei de coborare cu --auto")
     i_zbor = b_cod.index('if [[ "$MOD" == "zbor" && $CHECK_ONLY -eq 0 ]]')
-    i_proba = b_cod.index('descent_test.sh" --auto')
+    i_proba = b_cod.index('descent_test.sh" "${ZBOR_ARGS[@]}"')
     i_mon = b_cod.index('--monitor-motiv')
     assert i_zbor < i_proba < i_mon, "ordinea: decizie -> proba -> monitor"
     # cade in monitor DOAR pe 4 (verificari picate, nimic pornit); orice alt
@@ -1880,6 +1881,26 @@ def test_poza_de_verificare_e_cablata_corect():
     assert nova_config.load()['camera_rotation_deg'] == 270, (
         "config: rotatia verificata cu poza pe 25.09.2026 e 270")
     return "poza rotita din config; serviciul oprit+repornit; config 270"
+
+
+def test_modul_combinat_zbor_cu_fereastra():
+    """Flight + monitor window: the descent test accepts --fereastra and
+    passes --fullscreen only when a display exists; the autostart passes
+    it in the flight branch under the same rule as the monitor, and
+    --no-window turns both off. The window must never change what flies:
+    the flag adds --fullscreen and nothing else."""
+    import re
+    d = open(os.path.join(REPO, 'pi', 'descent_test.sh')).read()
+    assert '--fereastra)     FEREASTRA=1 ;;' in d
+    blk = d[d.index('if [[ $FEREASTRA -eq 1 ]]'):]
+    blk = blk[:blk.index('fi\n', blk.index('ARGS+=(--fullscreen)')) + 3]
+    assert 'DISPLAY' in blk and 'ARGS+=(--fullscreen)' in blk, blk
+    assert re.search(r'ARGS\+=\(--fullscreen\)\s*$', blk, re.M), (
+        "--fereastra trebuie sa adauge DOAR --fullscreen")
+    b = open(os.path.join(REPO, 'pi', 'bringup.sh')).read()
+    z = b[b.index('ZBOR_ARGS=(--auto)'):b.index('descent_test.sh" "${ZBOR_ARGS[@]}"')]
+    assert '$WINDOW -eq 1' in z and 'DISPLAY' in z and '--fereastra' in z, z
+    return "descent_test --fereastra -> --fullscreen cu display; bringup o da in zbor"
 
 
 TESTS = [
@@ -1971,6 +1992,8 @@ TESTS = [
     ('logurile poarta numarul de boot', test_logurile_poarta_numarul_de_boot),
     ('poza de verificare e cablata corect',
      test_poza_de_verificare_e_cablata_corect),
+    ('modul combinat: zbor cu fereastra',
+     test_modul_combinat_zbor_cu_fereastra),
 ]
 
 

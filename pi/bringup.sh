@@ -194,7 +194,13 @@ if [[ "$MOD" == "zbor" && $CHECK_ONLY -eq 0 ]]; then
   # Un singur cablaj pentru zbor: al probei de coborare. Un al doilea,
   # scris aici, ar fi exact clasa de bug din §5.14.
   set +e
-  "$REPO/pi/descent_test.sh" --auto
+  # Combined mode: the same window rule as the monitor - on when the
+  # session has a display (autostart imports it), off with --no-window.
+  ZBOR_ARGS=(--auto)
+  if [[ $WINDOW -eq 1 && -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+    ZBOR_ARGS+=(--fereastra)
+  fi
+  "$REPO/pi/descent_test.sh" "${ZBOR_ARGS[@]}"
   COD=$?
   set -e
   # 4 = verificarile au picat si nu s-a pornit nimic. Orice alt cod e al

@@ -57,6 +57,10 @@ CHECK_ONLY=0
 FULL_SEQ=0
 ASSUME_YES=0
 AUTO=0
+# Combined mode (flight + monitor window): the fullscreen OpenCV window on
+# the Pi display while the autonomous descent is armed. Costs CPU without a
+# GPU (imshow ~2 fps of detection, measured), so it is opt-in.
+FEREASTRA=0
 # Canalul pe care pilotul CERE segmentul autonom, pe frontul crescator.
 # Modul LAND nu declanseaza nimic: intrarea e doar prin canalul asta (§8).
 AUX_CH="${NOVA_AUX_CH:-}"       # gol = cel din config/nova.json
@@ -72,6 +76,7 @@ for arg in "$@"; do
     --check)         CHECK_ONLY=1 ;;
     --aux-channel=*) AUX_CH="${arg#*=}" ;;
     --full-sequence) FULL_SEQ=1 ;;
+    --fereastra)     FEREASTRA=1 ;;
     --yes)           ASSUME_YES=1 ;;
     --auto)          AUTO=1; ASSUME_YES=1 ;;
     -h|--help)       sed -n '2,8p' "$0"; exit 0 ;;
@@ -289,6 +294,14 @@ fi
 # --- briefing si confirmare ------------------------------------------------
 ARGS=(--conn "$CONN" --baud "$BAUD" --stop-service --yes
       --no-authority --aux-channel "$AUX_CH")
+if [[ $FEREASTRA -eq 1 ]]; then
+  if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+    ARGS+=(--fullscreen)
+    say "fereastra pe tot ecranul PORNITA in zbor (iesire din fereastra: q sau Escape; aplicatia continua)"
+  else
+    warn "--fereastra fara DISPLAY/WAYLAND_DISPLAY (SSH?): zbor fara fereastra"
+  fi
+fi
 if [[ $FULL_SEQ -eq 0 ]]; then
   ARGS+=(--no-ascent)
 fi

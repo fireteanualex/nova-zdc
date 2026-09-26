@@ -382,6 +382,14 @@ telemetrie) și rămâne în `journalctl --user-unit nova-bringup`. Decizia
 se ia în `nova/config.py:autostart_mode()`, testată; orice valoare
 aproximativă (`"ZBOR"`, `true`) e monitor.
 
+### Zbor cu fereastră (mod combinat)
+
+`pi/descent_test.sh --fereastra` pornește coborârea **cu** fereastra
+OpenCV pe tot ecranul (ai nevoie de sesiune grafică pe Pi; prin SSH nu
+există). Pornirea automată o dă singură în modul de zbor când există
+ecran, exact ca la monitor; `bringup.sh --no-window` o oprește. Costă
+~2 fps de detecție fără GPU — pentru probe, nu pentru cursă.
+
 ### Cum decurge zborul
 
 `descent_test.sh` rulează **tot timpul**, deci se pornește **înainte** de
