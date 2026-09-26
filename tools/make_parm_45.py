@@ -13,6 +13,9 @@ ArduPilot, nu din memorie - CLAUDE.md §5.4):
 
     4.7+ (sursa)          4.5.7 (generat)       conversie
     WP_ACC         m/s/s  WPNAV_ACCEL   cm/s/s  x 100
+    WP_SPD         m/s    WPNAV_SPEED   cm/s    x 100
+    WP_SPD_DN      m/s    WPNAV_SPEED_DN cm/s   x 100
+    LAND_SPD_MS    m/s    LAND_SPEED    cm/s    x 100
     WP_RFND_USE           WPNAV_RFND_USE        -
     RNGFND1_MIN    m      RNGFND1_MIN_CM  cm    x 100
     RNGFND1_MAX    m      RNGFND1_MAX_CM  cm    x 100
@@ -57,6 +60,13 @@ REDENUMIRI = {
     'RNGFND1_MIN': ('RNGFND1_MIN_CM', lambda v: _intreg(v * 100.0)),
     'RNGFND1_MAX': ('RNGFND1_MAX_CM', lambda v: _intreg(v * 100.0)),
     'RNGFND1_GNDCLR': ('RNGFND1_GNDCLEAR', lambda v: _intreg(v * 100.0)),
+    # ExtNav (27.09.2026): viteze in GUIDED si LAND. Verificat pe tag-ul
+    # Copter-4.5.7: AC_WPNav are SPEED / SPEED_DN cu prefixul WPNAV_, in
+    # cm/s; master are SPD / SPD_DN cu prefixul WP_, in m/s. LAND_SPEED e
+    # in cm/s pe 4.5.7 (CLAUDE.md §5.4: LAND_SPD_MS pe 4.7+).
+    'WP_SPD': ('WPNAV_SPEED', lambda v: _intreg(v * 100.0)),
+    'WP_SPD_DN': ('WPNAV_SPEED_DN', lambda v: _intreg(v * 100.0)),
+    'LAND_SPD_MS': ('LAND_SPEED', lambda v: _intreg(v * 100.0)),
 }
 
 

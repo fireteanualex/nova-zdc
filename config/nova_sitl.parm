@@ -146,3 +146,6 @@ EK3_SRC2_VELXY,0
 EK3_SRC2_POSZ,1
 EK3_SRC2_VELZ,0
 EK3_SRC2_YAW,1
+# EK3_SRC_OPTIONS bitul 0 (FuseAllVelocities) ar aduce viteza GPS din setul
+# 1 pe setul 2. Stins explicit; predicatul din nova/ekf_source.py il cere.
+EK3_SRC_OPTIONS,0

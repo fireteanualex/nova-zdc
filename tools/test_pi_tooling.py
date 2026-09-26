@@ -824,8 +824,12 @@ def test_G4_parametrii_de_zbor():
 
     comune = set(f) & set(s)
     diferite = {n for n in comune if f[n] != s[n]}
-    assert diferite == {'FS_THR_ENABLE'}, (
+    # EK3_SRC2_POSXY: 6 (ExtNav) pe vehicul din 27.09.2026 - camera e sursa
+    # de pozitie a EKF3 in segment; simulatorul nu e pe ExtNav, ramane 0.
+    assert diferite == {'FS_THR_ENABLE', 'EK3_SRC2_POSXY'}, (
         f"diferente neasteptate fata de SITL: {sorted(diferite)}")
+    assert f['EK3_SRC2_POSXY'] == 6.0 and f.get('VISO_TYPE') == 1.0
+    assert f.get('EK3_SRC_OPTIONS') == 0.0 and s.get('EK3_SRC_OPTIONS') == 0.0
 
     # Numele care ne-au costat deja o data (§5.4/§5.10).
     assert 'WP_RFND_USE' in f and 'WPNAV_RFND_USE' not in f
@@ -836,8 +840,8 @@ def test_G4_parametrii_de_zbor():
         "FLTMODE_* nu se inventeaza; depinde de emitatorul de concurs")
     txt = open(flight).read()
     assert 'DECIZII DESCHISE' in txt and 'NEVERIFICAT PE HARDWARE' in txt
-    return (f"{len(f)} parametri; singura diferenta fata de SITL: "
-            f"FS_THR_ENABLE 0 -> 1")
+    return (f"{len(f)} parametri; diferente fata de SITL: FS_THR_ENABLE "
+            f"0 -> 1, EK3_SRC2_POSXY 0 -> 6 (ExtNav)")
 
 
 def test_preflight_numeste_parametrul_nepotrivit():

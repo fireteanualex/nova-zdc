@@ -77,6 +77,12 @@ BITMASKS = {
         2: 'cercuri/poligoane de incluziune-excluziune',
     },
     'ARMING_SKIPCHK': BITI_ARMARE,
+    # AP_NavEKF_Source.h: FUSE_ALL_VELOCITIES = 1 << 0. Aprins, EKF-ul
+    # fuzioneaza vitezele din TOATE seturile - viteza GPS din setul 1 ar
+    # intra pe setul 2 "fara GNSS" (15.2.5). Trebuie STINS.
+    'EK3_SRC_OPTIONS': {
+        0: 'FuseAllVelocities: vitezele din toate seturile (GPS din 1 pe 2)',
+    },
     # 4.5/4.6: aceiasi biti, sens INVERS - aprins = verificarea se FACE
     'ARMING_CHECK': BITI_ARMARE,
 }

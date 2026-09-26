@@ -55,6 +55,17 @@ TERMENI = (
     ('YAW', SURSA_YAW_GNSS),
 )
 
+#: EK3_SRC_OPTIONS, comun tuturor seturilor. Bitul 0 = FUSE_ALL_VELOCITIES
+#: (AP_NavEKF_Source.h): EKF-ul fuzioneaza vitezele din TOATE seturile,
+#: deci viteza GPS din setul 1 ar intra si pe setul 2 cu parametrii de set
+#: perfect curati. Predicatul il cere citit si stins (ExtNav, 27.09.2026).
+OPTIUNI_PARAM = 'EK3_SRC_OPTIONS'
+OPTIUNE_FUSE_ALL_VEL = 1 << 0
+#: Cheia sub care valoarea lui apare in `valori`, langa termenii setului.
+OPTIUNI_TERMEN = 'OPTIONS'
+#: ExtNav ca sursa de pozitie orizontala (SourceXY::EXTNAV): conform.
+SURSA_XY_EXTNAV = 6
+
 #: Setul pe care il cerem in segmentul autonom.
 SET_AUTONOM = 2
 SET_NORMAL = 1
@@ -84,6 +95,13 @@ def contine_gnss(valori):
             motive.append(f"{termen} necitit")
         elif int(v) in rele:
             motive.append(f"{termen}={int(v)} e GNSS")
+    opt = valori.get(OPTIUNI_TERMEN)
+    if opt is None:
+        motive.append(f"{OPTIUNI_PARAM} necitit")
+    elif int(opt) & OPTIUNE_FUSE_ALL_VEL:
+        motive.append(f"{OPTIUNI_PARAM}={int(opt)}: bitul 0 "
+                      f"(FuseAllVelocities) aprins, vitezele GPS din setul 1 "
+                      f"intra si pe setul {SET_AUTONOM}")
     return bool(motive), motive
 
 
@@ -126,15 +144,19 @@ class EkfSourceManager:
         return [f"[EKF {e['kind']}] {e['detail']}" for e in self.log]
 
     # -- citirea setului tinta ---------------------------------------------
+    def _nume_de_citit(self):
+        """[(termen, nume_param)]: termenii setului plus EK3_SRC_OPTIONS."""
+        return ([(t, nume_param(self.set_autonom, t)) for t, _ in TERMENI]
+                + [(OPTIUNI_TERMEN, OPTIUNI_PARAM)])
+
     def _cere_parametrii(self, now):
-        for termen, _ in TERMENI:
-            self.v.request_param(nume_param(self.set_autonom, termen))
+        for _, nume in self._nume_de_citit():
+            self.v.request_param(nume)
         self._cerut_t = now
 
     def _aduna(self):
         gata = True
-        for termen, _ in TERMENI:
-            nume = nume_param(self.set_autonom, termen)
+        for termen, nume in self._nume_de_citit():
             val = getattr(self.v, 'params', {}).get(nume)
             if val is None:
                 gata = False

@@ -10,6 +10,9 @@
 #               4.5.x / 4.6.x        aici (4.7.0+)
 #   armare      ARMING_CHECK         ARMING_SKIPCHK
 #   navigatie   WPNAV_ACCEL          WP_ACC
+#               WPNAV_SPEED          WP_SPD        (cm/s -> m/s)
+#               WPNAV_SPEED_DN       WP_SPD_DN     (cm/s -> m/s)
+#   aterizare   LAND_SPEED           LAND_SPD_MS   (cm/s -> m/s)
 #               WPNAV_RFND_USE       WP_RFND_USE
 #   telemetru   RNGFND1_MIN_CM       RNGFND1_MIN  (metri, nu cm)
 #
@@ -176,16 +179,49 @@ WP_ACC,1.5
 # GNSS. Un set cu YAW = 2 ar fi raportat de firmware ca "fara GPS" si ar
 # incalca regula. Verificarea noastra e mai stricta, deliberat.
 #
-#   POSXY 0 = None      (fara pozitie orizontala: nici GPS, nici altceva)
+#   POSXY 6 = ExtNav    (REPROIECTARE ExtNav, 27.09.2026: camera trimite
+#                        VISION_POSITION_ESTIMATE in cadrul markerului;
+#                        in SITL ramane 0 - simulatorul nu e pe ExtNav)
 #   VELXY 0 = None
 #   POSZ  1 = Baro      (altitudinea barometrica nu e GNSS)
 #   VELZ  0 = None
 #   YAW   1 = Compass   (busola nu e GNSS; 2, 3 si 8 ar fi)
-EK3_SRC2_POSXY,0
+EK3_SRC2_POSXY,6
 EK3_SRC2_VELXY,0
 EK3_SRC2_POSZ,1
 EK3_SRC2_VELZ,0
 EK3_SRC2_YAW,1
+
+# EK3_SRC_OPTIONS bitul 0 = FuseAllVelocities: EKF-ul fuzioneaza vitezele
+# din TOATE seturile, deci viteza GPS din setul 1 ar intra si pe setul 2.
+# Stins EXPLICIT (0): altfel 15.2.5 ar fi incalcat cu parametrii de set
+# perfect curati. Predicatul din nova/ekf_source.py refuza comutarea daca
+# bitul e aprins (verificat in AP_NavEKF_Source.h: FUSE_ALL_VELOCITIES = 1<<0).
+EK3_SRC_OPTIONS,0
+
+# ---------------------------------------------------------------------------
+# REPROIECTARE ExtNav (27.09.2026, claude-markdown/REPROIECTARE_EXTNAV.md):
+# camera e sursa de pozitie a EKF3 in segmentul autonom, prin
+# VISION_POSITION_ESTIMATE, cu markerul ca origine. PLND ramane 0 permanent.
+#
+# VISO_TYPE 1 = MAVLink. Ca RNGFND1_TYPE, e parametru de activare: backend-ul
+# se creeaza la boot, deci REBOOT dupa setare (§5.4).
+VISO_TYPE,1
+# Latenta captura -> trimitere, ms. PROVIZORIU: p50 masurat pe Pi este
+# ~35-120 ms in functie de fereastra (§5.65); de masurat pe calea noua si
+# corectat (brief §10).
+VISO_DELAY_MS,100
+# Zgomotul de pozitie al masuratorii, m. Conservator la inceput (implicit
+# 0.3); de reglat pe loguri.
+VISO_POS_M_NSE,0.5
+# Viteze mici in GUIDED (MOVE / DESCEND in trepte): limiteaza inclinarea,
+# deci tin markerul in cadru. WP_SPD orizontal 1.0 m/s, WP_SPD_DN 0.5 m/s.
+# Pe 4.5.7 sunt WPNAV_SPEED / WPNAV_SPEED_DN, in cm/s (generat).
+WP_SPD,1.0
+WP_SPD_DN,0.5
+# LAND-ul final, vertical de la 1 m: 0.5 m/s. Pe 4.5.7: LAND_SPEED, cm/s.
+LAND_SPD_MS,0.5
+# LAND_ALT_LOW: de revazut (brief §7); nu se seteaza pana nu e decis.
 
 # ---------------------------------------------------------------------------
 # Legatura cu Raspberry Pi 4, pe TELEM2 (Pixhawk 6C).

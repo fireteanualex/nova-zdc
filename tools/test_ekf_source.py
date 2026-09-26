@@ -34,7 +34,7 @@ class FakeVehicle:
         self.ekf_src_ack = None
         self.time_boot_ms = 1000
         self._valori = valori or {'POSXY': 0, 'VELXY': 0, 'POSZ': 1,
-                                  'VELZ': 0, 'YAW': 1}
+                                  'VELZ': 0, 'YAW': 1, 'OPTIONS': 0}
         self._raspunde = raspunde
         self.link = True
 
@@ -67,7 +67,8 @@ def test_predicatul_e_mai_strict_decat_firmware_ul():
     """CAZUL CARE CONTEAZA. `AP_NavEKF_Source::usingGPS()` verifica doar
     `YAW == GSF` (8). `YAW == GPS` (2) si `GPS_COMPASS_FALLBACK` (3)
     alimenteaza tot estimatorul de cap cu GNSS, si ar trece de el."""
-    curat = {'POSXY': 0, 'VELXY': 0, 'POSZ': 1, 'VELZ': 0, 'YAW': 1}
+    curat = {'POSXY': 0, 'VELXY': 0, 'POSZ': 1, 'VELZ': 0, 'YAW': 1,
+             'OPTIONS': 0}
     rau, motive = ek.contine_gnss(curat)
     assert not rau, motive
 
@@ -81,7 +82,8 @@ def test_predicatul_e_mai_strict_decat_firmware_ul():
 
 
 def test_fiecare_termen_e_verificat():
-    curat = {'POSXY': 0, 'VELXY': 0, 'POSZ': 1, 'VELZ': 0, 'YAW': 1}
+    curat = {'POSXY': 0, 'VELXY': 0, 'POSZ': 1, 'VELZ': 0, 'YAW': 1,
+             'OPTIONS': 0}
     for termen, rele in ek.TERMENI:
         v = dict(curat)
         v[termen] = rele[0]
@@ -93,10 +95,42 @@ def test_fiecare_termen_e_verificat():
 def test_un_set_necitit_nu_e_un_set_curat():
     """Necunoscut nu inseamna conform. §5.10 aplicat unei afirmatii de
     conformitate: lipsa dovezii nu e dovada."""
-    partial = {'POSXY': 0, 'VELXY': 0, 'POSZ': 1, 'VELZ': 0}
+    partial = {'POSXY': 0, 'VELXY': 0, 'POSZ': 1, 'VELZ': 0, 'OPTIONS': 0}
     rau, motive = ek.contine_gnss(partial)
     assert rau and 'YAW necitit' in motive[0], motive
-    return "termen lipsa -> refuz, nu acceptare tacita"
+    # si optiunile: necitite nu inseamna stinse
+    fara_opt = {'POSXY': 0, 'VELXY': 0, 'POSZ': 1, 'VELZ': 0, 'YAW': 1}
+    rau, motive = ek.contine_gnss(fara_opt)
+    assert rau and 'EK3_SRC_OPTIONS necitit' in motive[0], motive
+    return "termen lipsa -> refuz, nu acceptare tacita (si EK3_SRC_OPTIONS)"
+
+
+def test_ExtNav_e_conform_dar_FuseAllVelocities_nu():
+    """ExtNav (27.09.2026, brief §7): POSXY = 6 (camera prin
+    VISION_POSITION_ESTIMATE) nu e GNSS. Dar EK3_SRC_OPTIONS bitul 0
+    (FUSE_ALL_VELOCITIES, verificat in AP_NavEKF_Source.h) aduce viteza GPS
+    din setul 1 pe setul 2 cu parametrii de set perfect curati - si
+    firmware-ul nu l-ar semnala. Predicatul il refuza; managerul nu comuta."""
+    extnav = {'POSXY': ek.SURSA_XY_EXTNAV, 'VELXY': 0, 'POSZ': 1, 'VELZ': 0,
+              'YAW': 1, 'OPTIONS': 0}
+    rau, motive = ek.contine_gnss(extnav)
+    assert not rau, motive
+    rau, motive = ek.contine_gnss(dict(extnav, OPTIONS=1))
+    assert rau and 'FuseAllVelocities' in motive[0], motive
+    rau, motive = ek.contine_gnss(dict(extnav, OPTIONS=3))
+    assert rau, "bitul 0 aprins impreuna cu altii tot se semnaleaza"
+    # managerul citeste EK3_SRC_OPTIONS si refuza comutarea
+    v = FakeVehicle(valori=dict(extnav, OPTIONS=1))
+    s = ek.EkfSourceManager(v, verbose=False)
+    ruleaza(s, v, ['DESCEND_TRACK'] * 3)
+    assert s.state == s.REFUZAT and v.comenzi == [], (s.state, v.comenzi)
+    assert 'EK3_SRC_OPTIONS' in v.cerute
+    # si comuta cand e stins
+    v = FakeVehicle(valori=extnav)
+    s = ek.EkfSourceManager(v, verbose=False)
+    ruleaza(s, v, ['DESCEND_TRACK'] * 3)
+    assert s.state == s.ACTIV and s.conform and s.raport()['valori']['POSXY'] == 6
+    return "POSXY=6 conform; EK3_SRC_OPTIONS bit 0 -> refuz total"
 
 
 def test_nu_comuta_inainte_de_a_citi():
@@ -105,7 +139,7 @@ def test_nu_comuta_inainte_de_a_citi():
     s.update(0.0, 'DESCEND_TRACK')
     assert s.state == s.CITESTE, s.state
     assert v.comenzi == [], "a comutat inainte sa citeasca"
-    assert len(v.cerute) == len(ek.TERMENI), v.cerute
+    assert len(v.cerute) == len(ek.TERMENI) + 1, v.cerute   # + EK3_SRC_OPTIONS
     s.update(0.1, 'DESCEND_TRACK')
     assert s.state == s.ACTIV, s.state
     assert v.comenzi == [ek.SET_AUTONOM], v.comenzi
@@ -117,7 +151,7 @@ def test_refuza_un_set_cu_GNSS():
     apoi se raporteaza. O comutare care incalca regula e mai rea decat
     niciuna: vehiculul ar zbura autonom in afara conformitatii."""
     v = FakeVehicle(valori={'POSXY': 3, 'VELXY': 0, 'POSZ': 1,
-                            'VELZ': 0, 'YAW': 1})
+                            'VELZ': 0, 'YAW': 1, 'OPTIONS': 0})
     s = ek.EkfSourceManager(v, verbose=False)
     ruleaza(s, v, ['DESCEND_TRACK'] * 3)
     assert s.state == s.REFUZAT, s.state
@@ -189,7 +223,7 @@ def test_conformitatea_e_o_masuratoare_nu_o_intentie():
     assert s.conform and s.ack_ok
     r = s.raport()
     assert r['valori']['YAW'] == 1 and r['ack_ok']
-    assert set(r['valori']) == {t for t, _ in ek.TERMENI}
+    assert set(r['valori']) == {t for t, _ in ek.TERMENI} | {ek.OPTIUNI_TERMEN}
     return "raportul poarta valorile CITITE si raspunsul FC-ului"
 
 
@@ -208,6 +242,8 @@ def test_parametrii_din_fisiere_sunt_conformi():
             for termen, _ in ek.TERMENI:
                 if nume.strip() == ek.nume_param(ek.SET_AUTONOM, termen):
                     valori[termen] = float(val)
+            if nume.strip() == ek.OPTIUNI_PARAM:
+                valori[ek.OPTIUNI_TERMEN] = float(val)
         rau, motive = ek.contine_gnss(valori)
         assert not rau, f"{fisier}: {motive}"
     return f"ambele fisiere descriu setul {ek.SET_AUTONOM} fara GNSS"
@@ -219,6 +255,8 @@ TESTS = [
     ('fiecare termen e verificat', test_fiecare_termen_e_verificat),
     ('un set necitit nu e un set curat',
      test_un_set_necitit_nu_e_un_set_curat),
+    ('ExtNav conform, FuseAllVelocities refuzat',
+     test_ExtNav_e_conform_dar_FuseAllVelocities_nu),
     ('nu comuta inainte de a citi', test_nu_comuta_inainte_de_a_citi),
     ('refuza un set cu GNSS', test_refuza_un_set_cu_GNSS),
     ('restaureaza la handback', test_restaureaza_la_handback),
