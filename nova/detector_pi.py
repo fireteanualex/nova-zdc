@@ -790,11 +790,21 @@ class ArucoMarkerDetector:
         if range_m <= 0.0:
             range_m = float(t[2])
 
+        # ExtNav: the marker's orientation in the body frame, from the
+        # direction of its top edge (corner 0 -> corner 1 in ArUco order)
+        # in the image, mapped through the same mounting rotation as the
+        # position. Angle from the body RIGHT axis, positive clockwise seen
+        # from above. Only the yaw setpoint uses it (nova/extnav.py).
+        dx, dy = (corners[1] - corners[0]).tolist()
+        e_fwd, e_right = axe_corp(dx, dy, self.camera_rotation_deg)
+        marker_yaw_deg = math.degrees(math.atan2(-e_fwd, e_right))
+
         self.last_center = tuple(corners.mean(axis=0))
         self.last_range_m = range_m
         return Detection(t=t_capture, angle_x=angle_x, angle_y=angle_y,
                          distance_m=distance, marker_px=marker_px,
-                         range_m=range_m, fill=fill)
+                         range_m=range_m, fill=fill,
+                         marker_yaw_deg=marker_yaw_deg)
 
     def counts(self):
         """(cadre procesate, cadre cu detectie), citite ATOMIC."""

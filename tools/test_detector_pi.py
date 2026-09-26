@@ -436,9 +436,11 @@ def test_regresie_last_corners_nu_schimba_Detection():
         assert interzis not in campuri, (
             f"{interzis} a ajuns in Detection: contractul cu masina de stari "
             f"creste cu detalii de implementare ale detectorului")
-    # iar ce E in contract e acolo deliberat, nu din inertie
+    # iar ce E in contract e acolo deliberat, nu din inertie:
+    # marker_yaw_deg a intrat pe 27.09.2026 (ExtNav), pentru consemnul de
+    # yaw - orientarea, nu colturile
     assert campuri == {'t', 'angle_x', 'angle_y', 'distance_m', 'marker_px',
-                       'range_m', 'fill'}, campuri
+                       'range_m', 'fill', 'marker_yaw_deg'}, campuri
     assert det.t == 3.5
     # dupa un cadru gol, last_corners revine la None
     assert d.detect(np.full((H, W), 110, np.uint8), 4.0) is None
@@ -790,6 +792,46 @@ def test_B8_timpii_pe_etape_se_citesc_in_timp_ce_firul_adauga_etape():
     return f"{n_chei[0]} chei rotite din alt fir, 2000 de citiri fara eroare"
 
 
+def test_ExtNav_orientarea_markerului_in_corp():
+    """Detection.marker_yaw_deg (ExtNav): unghiul laturii de sus a
+    markerului fata de axa DREAPTA a corpului, pozitiv in sens orar vazut
+    de sus, prin aceeasi mapare de montaj ca pozitia (axe_corp). Randare
+    sintetica: marker nerotit -> 0; marker rotit CCW pe ecran cu 30 de
+    grade -> -30; acelasi cadru cu montaj 90 -> inca -90 (nasul e in
+    dreapta imaginii brute, deci "dreapta pe ecran" e inainte)."""
+    from nova.detector_pi import axe_corp
+    cal = synthetic_calibration()
+    frame0, _ = render(cal, R_FLAT, (0.0, 0.0, 4.0))
+    d0 = ArucoMarkerDetector(cal, roi_below_m=0.0).detect(frame0, 1.0)
+    assert d0 is not None and d0.marker_yaw_deg is not None
+    assert abs(d0.marker_yaw_deg) < 0.5, d0.marker_yaw_deg
+    # markerul rotit in propriul plan: Rz(+30) in cadrul markerului, unde y e
+    # in SUS pe ecran (R_FLAT) -> pe ecran rotatia apare CCW
+    th = math.radians(30.0)
+    Rz = np.array([[math.cos(th), -math.sin(th), 0.0],
+                   [math.sin(th), math.cos(th), 0.0],
+                   [0.0, 0.0, 1.0]])
+    frame30, corners30 = render(cal, R_FLAT @ Rz, (0.0, 0.0, 4.0))
+    dx, dy = (corners30[1] - corners30[0]).tolist()
+    assert dy < 0, "latura de sus ar trebui sa urce pe ecran (CCW)"
+    d30 = ArucoMarkerDetector(cal, roi_below_m=0.0).detect(frame30, 1.0)
+    assert d30 is not None and abs(d30.marker_yaw_deg + 30.0) < 1.0, d30.marker_yaw_deg
+    # montaj 270 (cel de pe vehicul) si 90: aceeasi mapare ca pozitia
+    for rot, asteptat in ((90, -30.0 - 90.0), (270, -30.0 + 90.0), (180, 150.0)):
+        d = ArucoMarkerDetector(cal, roi_below_m=0.0,
+                                camera_rotation_deg=rot).detect(frame30, 1.0)
+        diff = (d.marker_yaw_deg - asteptat + 180.0) % 360.0 - 180.0
+        assert abs(diff) < 1.0, (rot, d.marker_yaw_deg, asteptat)
+        # verificare independenta prin axe_corp pe latura din colturi
+        f, r = axe_corp(dx, dy, rot)
+        assert abs(math.degrees(math.atan2(-f, r)) - d.marker_yaw_deg) < 1.0
+    # contractul: implicit None (detectorul sintetic nu il raporteaza)
+    assert Detection(t=0, angle_x=0, angle_y=0, distance_m=1, marker_px=1,
+                     range_m=1).marker_yaw_deg is None
+    return (f"0: {d0.marker_yaw_deg:+.1f}; CCW 30: {d30.marker_yaw_deg:+.1f}; "
+            f"montaj 90/180/270 consistente cu axe_corp")
+
+
 def test_timpii_pe_etape_se_masoara_pe_clasele_din_productie():
     """Step 0 (§5.65): per-stage timings must come from the production
     wiring - PiDetector attaches one StageTimer to the source and the
@@ -988,6 +1030,7 @@ TESTS = [
     ('ratarile consecutive pe clasa din productie',
      test_ratarile_consecutive_pe_clasa_din_productie),
     ('B9: firul mort nu arata sanatos', test_B9_firul_mort_nu_arata_sanatos),
+    ('ExtNav: orientarea markerului in corp', test_ExtNav_orientarea_markerului_in_corp),
     ('B8: etapele se citesc cat firul adauga chei',
      test_B8_timpii_pe_etape_se_citesc_in_timp_ce_firul_adauga_etape),
     ('REGRESIE 1 m: marker mare deplasat intre cadre',

@@ -131,16 +131,28 @@ def marker_offset_ned(angle_x, angle_y, roll, pitch, yaw, h):
     return (s * n[0], s * n[1], float(h))
 
 
-def yaw_setpoint(yaw_now, marker_yaw_in_body_deg):
-    """Yaw (rad) at which the marker sits unrotated in the frame.
+#: The marker is square: any of its four orientations sits "unrotated"
+#: in the frame. The yaw setpoint takes the SMALLEST rotation that gets
+#: there, in [-45, 45) degrees - not a 170-degree turn at 1 m.
+YAW_ALIGN_PERIOD_DEG = 90.0
 
-    `marker_yaw_in_body_deg` is the marker's rotation as seen from above
-    in the body frame, positive clockwise (the marker's "up" edge rotated
-    to the right of the nose). Yawing right by that angle aligns the nose
-    with it. None when the detector did not report an orientation."""
+
+def smallest_align_deg(marker_yaw_deg, period_deg=YAW_ALIGN_PERIOD_DEG):
+    half = period_deg / 2.0
+    return (float(marker_yaw_deg) + half) % period_deg - half
+
+
+def yaw_setpoint(yaw_now, marker_yaw_in_body_deg):
+    """Yaw (rad) at which the marker sits square in the frame.
+
+    `marker_yaw_in_body_deg` is Detection.marker_yaw_deg: the marker's
+    rotation in the body frame, positive clockwise seen from above.
+    Yawing right by that angle aligns the nose with the marker's "up";
+    yawing by the smallest equivalent rotation (mod 90) squares it, which
+    is all the frame needs. None when the detector reports no orientation."""
     if marker_yaw_in_body_deg is None:
         return None
-    return wrap_pi(yaw_now + math.radians(marker_yaw_in_body_deg))
+    return wrap_pi(yaw_now + math.radians(smallest_align_deg(marker_yaw_in_body_deg)))
 
 
 @dataclass(frozen=True)

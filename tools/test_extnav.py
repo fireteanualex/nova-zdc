@@ -241,12 +241,19 @@ def test_consistenta_a_doua_detectii_compenseaza_miscarea():
 
 def test_consemnul_de_yaw():
     """Orientarea markerului serveste DOAR consemnului de yaw (brief §4):
-    marker rotit 30 de grade spre dreapta in corp -> tinta = yaw + 30."""
+    marker rotit 30 de grade spre dreapta in corp -> tinta = yaw + 30. Iar
+    markerul e patrat: 100 de grade inseamna 10, nu o intoarcere de 100."""
     y = ex.yaw_setpoint(math.radians(170), 30.0)
     assert abs(math.degrees(y) - (-160.0)) < 1e-9, math.degrees(y)
     assert ex.yaw_setpoint(0.5, None) is None
-    assert abs(ex.yaw_setpoint(0.0, -45.0) + math.radians(45)) < 1e-12
-    return "yaw + orientare, infasurat in (-pi, pi]; None fara orientare"
+    assert abs(math.degrees(ex.yaw_setpoint(0.0, 100.0)) - 10.0) < 1e-9
+    assert abs(math.degrees(ex.yaw_setpoint(0.0, -100.0)) + 10.0) < 1e-9
+    assert abs(math.degrees(ex.yaw_setpoint(0.0, 179.0)) + 1.0) < 1e-9
+    assert ex.smallest_align_deg(45.0) == -45.0 and ex.smallest_align_deg(-45.0) == -45.0
+    for d in (-720, -100, -46, -45, -10, 0, 10, 44, 45, 100, 359):
+        r = ex.smallest_align_deg(d)
+        assert -45.0 <= r < 45.0 and abs((d - r) % 90.0) < 1e-9, (d, r)
+    return "yaw + orientare, rotatia minima mod 90, in [-45, 45); None fara orientare"
 
 
 TESTS = [

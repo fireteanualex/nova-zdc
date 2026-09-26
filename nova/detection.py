@@ -54,6 +54,13 @@ class Detection:
     fill        cat din cadru ocupa CUTIA DE INCADRARE a markerului, pe axa
                 mai stramta: max(cutie_lat / latime, cutie_inalt / inaltime).
                 None daca detectorul nu o poate raporta.
+    marker_yaw_deg  (ExtNav, 27.09.2026) orientarea markerului in cadrul
+                CORPULUI, grade: unghiul laturii de SUS a markerului
+                (coltul 0 -> coltul 1, ordinea ArUco) fata de axa DREAPTA a
+                corpului, pozitiv in sens orar vazut de sus. 0 = markerul
+                sta nerotit in cadru, cu "sus"-ul lui spre nas. Serveste
+                DOAR consemnului de yaw (nova/extnav.yaw_setpoint), nu
+                pozitiei. None daca detectorul nu o raporteaza (sintetic).
 
 `fill` si `marker_px` nu sunt acelasi lucru, si diferenta decide 8.3.3.
 `marker_px` e LATURA; ce trebuie sa incapa in cadru e cutia unui patrat
@@ -78,6 +85,7 @@ implicit ar spune "markerul e mic" tocmai cand e pe cale sa iasa din cadru
     marker_px: float
     range_m: float
     fill: float = None
+    marker_yaw_deg: float = None
 
 
 @dataclass(frozen=True)
