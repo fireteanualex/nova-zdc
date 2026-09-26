@@ -234,8 +234,14 @@ class LandingStateMachine:
         #: segmentul autonom: fara ea nu exista dovada ca activarea s-a facut
         #: in fereastra ceruta de 15.2.3, si nu exista cale de refuz.
         self.gate = gate
-        self._aux_was_high = False
-        self._aux_was_high_prev = False
+        #: AUX history for edge detection. None = no RC reading seen yet
+        #: (B7, 26.09.2026): the FIRST reading is the reference, never an
+        #: edge. Starting at False made a restart in flight - service
+        #: Restart=on-failure, vehicle armed, switch still up - count the
+        #: first RC frame as a rising edge and open a handover request
+        #: without the pilot touching anything.
+        self._aux_was_high = None
+        self._aux_was_high_prev = None
         # The segment was ended by a mode change (supervisor BRAKE/RTL) while
         # the switch was still up: the next AUX down is the pilot asking out.
         self._aux_release_pending = False
@@ -496,10 +502,7 @@ class LandingStateMachine:
         # Cererea de handover e FRONTUL CRESCATOR al comutatorului AUX, nu
         # simpla lui stare: altfel un comutator lasat sus ar reporni secventa
         # imediat dupa orice iesire din ea.
-        aux_high = self.aux_high()
-        aux_rising = aux_high and not self._aux_was_high
-        self._aux_was_high_prev = self._aux_was_high
-        self._aux_was_high = aux_high
+        aux_high, aux_rising, aux_falling = self._aux_edges()
         self.prev_mode = self.v.mode
 
         if not self.v.armed:
@@ -521,7 +524,6 @@ class LandingStateMachine:
         # ignores them by FC design), PLND off, and nothing more is sent
         # unless the FC stays in the mode it had. This is the pilot's clean
         # exit; the mode switch remains the second, FC-level one.
-        aux_falling = self._aux_was_high_prev and not aux_high
         if aux_rising:
             self._aux_release_pending = False
         if aux_falling and self.state in PILOT_ABORT_PHASES:
@@ -604,11 +606,35 @@ class LandingStateMachine:
             self._run_ascent(now, alt)
 
     # -- handover (§8, 15.2.3) ---------------------------------------------
-    def aux_high(self):
+    def aux_state(self):
+        """True/False = switch up/down; None = no RC reading available."""
         ch = self.cfg.aux_channel
         if self.v.rc is None or len(self.v.rc) < ch:
-            return False
+            return None
         return self.v.rc[ch - 1] >= self.cfg.aux_high_pwm
+
+    def aux_high(self):
+        return self.aux_state() is True
+
+    def _aux_edges(self):
+        """(aux_high, rising, falling) for this cycle, updating history.
+
+        Without RC there is no state and no edge - history is kept, not
+        reset, so a short RC gap cannot forge an edge either way. The first
+        reading ever becomes the reference (B7): a switch found up at start
+        - restart in flight, or up before power-on - is a state, not a
+        request. The pilot has to lower and raise it."""
+        aux = self.aux_state()
+        if aux is None:
+            return False, False, False
+        if self._aux_was_high is None:
+            self._aux_was_high_prev = self._aux_was_high = aux
+            return aux, False, False
+        rising = aux and not self._aux_was_high
+        falling = self._aux_was_high and not aux
+        self._aux_was_high_prev = self._aux_was_high
+        self._aux_was_high = aux
+        return aux, rising, falling
 
     def marker_offset_m(self):
         """Distanta orizontala pana la marker, din ultima detectie.

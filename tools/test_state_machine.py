@@ -88,6 +88,11 @@ class StubVehicle:
         #: Modes the FC never adopts (lost command / refused), and how
         #: long it takes to adopt the others (0 = same call). Both model
         #: the real FC + heartbeat latency that ACQUIRE lives in (B3).
+        #: Applied by run()/run_app() after the FIRST update (B7): the
+        #: state machine treats the first AUX reading as a reference, so a
+        #: harness that wants a handover must raise the switch afterwards,
+        #: like a pilot does - not start with it up.
+        self.aux_target = None
         self.refuse_modes = ()
         self.mode_delay_s = 0.0
         self._mode_pending = []
@@ -192,7 +197,8 @@ def build_app(alt=6.0):
     args = Args()
     v = StubVehicle(alt)
     v.mode = MODE_LOITER
-    v.set_aux(AUX_HIGH_PWM)
+    v.set_aux(1000)
+    v.aux_target = AUX_HIGH_PWM
     v.x, v.y = args.north - 0.6, args.east + 0.4
     det = fd.FakeDetector(v, args)
     ov = OverrideMonitor(v)
@@ -230,13 +236,19 @@ def run_app(v, det, sm, sup, args, seconds=40.0, dt=0.002, stop_states=(),
         for d in dets:
             sm.on_detection(d, now)
         sm.update(now)
+        prima = v.aux_target is not None
+        if prima:                               # B7: ridicat DUPA prima citire
+            v.set_aux(v.aux_target)
+            v.aux_target = None
         if not states or states[-1] != sm.state:
             states.append(sm.state)
         if on_step:
             on_step(t, v, sm, sup)
         v.step(dt, args.north, args.east)
         t += dt
-        if sm.state in stop_states:
+        # nu si in ciclul in care abia s-a ridicat comutatorul: starea e
+        # inca IDLE acolo, iar un stop pe IDLE ar opri bucla inainte de start
+        if sm.state in stop_states and not prima:
             break
     return states
 
@@ -247,7 +259,8 @@ def build(mode=MODE_LOITER, alt=6.0, aux=AUX_HIGH_PWM, **kw):
         setattr(args, k, v)
     v = StubVehicle(alt)
     v.mode = mode
-    v.set_aux(aux)
+    v.set_aux(1000)
+    v.aux_target = aux
     # pornim aproape de marker, ca sa fie in cadru
     v.x, v.y = args.north - 0.6, args.east + 0.4
     det = fd.FakeDetector(v, args)
@@ -270,11 +283,15 @@ def run(v, det, sm, args, seconds=40.0, dt=0.002, stop_states=()):
         for d in det.poll(now):
             sm.on_detection(d, now)
         sm.update(now)
+        prima = v.aux_target is not None
+        if prima:                               # B7: ridicat DUPA prima citire
+            v.set_aux(v.aux_target)
+            v.aux_target = None
         if not states or states[-1] != sm.state:
             states.append(sm.state)
         v.step(dt, args.north, args.east)
         t += dt
-        if sm.state in stop_states:
+        if sm.state in stop_states and not prima:
             break
     return states
 
@@ -425,6 +442,44 @@ def test_neutrul_se_memoreaza_la_accept():
 
 
 # --- cablajul aplicatiei (regresia raportata din zbor) ---------------------
+
+def test_B7_comutatorul_gasit_sus_la_pornire_nu_e_front():
+    """26.09.2026 seara (B7). Serviciul are Restart=on-failure si
+    reporneste in modul de zbor; daca aplicatia moare in aer cu drona
+    armata si AUX inca sus, prima citire RC parea front crescator si
+    pornea o cerere de handover fara ca pilotul sa atinga ceva. Prima
+    citire e referinta, nu front. La fel dupa o pauza de RC."""
+    v, det, sm, events, args = build()
+    v.aux_target = None
+    v.set_aux(AUX_HIGH_PWM)                     # sus de la PRIMA citire
+    run(v, det, sm, args, seconds=2.0)
+    assert sm.state == State.IDLE, sm.state
+    assert not any(n == 'handover_reject' or n == 'handover_accept'
+                   for n, _ in events), events
+    assert not v.mode_reqs and not v.param_sets, (v.mode_reqs, v.param_sets)
+    # pauza de RC cu comutatorul sus: nici front, nici coborare falsa
+    v.rc = None
+    run(v, det, sm, args, seconds=0.5)
+    v.set_rc(7, AUX_HIGH_PWM) if v.rc else setattr(
+        v, 'rc', (1500, 1500, 1100, 1500, 1000, 1000, AUX_HIGH_PWM, 1000))
+    run(v, det, sm, args, seconds=0.5)
+    assert sm.state == State.IDLE, sm.state
+    # NEGATIV: jos apoi sus = cererea porneste, ca pana acum
+    v.set_aux(1000)
+    run(v, det, sm, args, seconds=0.2)
+    v.set_aux(AUX_HIGH_PWM)
+    run(v, det, sm, args, seconds=0.2)
+    assert sm.state == State.HANDOVER_CHECK, sm.state
+    # si fara nicio citire RC de la pornire, apoi prima sus: tot referinta
+    v, det, sm, events, args = build()
+    v.aux_target = None
+    v.rc = None
+    run(v, det, sm, args, seconds=0.5)
+    v.rc = (1500, 1500, 1100, 1500, 1000, 1000, AUX_HIGH_PWM, 1000)
+    run(v, det, sm, args, seconds=1.0)
+    assert sm.state == State.IDLE, sm.state
+    return "sus la prima citire / dupa pauza RC: nimic; jos->sus: HANDOVER_CHECK"
+
 
 def test_B3_pilotul_in_ACQUIRE_incheie_secventa():
     """26.09.2026 seara (B3, docs/PRECISION_LANDING.md §9). In ACQUIRE
@@ -950,6 +1005,7 @@ TESTS = [
     ('mansa opreste coborarea autonoma', test_mansa_opreste_coborarea_autonoma),
     ('linia de stare arata canalul de handover',
      test_linia_de_stare_arata_canalul_de_handover),
+    ('B7: comutatorul gasit sus la pornire nu e front', test_B7_comutatorul_gasit_sus_la_pornire_nu_e_front),
     ('B3: pilotul in ACQUIRE incheie secventa', test_B3_pilotul_in_ACQUIRE_incheie_secventa),
     ('B3: BRAKE in ACQUIRE, cablajul real', test_B3_BRAKE_al_supervizorului_in_ACQUIRE_in_cablajul_real),
     ('B3: Vehicle retine ultima cerere de mod', test_B3_Vehicle_retine_ultima_cerere_de_mod),
