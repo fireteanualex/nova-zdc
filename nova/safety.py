@@ -402,6 +402,23 @@ class SafetySupervisor:
                            f"FC raporteaza {self.v.mode_name()} dupa "
                            f"{self._mode_req_n} comenzi{extra}", 'CONFIRM')
             return
+        if self._mode_confirmed is not None:
+            # INCIDENT 26.09.2026 (§5.66). The FC had adopted our mode and
+            # has since LEFT it. Only two things can do that: the pilot's
+            # mode switch or an FC failsafe. Both outrank us (15.1.7). The
+            # old code treated it as a lost command and re-sent BRAKE within
+            # 20-30 ms - over the pilot's STABILIZE, over the pilot's LOITER,
+            # and over the battery failsafe's LAND. The vehicle hovered in
+            # BRAKE until the battery collapsed. A confirmed command is
+            # FINAL: from here the supervisor is passive and sends nothing.
+            self._emit(now, 'mode_taken', self.latched,
+                       f"FC a trecut din {Action.NAMES[self.latched]} in "
+                       f"{self.v.mode_name()} dupa confirmare: decizia "
+                       f"pilotului sau a unui failsafe. Supervizorul devine "
+                       f"PASIV, nu retrimite nimic.", 'PASSIVE')
+            self._want_mode = None
+            self.passive = True
+            return
         if now - self._mode_req_t < MODE_CONFIRM_S:
             return
         if self._mode_req_n >= MODE_RETRY_MAX:
@@ -571,6 +588,8 @@ class SafetySupervisor:
                         else f" | link {a:.1f}s")
             return f"SAFETY activ | {self.override.status()}{link}"
         conf = 'confirmat' if self._mode_confirmed else 'NECONFIRMAT'
+        if self.passive and self._want_mode is None:
+            conf = 'PASIV - pilotul/FC-ul a preluat modul'
         return (f"SAFETY {Action.NAMES[self.latched]} "
                 f"({self.latched_monitor}), mod {conf}")
 

@@ -169,6 +169,62 @@ def test_zavorul_neconfirmat_NU_se_elibereaza():
     return "BRAKE neconfirmat -> ramane zavorat prin incercarea noua"
 
 
+def test_INCIDENT_zavorul_confirmat_nu_retrimite_peste_pilot_sau_failsafe():
+    """26.09.2026 (§5.66), din .bin: BRAKE confirmat 16:14:10; pilotul
+    trece in STABILIZE 16:15:26.05 -> noi BRAKE la .07; pilotul LOITER
+    16:15:31.66 -> noi BRAKE in aceeasi ms; failsafe-ul de baterie LAND
+    16:19:04.01 -> noi BRAKE la .04. Drona a plutit pana la caderea
+    bateriei. Un zavor CONFIRMAT nu mai trimite NIMIC: orice schimbare de
+    mod de dupa e a pilotului sau a FC-ului si ii apartine."""
+    v, sup = build()
+    assert sup.update(100.7, 0.6, 'DESCEND_TRACK') == Action.BRAKE
+    sup.update(100.8, 0.7, 'DESCEND_TRACK')
+    assert v.mode == MODE_BRAKE and sup._mode_confirmed is not None
+    n = len(v.mode_reqs)
+    # masina de stari vede modul schimbat -> IDLE; zavorul ramane confirmat
+    sup.update(101.0, 0.9, 'IDLE')
+    # 1. pilotul, din comutator: LOITER
+    v.mode = MODE_LOITER
+    for t in (161.0, 161.5, 162.0, 165.0):
+        sup.update(t, 60.0, 'IDLE')
+    assert len(v.mode_reqs) == n, f"a retrimis peste pilot: {v.mode_reqs[n:]}"
+    assert sup.passive and sup._want_mode is None
+    ev = [e for e in sup.log if e.monitor == 'mode_taken']
+    assert ev and 'PASIV' in ev[0].detail, ev
+    assert 'PASIV' in sup.status()
+    # 2. failsafe-ul FC-ului: LAND - tot nimic
+    v.mode = MODE_LAND
+    for t in (400.0, 400.5, 401.0):
+        sup.update(t, 300.0, 'IDLE')
+    assert len(v.mode_reqs) == n, f"a retrimis peste failsafe: {v.mode_reqs[n:]}"
+    # 3. si niciun alt monitor nu mai poate declansa ceva cat timp pilotul
+    #    zboara (IDLE): zavorul tine, chiar cu plafonul depasit
+    v.z = -40.0                                   # peste plafon
+    assert sup.update(402.0, 300.0, 'IDLE') == Action.BRAKE
+    assert len(v.mode_reqs) == n
+    # 4. doar o incercare NOUA acceptata de poarta il readuce la lucru
+    v.mode = MODE_LAND
+    sup.update(500.0, 0.05, 'ACQUIRE')
+    assert sup.latched == Action.NONE and not sup.passive and sup.armed
+    return ("BRAKE confirmat; LOITER (pilot), LAND (failsafe): 0 comenzi, "
+            "PASIV; vigilent din nou doar la o incercare noua")
+
+
+def test_zavorul_neconfirmat_inca_retrimite_pana_la_plafon():
+    """NEGATIV pentru reparatia de mai sus: cat timp FC-ul NU a adoptat
+    modul, livrarea se reincearca (o comanda pierduta pe serial e reala),
+    cu plafonul MODE_RETRY_MAX. Doar confirmarea o face finala."""
+    from nova.safety import MODE_RETRY_MAX
+    v, sup = build()
+    v.accept_mode = False
+    sup.update(100.7, 0.6, 'DESCEND_TRACK')
+    for i in range(12):
+        sup.update(101.0 + 0.5 * i, 1.0, 'DESCEND_TRACK')
+    assert len(v.mode_reqs) == MODE_RETRY_MAX, len(v.mode_reqs)
+    assert not sup.passive
+    return f"neconfirmat: {MODE_RETRY_MAX} comenzi, apoi mode_fail"
+
+
 def test_exceptia_final_descent():
     """Sub 0.38 m markerul iese din cadru prin constructie (5.2). Monitorul
     NU are voie sa se aplice acolo, altfel abortam in ultimul metru mereu."""
@@ -492,6 +548,10 @@ TESTS = [
      test_detector_blocat_tot_opreste_coborarea),
     ('fara contor ramane regula pe timp',
      test_fara_contor_ramane_regula_pe_timp),
+    ('INCIDENT: zavorul confirmat nu retrimite peste pilot/failsafe',
+     test_INCIDENT_zavorul_confirmat_nu_retrimite_peste_pilot_sau_failsafe),
+    ('NEGATIV: zavorul neconfirmat inca retrimite pana la plafon',
+     test_zavorul_neconfirmat_inca_retrimite_pana_la_plafon),
     ('incercarea noua elibereaza zavorul confirmat',
      test_incercarea_noua_elibereaza_zavorul_confirmat),
     ('NEGATIV: zavorul neconfirmat NU se elibereaza',
