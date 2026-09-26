@@ -42,6 +42,7 @@ class FakeMav:
 
         def sender(*a, **kw):
             self.link.sent.append(name)
+            self.link.sent_args.append((name, a, kw))
             if self.link.write_fails:
                 raise OSError(5, 'Input/output error')
         return sender
@@ -57,6 +58,7 @@ class FakeLink:
         self.heartbeats = heartbeats
         self.write_fails = write_fails
         self.sent = []
+        self.sent_args = []
         self.closed = False
         self.target_system = 1
         self.target_component = 1
@@ -537,7 +539,114 @@ def test_intervalul_observat_e_masurat_nu_presupus():
     return "median 0.2 s din 5 intervale; fara date -> None"
 
 
+def test_ExtNav_istoricul_de_atitudine_si_pozitie_la_momentul_capturii():
+    """Brief ExtNav §4: raza spre marker se roteste in NED cu atitudinea de
+    la CAPTURA, nu cu ultima primita - la 20 Hz si 50-100 ms latenta,
+    diferenta e de cateva grade, adica zeci de cm la 10 m. Interpolare
+    liniara, yaw pe arcul scurt, None in afara istoricului."""
+    import math
+    h = Harness(FakeLink())
+    v = make_vehicle(h)
+    assert v.attitude_at(1.0) is None and v.position_at(1.0) is None
+    v._on_attitude(1.00, 0.00, 0.10, math.radians(350))
+    v._on_attitude(1.10, 0.20, 0.30, math.radians(10))
+    r, p, y = v.attitude_at(1.05)
+    assert abs(r - 0.10) < 1e-9 and abs(p - 0.20) < 1e-9, (r, p)
+    assert abs(math.degrees(y)) < 1e-6, f"yaw prin arcul scurt: {math.degrees(y)}"
+    assert v.attitude_at(1.10 + 0.20) == (0.20, 0.30, v.att_hist[-1][3])
+    assert v.attitude_at(1.10 + 0.30) is None, "in afara istoricului: None"
+    assert v.attitude_at(0.80) == (0.00, 0.10, v.att_hist[0][3])
+    assert v.attitude_at(0.70) is None
+    v._on_position(2.0, 0.0, 0.0, -10.0, 0.5, 0.0, 0.0)
+    v._on_position(3.0, 1.0, -2.0, -9.0, 0.5, 0.0, 0.0)
+    assert v.position_at(2.5) == (0.5, -1.0, -9.5)
+    assert v.have_pos and v.vx == 0.5 and v.alt == 9.0
+    return "atitudine si pozitie interpolate la t; yaw 350->10 da 0; None in afara"
+
+
+def test_ExtNav_mesajele_noi_pleaca_doar_cu_legatura_vie():
+    """VISION_POSITION_ESTIMATE si SET_POSITION_TARGET_LOCAL_NED: aceeasi
+    regula ca restul comenzilor (H1), plus masca de tip verificata - o
+    masca gresita ar face FC-ul sa ignore pozitia sau sa urmareasca viteze
+    zero, fara nicio eroare."""
+    from pymavlink import mavutil
+    from nova.vehicle import POS_TARGET_MASK_POS_YAW
+    h = Harness(FakeLink())
+    v = make_vehicle(h)
+    link = h.stari[0]
+    assert v.send_vision_position_estimate(123456, 1.0, -2.0, -5.0,
+                                           0.1, 0.2, 0.3) is True
+    assert v.n_vpe == 1 and link.sent[-1] == 'vision_position_estimate_send'
+    nume, a, _ = link.sent_args[-1]
+    assert a == (123456, 1.0, -2.0, -5.0, 0.1, 0.2, 0.3), a
+    assert v.send_position_target(0.0, 0.0, -3.0, 1.5) is True
+    assert v.n_pos_target == 1
+    nume, a, _ = link.sent_args[-1]
+    assert nume == 'set_position_target_local_ned_send'
+    assert a[3] == mavutil.mavlink.MAV_FRAME_LOCAL_NED
+    masca = a[4]
+    m = mavutil.mavlink
+    for ignorat in (m.POSITION_TARGET_TYPEMASK_VX_IGNORE,
+                    m.POSITION_TARGET_TYPEMASK_VY_IGNORE,
+                    m.POSITION_TARGET_TYPEMASK_VZ_IGNORE,
+                    m.POSITION_TARGET_TYPEMASK_AX_IGNORE,
+                    m.POSITION_TARGET_TYPEMASK_AY_IGNORE,
+                    m.POSITION_TARGET_TYPEMASK_AZ_IGNORE,
+                    m.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE):
+        assert masca & ignorat, f"bitul {ignorat} nu e in masca"
+    for folosit in (m.POSITION_TARGET_TYPEMASK_X_IGNORE,
+                    m.POSITION_TARGET_TYPEMASK_Y_IGNORE,
+                    m.POSITION_TARGET_TYPEMASK_Z_IGNORE,
+                    m.POSITION_TARGET_TYPEMASK_YAW_IGNORE,
+                    m.POSITION_TARGET_TYPEMASK_FORCE_SET):
+        assert not (masca & folosit), f"bitul {folosit} e aprins gresit"
+    assert masca == POS_TARGET_MASK_POS_YAW
+    assert (a[5], a[6], a[7], a[14]) == (0.0, 0.0, -3.0, 1.5), a
+    n = len(link.sent)
+    v.link_healthy = False
+    assert v.send_vision_position_estimate(1, 0, 0, 0, 0, 0, 0) is False
+    assert v.send_position_target(0, 0, 0, 0) is False
+    assert len(link.sent) == n and v.n_vpe == 1 and v.n_pos_target == 1
+    return "VPE si consemnul de pozitie: masca pozitie+yaw, suprimate cu legatura cazuta"
+
+
+def test_ExtNav_EKF_STATUS_REPORT_se_cere_si_se_citeste():
+    """Validitatea pozitiei EKF e un monitor nou (brief §6). Fara
+    stream-ul cerut, raportul vine rar sau deloc; fara raport, raspunsul e
+    None - necunoscut nu e "ok"."""
+    from pymavlink import mavutil
+    from nova.vehicle import Vehicle, EKF_HZ
+    cerute = []
+
+    class _Mav:
+        def command_long_send(self, *a):
+            cerute.append((a[4], a[5]))
+
+    v = object.__new__(Vehicle)
+    v.m = type('M', (), {'mav': _Mav(), 'target_system': 1,
+                         'target_component': 1})()
+    v.telem_hz, v.landed_hz = 20, 50
+    v._request_streams()
+    ids = dict(cerute)
+    mid = mavutil.mavlink.MAVLINK_MSG_ID_EKF_STATUS_REPORT
+    assert mid in ids and abs(ids[mid] - 1e6 / EKF_HZ) < 1.0, ids.get(mid)
+    h = Harness(FakeLink())
+    v = make_vehicle(h)
+    assert v.ekf_pos_horiz_ok() is None
+    v.ekf_flags = mavutil.mavlink.EKF_ATTITUDE | mavutil.mavlink.EKF_POS_HORIZ_REL
+    assert v.ekf_pos_horiz_ok() is True
+    v.ekf_flags = mavutil.mavlink.EKF_ATTITUDE
+    assert v.ekf_pos_horiz_ok() is False
+    return f"EKF_STATUS_REPORT cerut la {EKF_HZ} Hz; None / True / False din flags"
+
+
 TESTS = [
+    ('ExtNav: istoricul de atitudine si pozitie la captura',
+     test_ExtNav_istoricul_de_atitudine_si_pozitie_la_momentul_capturii),
+    ('ExtNav: VPE si consemnul de pozitie pleaca doar cu legatura vie',
+     test_ExtNav_mesajele_noi_pleaca_doar_cu_legatura_vie),
+    ('ExtNav: EKF_STATUS_REPORT cerut si citit',
+     test_ExtNav_EKF_STATUS_REPORT_se_cere_si_se_citeste),
     ('WP_ACC lasa marja pentru tranzitoriu',
      test_WP_ACC_lasa_marja_pentru_tranzitoriu),
     ('pragul de legatura are marja fata de rata ceruta',

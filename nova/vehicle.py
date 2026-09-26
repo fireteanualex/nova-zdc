@@ -12,6 +12,7 @@ Masina de stari vede doar interfata de aici, deci nu stie pe ce link merge.
 """
 
 import collections
+import math
 import time
 
 from pymavlink import mavutil
@@ -40,6 +41,24 @@ HEARTBEAT_HZ = 5
 RC_HZ = 50            # 15.3.1: implicit RC_CHANNELS vine la 10 Hz, adica
                       # 100 ms consumate doar de streaming, dintr-un buget
                       # total de 250 ms. La 50 Hz raman 20 ms.
+#: EKF_STATUS_REPORT (ExtNav, 27.09.2026): the supervisor exits the
+#: segment when the EKF loses a valid horizontal position. 5 Hz is enough
+#: for a window measured in seconds, and cheap on the serial link.
+EKF_HZ = 5
+#: How much attitude / position history is kept for the ExtNav estimator,
+#: which needs the attitude at the CAPTURE time of a frame (§4 of the
+#: brief), not the latest one. At 20 Hz, 400 samples = 20 s.
+HIST_SAMPLES = 400
+#: Beyond this, a requested time is outside what the history can answer:
+#: the estimator gets None, never the nearest sample presented as exact.
+HIST_MAX_GAP_S = 0.25
+#: SET_POSITION_TARGET_LOCAL_NED with position + yaw only: velocities,
+#: accelerations and yaw rate ignored. Values from the MAVLink enum
+#: POSITION_TARGET_TYPEMASK (checked in pymavlink, not from memory).
+POS_TARGET_MASK_POS_YAW = (
+    8 | 16 | 32          # VX, VY, VZ ignore
+    | 64 | 128 | 256     # AX, AY, AZ ignore
+    | 2048)              # YAW_RATE ignore
 
 # --- Moduri ArduCopter ----------------------------------------------------
 MODE_STABILIZE = 0
@@ -87,7 +106,17 @@ class Vehicle:
 
         # stare vehicul (NED, metri)
         self.x = self.y = self.z = 0.0
-        self.vz = 0.0
+        self.vx = self.vy = self.vz = 0.0
+        #: ExtNav (27.09.2026): short histories with the loop clock, so the
+        #: estimator can ask "where was the vehicle / how was it tilted when
+        #: this frame was captured" - see attitude_at() / position_at().
+        self.att_hist = collections.deque(maxlen=HIST_SAMPLES)
+        self.pos_hist = collections.deque(maxlen=HIST_SAMPLES)
+        #: EKF_STATUS_REPORT: flags bitmask and variances, or None until
+        #: the first report. Unknown is not "ok".
+        self.ekf_flags = None
+        self.ekf_t = None
+        self.ekf_pos_horiz_var = None
         self.rel_alt = None          # deasupra home, din GLOBAL_POSITION_INT
         self.lat = self.lon = None   # grade; necesare pentru geofence (15.2.4)
         self.roll = self.pitch = self.yaw = 0.0
@@ -126,6 +155,8 @@ class Vehicle:
         # statistici de emisie
         self.n_lt = 0
         self.n_ds = 0
+        self.n_vpe = 0          # VISION_POSITION_ESTIMATE
+        self.n_pos_target = 0   # SET_POSITION_TARGET_LOCAL_NED
 
         self.ds_extended = True
         self.m = None
@@ -315,6 +346,7 @@ class Vehicle:
             # ~0.5 s pana la dezarmare, deci il cerem rapid.
             (mavutil.mavlink.MAVLINK_MSG_ID_EXTENDED_SYS_STATE, self.landed_hz),
             (mavutil.mavlink.MAVLINK_MSG_ID_RC_CHANNELS, RC_HZ),
+            (mavutil.mavlink.MAVLINK_MSG_ID_EKF_STATUS_REPORT, EKF_HZ),
         ]
         for msg_id, hz in rates:
             self.m.mav.command_long_send(
@@ -356,11 +388,15 @@ class Vehicle:
             if hasattr(msg, 'time_boot_ms'):
                 self.time_boot_ms = msg.time_boot_ms
             if t == 'LOCAL_POSITION_NED':
-                self.x, self.y, self.z = msg.x, msg.y, msg.z
-                self.vz = msg.vz
-                self.have_pos = True
+                self._on_position(time.monotonic(), msg.x, msg.y, msg.z,
+                                  msg.vx, msg.vy, msg.vz)
             elif t == 'ATTITUDE':
-                self.roll, self.pitch, self.yaw = msg.roll, msg.pitch, msg.yaw
+                self._on_attitude(time.monotonic(), msg.roll, msg.pitch,
+                                  msg.yaw)
+            elif t == 'EKF_STATUS_REPORT':
+                self.ekf_flags = msg.flags
+                self.ekf_pos_horiz_var = msg.pos_horiz_variance
+                self.ekf_t = time.monotonic()
             elif t == 'GLOBAL_POSITION_INT':
                 self.rel_alt = msg.relative_alt / 1000.0
                 if msg.lat != 0 or msg.lon != 0:
@@ -412,6 +448,67 @@ class Vehicle:
             self.ekf_src_ack = msg.result
             if msg.result != mavutil.mavlink.MAV_RESULT_ACCEPTED:
                 print(f"!! SET_EKF_SOURCE_SET respins (result={msg.result})")
+
+    def _on_position(self, t, x, y, z, vx, vy, vz):
+        self.x, self.y, self.z = x, y, z
+        self.vx, self.vy, self.vz = vx, vy, vz
+        self.have_pos = True
+        self.pos_hist.append((t, x, y, z))
+
+    def _on_attitude(self, t, roll, pitch, yaw):
+        self.roll, self.pitch, self.yaw = roll, pitch, yaw
+        self.att_hist.append((t, roll, pitch, yaw))
+
+    @staticmethod
+    def _interp(hist, t, wrap):
+        """Linear interpolation of a (t, *values) history at time t.
+
+        None when the history is empty or t is more than HIST_MAX_GAP_S
+        outside it: an answer for a time we did not observe would be a
+        guess presented as a measurement. Indices in `wrap` are angles,
+        interpolated through the shortest arc."""
+        if not hist:
+            return None
+        if t <= hist[0][0]:
+            return (tuple(hist[0][1:]) if hist[0][0] - t <= HIST_MAX_GAP_S
+                    else None)
+        if t >= hist[-1][0]:
+            return (tuple(hist[-1][1:]) if t - hist[-1][0] <= HIST_MAX_GAP_S
+                    else None)
+        prev = hist[0]
+        for cur in hist:
+            if cur[0] >= t:
+                break
+            prev = cur
+        span = cur[0] - prev[0]
+        f = 0.0 if span <= 0 else (t - prev[0]) / span
+        out = []
+        for i in range(1, len(cur)):
+            a, b = prev[i], cur[i]
+            if (i - 1) in wrap:
+                d = (b - a + math.pi) % (2 * math.pi) - math.pi
+                out.append((a + f * d + math.pi) % (2 * math.pi) - math.pi)
+            else:
+                out.append(a + f * (b - a))
+        return tuple(out)
+
+    def attitude_at(self, t):
+        """(roll, pitch, yaw) at loop time t, interpolated, or None."""
+        return self._interp(self.att_hist, t, wrap=(0, 1, 2))
+
+    def position_at(self, t):
+        """(x, y, z) NED at loop time t, interpolated, or None."""
+        return self._interp(self.pos_hist, t, wrap=())
+
+    def ekf_pos_horiz_ok(self):
+        """True/False from the last EKF_STATUS_REPORT; None if none yet.
+
+        Relative horizontal position is what ExtNav gives (no GPS, no
+        absolute frame): EKF_POS_HORIZ_REL. Unknown stays None - the
+        supervisor decides what to do with "no report", not this method."""
+        if self.ekf_flags is None:
+            return None
+        return bool(self.ekf_flags & mavutil.mavlink.EKF_POS_HORIZ_REL)
 
     @property
     def alt(self):
@@ -523,6 +620,32 @@ class Vehicle:
             self.m.target_system, self.m.target_component,
             mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0,
             0, 0, 0, 0, 0, 0, alt_above_home_m)
+
+    def send_vision_position_estimate(self, usec, x, y, z, roll, pitch, yaw):
+        """VISION_POSITION_ESTIMATE (ExtNav): the vehicle's pose in the
+        marker frame, at capture time `usec`. Consumed by AP_VisualOdom
+        with VISO_TYPE 1 and by EKF3 with EK3_SRC2_POSXY 6."""
+        ok = self._send(self.m.mav.vision_position_estimate_send,
+                        int(usec), float(x), float(y), float(z),
+                        float(roll), float(pitch), float(yaw))
+        if ok:
+            self.n_vpe += 1
+        return ok
+
+    def send_position_target(self, x, y, z, yaw):
+        """GUIDED setpoint: position (NED, metres) + yaw (rad), nothing
+        else. Frame LOCAL_NED = the EKF origin - which under ExtNav is the
+        marker (§3 of the brief: consigns (0, 0, z))."""
+        ok = self._send(
+            self.m.mav.set_position_target_local_ned_send,
+            int(time.monotonic() * 1000) & 0xFFFFFFFF,
+            self.m.target_system, self.m.target_component,
+            mavutil.mavlink.MAV_FRAME_LOCAL_NED, POS_TARGET_MASK_POS_YAW,
+            float(x), float(y), float(z), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            float(yaw), 0.0)
+        if ok:
+            self.n_pos_target += 1
+        return ok
 
     def send_landing_target(self, angle_x, angle_y, dist):
         ok = self._send(
