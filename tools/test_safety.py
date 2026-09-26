@@ -155,6 +155,50 @@ def test_incercarea_noua_elibereaza_zavorul_confirmat():
     return "BRAKE confirmat -> IDLE -> ACQUIRE nou: eliberat, re-armat, vigilent"
 
 
+def test_B2_zavorul_pasiv_sau_epuizat_se_elibereaza_la_incercare_noua():
+    """26.09.2026 seara (B2), reprodus offline. BRAKE pierdut pe serial,
+    pilotul pune STABILIZE in fereastra de reincercare -> PASIV, dar
+    NECONFIRMAT. Regula veche elibera doar zavorul confirmat: la
+    incercarea noua supervizorul ramanea zavorat, iesea din update()
+    inaintea monitoarelor, si coborarea noua rula FARA supraveghere:
+    marker pierdut 3 s -> zero comenzi. La fel dupa mode_fail (epuizat)."""
+    from nova.safety import MODE_RETRY_MAX
+    from nova.vehicle import MODE_STABILIZE
+
+    def incercare_noua_supravegheata(v, sup):
+        v.accept_mode = True
+        v.mode = MODE_LAND
+        sup.update(300.0, 0.05, 'ACQUIRE')
+        assert sup.latched == Action.NONE and sup.armed and not sup.passive, (
+            Action.NAMES[sup.latched], sup.armed, sup.passive)
+        assert any(e.monitor == 'latch_release' for e in sup.log)
+        sup.update(300.1, 0.05, 'DESCEND_TRACK')
+        n = len(v.mode_reqs)
+        act = sup.update(301.0, 0.9, 'DESCEND_TRACK', miss_streak=9)
+        assert act == Action.BRAKE and v.mode_reqs[n:] == [MODE_BRAKE], (
+            act, v.mode_reqs[n:])
+
+    # 1. pasiv, neconfirmat: al treilea mod in fereastra de reincercare
+    v, sup = build()
+    v.accept_mode = False
+    sup.update(100.7, 0.6, 'DESCEND_TRACK')          # BRAKE cerut, pierdut
+    v.mode = MODE_STABILIZE                          # pilotul, din comutator
+    sup.update(101.0, 1.0, 'DESCEND_TRACK')
+    sup.update(101.2, 1.0, 'IDLE')
+    assert sup.passive and sup._mode_confirmed is None
+    incercare_noua_supravegheata(v, sup)
+    # 2. epuizat: mode_fail dupa MODE_RETRY_MAX, FC ramas in LAND
+    v, sup = build()
+    v.accept_mode = False
+    sup.update(100.7, 0.6, 'DESCEND_TRACK')
+    for i in range(12):
+        sup.update(101.0 + 0.5 * i, 1.0, 'DESCEND_TRACK')
+    assert any(e.monitor == 'mode_fail' for e in sup.log)
+    sup.update(110.0, 1.0, 'IDLE')
+    incercare_noua_supravegheata(v, sup)
+    return "pasiv neconfirmat si epuizat: eliberat la incercare noua, BRAKE din nou la marker pierdut"
+
+
 def test_zavorul_neconfirmat_NU_se_elibereaza():
     """NEGATIV: daca FC-ul nu a adoptat inca modul comandat, o cerere noua
     nu are voie sa lase actiunea de siguranta nelivrata."""
@@ -619,6 +663,8 @@ TESTS = [
      test_fara_contor_ramane_regula_pe_timp),
     ('INCIDENT: zavorul confirmat nu retrimite peste pilot/failsafe',
      test_INCIDENT_zavorul_confirmat_nu_retrimite_peste_pilot_sau_failsafe),
+    ('B2: zavorul pasiv/epuizat se elibereaza la incercare noua',
+     test_B2_zavorul_pasiv_sau_epuizat_se_elibereaza_la_incercare_noua),
     ('B1: supervizorul PASIV nu escaladeaza la override',
      test_B1_supervizorul_pasiv_nu_escaladeaza_la_override),
     ('NEGATIV: zavorul neconfirmat inca retrimite pana la plafon',

@@ -312,12 +312,19 @@ class SafetySupervisor:
         new_attempt = (phase in AUTONOMOUS_PHASES
                        and self._last_phase not in AUTONOMOUS_PHASES)
         self._last_phase = phase
+        # B2 (26.09.2026 seara): "confirmed" was too narrow. A latch that
+        # went PASSIVE before confirmation (third mode in the retry window)
+        # or that gave up (mode_fail) sends nothing either - keeping it
+        # only blinds the next attempt: the latched branch returns before
+        # the monitors, so the new descent would run with NO supervision.
+        # Reproduced offline: BRAKE lost on serial + pilot STABILIZE, new
+        # attempt accepted, marker lost 3 s -> zero commands.
         if (self.latched != Action.NONE and new_attempt
-                and self._mode_confirmed is not None):
+                and self._latch_final()):
             self._emit(now, 'latch_release', self.latched,
                        f"incercare noua acceptata de poarta ({phase}): "
-                       f"zavorul {Action.NAMES[self.latched]}, confirmat, "
-                       f"se elibereaza", phase)
+                       f"zavorul {Action.NAMES[self.latched]} "
+                       f"({self._latch_state()}) se elibereaza", phase)
             self.latched = Action.NONE
             self.latched_monitor = None
             self._want_mode = None
@@ -376,6 +383,24 @@ class SafetySupervisor:
         if worst != Action.NONE:
             self._trigger(now, worst, monitor, detail, phase)
         return worst
+
+    def _latch_state(self):
+        if self._mode_confirmed is not None:
+            return 'confirmat'
+        if self.passive or self._want_mode is None:
+            return 'pasiv'
+        if self._mode_req_n > MODE_RETRY_MAX:
+            return 'epuizat'
+        return 'in livrare'
+
+    def _latch_final(self):
+        """True when nothing more will ever be sent for the latched action:
+        confirmed by the FC, taken by the pilot / a failsafe (passive), or
+        given up after MODE_RETRY_MAX (mode_fail). Only such a latch may be
+        released by a new attempt. A latch still being delivered (FC in the
+        mode it had, retries left) is kept: a safety action is not lost
+        because a switch was flipped."""
+        return self._latch_state() != 'in livrare'
 
     def _trigger(self, now, action, monitor, detail, phase):
         self.latched = action
