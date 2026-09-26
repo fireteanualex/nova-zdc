@@ -178,6 +178,16 @@ SEARCH_DOWNSCALE = 2
 #: redusa se cauta si la rezolutia plina. Achizitia la 10-12 m dureaza deci
 #: pana la N cadre; dupa prima gasire preia ROI-ul, la orice distanta.
 SEARCH_FULLRES_EVERY = 4
+#: Step 1 (§5.65): above this side (px) the marker is "big" - it no longer
+#: fits reliably in the 640x480 ROI once rotated (at 1 m it has 350-500 px),
+#: and a ROI miss used to cost 90-330 ms per frame. Big markers are found
+#: on the whole frame reduced so the marker lands at ~SEARCH_TARGET_PX,
+#: no ROI involved, corners refined at full resolution.
+BIG_MARKER_PX = 150
+SEARCH_TARGET_PX = 110
+#: After this many consecutive misses the remembered marker size is
+#: dropped and the search returns to acquisition.
+FORGET_SIZE_AFTER_MISSES = 10
 #: Peste cat din cadru consideram ca markerul nu mai incape (§5.2, pe cutie).
 #: Masurat in Gazebo, detectia tine pana la fill ~0.91 la rotatie zero si
 #: ~0.83 la 41 grade, deci pragul asta nu e cel care leaga - `detectMarkers`
@@ -244,8 +254,9 @@ class StageTimer:
     p50/p99 in ms. Attached by PiDetector to the source and the detector,
     which record into it only if it is present (`timer is not None`)."""
 
-    STAGES = ('achizitie', 'gri', 'varsta', 'roi', 'scalare', 'detect_redus',
-              'rafinare', 'detect_plin', 'geometrie', 'ring', 'total')
+    STAGES = ('achizitie', 'gri', 'varsta', 'roi', 'scalare', 'detect_mare',
+              'detect_redus', 'rafinare', 'detect_plin', 'geometrie', 'ring',
+              'total')
 
     def __init__(self, window=300):
         self.window = window
@@ -460,6 +471,20 @@ class ArucoMarkerDetector:
         self.roi_size_px = tuple(int(x) for x in roi_size_px)
         self.cam = calib.camera_model(self.marker_size_m)
 
+        # Step 4 (§5.65): a second detector for TRACKING, when the expected
+        # marker size is known. One adaptive-threshold window instead of
+        # three (adaptiveThreshWinSizeMin == Max) and perimeter limits set
+        # from the expected side, so the candidate list is short. The
+        # acquisition detector below keeps default parameters: with an
+        # unknown size, narrowing would cost detections, not time.
+        self._track_params = cv2.aruco.DetectorParameters()
+        self._track_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        self._track_params.adaptiveThreshWinSizeMin = 23
+        self._track_params.adaptiveThreshWinSizeMax = 23
+        self.detector_track = cv2.aruco.ArucoDetector(
+            cv2.aruco.getPredefinedDictionary(ARUCO_DICT), self._track_params)
+        self.last_side_px = None      # step 1: size of the previous marker
+        self.n_big = 0                # step 1: hits on the reduced whole frame
         params = cv2.aruco.DetectorParameters()
         # Colturi sub-pixel: la 30 px, o eroare de 0.5 px pe colt inseamna
         # ~1.7% pe latura, deci ~1.7% pe distanta. Merita costul.
@@ -508,7 +533,9 @@ class ArucoMarkerDetector:
     def _roi(self, shape):
         """(x0, y0, x1, y1) daca merita ROI, altfel None."""
         if (self.last_center is None or self.last_range_m is None
-                or self.last_range_m >= self.roi_below_m):
+                or self.last_range_m >= self.roi_below_m
+                or (self.last_side_px is not None
+                    and self.last_side_px >= BIG_MARKER_PX)):
             return None
         h, w = shape[:2]
         rw, rh = self.roi_size_px
@@ -524,11 +551,33 @@ class ArucoMarkerDetector:
 
     def _find(self, gray):
         """(colturi 4x2 in coordonatele cadrului intreg, folosit_roi)"""
+        # Step 1 (§5.65): big marker -> whole frame reduced to ~target px,
+        # no ROI. Cost is independent of how far the marker moved between
+        # frames, which is exactly what a ROI could not offer at 1 m.
+        side = self.last_side_px
+        if side is not None and side >= BIG_MARKER_PX:
+            k = max(2, min(8, int(round(side / SEARCH_TARGET_PX))))
+            t0 = time.perf_counter()
+            small = cv2.resize(gray, None, fx=1.0 / k, fy=1.0 / k,
+                               interpolation=cv2.INTER_AREA)
+            self._t('scalare', t0)
+            t0 = time.perf_counter()
+            c_small = self._detect_id(small, expected_side_px=side / k)
+            self._t('detect_mare', t0)
+            if c_small is not None:
+                self.n_big += 1
+                t0 = time.perf_counter()
+                c = self._refine_subpix(gray, c_small * float(k), k)
+                self._t('rafinare', t0)
+                return c, False
+            # not where it was expected: fall through to acquisition
+
         roi = self._roi(gray.shape)
         if roi is not None:
             x0, y0, x1, y1 = roi
             t0 = time.perf_counter()
-            corners = self._detect_id(gray[y0:y1, x0:x1])
+            corners = self._detect_id(gray[y0:y1, x0:x1],
+                                      expected_side_px=self.last_side_px)
             self._t('roi', t0)
             if corners is not None:
                 self.n_roi += 1
@@ -594,8 +643,31 @@ class ArucoMarkerDetector:
             return None
         return c + np.array([x0, y0], dtype=np.float32)
 
-    def _detect_id(self, img):
-        corners, ids, _ = self.detector.detectMarkers(img)
+    @staticmethod
+    def _refine_subpix(gray, corners, k):
+        """Corners found on a 1/k image, refined on the full-resolution
+        frame with cornerSubPix (what CORNER_REFINE_SUBPIX does inside
+        ArUco). Window ~ the scale factor: the scaled corner is within
+        ~k/2 px of the true one."""
+        c = np.ascontiguousarray(corners, dtype=np.float32).reshape(-1, 1, 2)
+        win = int(max(3, k + 2))
+        crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.01)
+        cv2.cornerSubPix(gray, c, (win, win), (-1, -1), crit)
+        return c.reshape(4, 2)
+
+    def _detect_id(self, img, expected_side_px=None):
+        if expected_side_px is not None and expected_side_px > 0:
+            # Step 4: tracking parameters from the expected size. Perimeter
+            # rates are relative to the larger image dimension.
+            maxdim = float(max(img.shape[:2]))
+            perim = 4.0 * float(expected_side_px)
+            p = self._track_params
+            p.minMarkerPerimeterRate = max(0.01, 0.4 * perim / maxdim)
+            p.maxMarkerPerimeterRate = min(4.0, max(0.1, 2.5 * perim / maxdim))
+            self.detector_track.setDetectorParameters(p)
+            corners, ids, _ = self.detector_track.detectMarkers(img)
+        else:
+            corners, ids, _ = self.detector.detectMarkers(img)
         if ids is None:
             return None
         for c, i in zip(corners, ids.flatten()):
@@ -628,6 +700,8 @@ class ArucoMarkerDetector:
         # Ratari CONSECUTIVE - regula de abort a echipei (safety,
         # DETECTION_MAX_MISSES). O singura atribuire, citita din alt fir.
         self.miss_streak = 0 if det is not None else self.miss_streak + 1
+        if self.miss_streak >= FORGET_SIZE_AFTER_MISSES:
+            self.last_side_px = None      # back to acquisition search
         return det
 
     def _detect(self, gray, t_capture):
@@ -647,6 +721,7 @@ class ArucoMarkerDetector:
         corners are known. Split out only so it can be timed as one stage."""
 
         marker_px = self.side_px(corners)
+        self.last_side_px = marker_px
         # Cat din cadru ocupa CUTIA colturilor. Se ia din forma reala a
         # cadrului (gray.shape), nu din VFOV-ul de fisa tehnica: cele doua
         # difera cu ~5% la 2304x1296, iar aici masuram pixeli, nu unghiuri
@@ -729,6 +804,7 @@ class ArucoMarkerDetector:
             'roi_misses': self.n_roi_miss,
             'half_hits': self.n_half,
             'full_hits': self.n_full,
+            'big_hits': self.n_big,
             'rejected_fit': self.n_rejected_fit,
             'rejected_other_id': self.n_rejected_id,
             'lum': self.last_lum,

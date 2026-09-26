@@ -744,6 +744,58 @@ def test_bench_offline_ruleaza_cele_trei_pipeline_uri():
     return "plain/aruco/pi: 4/6 fiecare; 4 variante; etape cu achizitie"
 
 
+def test_regresie_1m_marker_mare_deplasat_intre_cadre():
+    """The 1 m bug (§5.65): a 350-500 px marker that moves between frames
+    left the 640x480 ROI, and the fallback cost 90-330 ms per frame. With
+    step 1 a big marker is searched on the whole frame reduced to ~110 px,
+    no ROI, so a jump of hundreds of px is found in one pass - and the
+    corners, refined at full resolution, match the full-resolution
+    detector within 0.5 px."""
+    from nova.detector_pi import BIG_MARKER_PX
+    cal = synthetic_calibration()
+    f1, _ = render(cal, R_FLAT, (0.0, 0.0, 1.0))          # ~448 px
+    t2 = (0.45, 0.20, 1.0)                                  # ~420 px jump
+    f2, c2 = render(cal, R_FLAT, t2)
+    d = ArucoMarkerDetector(cal)
+    d1 = d.detect(f1, 0.0)
+    assert d1 is not None and d1.marker_px >= BIG_MARKER_PX, d1
+    d2 = d.detect(f2, 0.033)
+    assert d2 is not None, "markerul mare deplasat NU a fost gasit"
+    assert d.n_big == 1 and d.n_roi == 0, (d.n_big, d.n_roi, d.n_roi_miss)
+    check_det(d2, t2, corners_px=c2)
+    # full-resolution reference: same corners within 0.5 px
+    ref = ArucoMarkerDetector(cal, search_downscale=1, roi_below_m=0.0)
+    r2 = ref.detect(f2, 0.033)
+    err = float(np.max(np.abs(ref.last_corners - d.last_corners)))
+    assert err < 0.5, f"colturi rafinate la {err:.2f} px de rezolutia plina"
+    assert abs(r2.distance_m - d2.distance_m) < 0.005
+    # after enough misses the size is forgotten and acquisition resumes
+    gol = np.full_like(f1, 110)
+    for i in range(12):
+        d.detect(gol, 0.1 * i)
+    assert d.last_side_px is None
+    assert d.detect(f1, 2.0) is not None
+    return (f"{d1.marker_px:.0f} px, salt ~420 px -> gasit pe cadrul redus, "
+            f"colturi la {err:.2f} px de rezolutia plina")
+
+
+def test_parametrii_de_urmarire_nu_pierd_markerul_in_roi():
+    """Step 4: the tracking detector (one threshold window, perimeter
+    limits from the expected size) must find the same marker the
+    acquisition detector found, in the ROI path, with the same corners."""
+    cal = synthetic_calibration()
+    t = (0.1, -0.1, 4.0)
+    frame, corners = render(cal, R_FLAT, t)
+    d = ArucoMarkerDetector(cal)
+    a = d.detect(frame, 0.0)                 # acquisition (default params)
+    b = d.detect(frame, 0.033)               # ROI + tracking params
+    assert a is not None and b is not None and d.n_roi == 1
+    err = float(np.max(np.abs(d.last_corners - corners)))
+    assert err < 0.5, err
+    assert abs(a.distance_m - b.distance_m) < 0.002
+    return f"ROI cu parametri de urmarire: colturi la {err:.2f} px"
+
+
 def test_luminozitatea_ajunge_in_statistici():
     """In zbor nu exista NICIO cifra despre expunere in log - cauza
     probabila (imagine supraexpusa) a ramas o ipoteza. `lum` o face
@@ -774,6 +826,10 @@ TESTS = [
      test_verificarea_asteapta_aplicarea_controlului),
     ('ratarile consecutive pe clasa din productie',
      test_ratarile_consecutive_pe_clasa_din_productie),
+    ('REGRESIE 1 m: marker mare deplasat intre cadre',
+     test_regresie_1m_marker_mare_deplasat_intre_cadre),
+    ('parametrii de urmarire nu pierd markerul in ROI',
+     test_parametrii_de_urmarire_nu_pierd_markerul_in_roi),
     ('timpii pe etape, pe clasele din productie',
      test_timpii_pe_etape_se_masoara_pe_clasele_din_productie),
     ('bench offline: cele trei pipeline-uri',
