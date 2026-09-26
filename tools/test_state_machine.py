@@ -476,15 +476,32 @@ def test_abortul_pilotului_nu_se_bate_cu_pilotul():
     run(v, det, sm, args, seconds=3.0)
     assert len(v.mode_reqs) == n1, f"a retrimis peste pilot: {v.mode_reqs[n1:]}"
 
+    # Fara GPS lock FC-ul refuza LOITER (cere pozitie) si ar ramane in LAND
+    # cu mansele moarte: dupa plafon se trece pe ALT_HOLD, care nu cere
+    # pozitie. Apoi nimic - nu se insista la nesfarsit peste un FC care refuza.
+    from nova.vehicle import MODE_ALT_HOLD
     v, det, sm, events, args = build()
     run(v, det, sm, args, stop_states=(State.DESCEND_TRACK,))
     v.request_mode = lambda m: v.mode_reqs.append(m)
     base = len(v.mode_reqs)
     v.set_aux(1000)
-    run(v, det, sm, args, seconds=3.0)          # FC ramane in LAND
+    run(v, det, sm, args, seconds=5.0)          # FC ramane in LAND
     sent = v.mode_reqs[base:]
-    assert sent == [MODE_LOITER] * ABORT_MODE_TRIES, sent
-    return f"LAND: {ABORT_MODE_TRIES} incercari; al treilea mod: zero"
+    assert sent == ([MODE_LOITER] * ABORT_MODE_TRIES
+                    + [MODE_ALT_HOLD] * ABORT_MODE_TRIES), sent
+    assert [i for n, i in events if n == 'abort_fallback'] == [{'mode': MODE_ALT_HOLD}]
+    # ALT_HOLD acceptat: se opreste acolo
+    v, det, sm, events, args = build()
+    run(v, det, sm, args, stop_states=(State.DESCEND_TRACK,))
+    v.request_mode = lambda m: (v.mode_reqs.append(m),
+                                setattr(v, 'mode', m) if m == MODE_ALT_HOLD else None)
+    base = len(v.mode_reqs)
+    v.set_aux(1000)
+    run(v, det, sm, args, seconds=5.0)
+    assert v.mode == MODE_ALT_HOLD
+    assert v.mode_reqs[base:] == [MODE_LOITER] * ABORT_MODE_TRIES + [MODE_ALT_HOLD]
+    return (f"LAND: {ABORT_MODE_TRIES}x LOITER, apoi {ABORT_MODE_TRIES}x ALT_HOLD; "
+            f"al treilea mod: zero")
 
 
 def test_AUX_jos_peste_BRAKE_confirmat_in_cablajul_real():

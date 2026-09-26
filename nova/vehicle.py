@@ -42,6 +42,8 @@ RC_HZ = 50            # 15.3.1: implicit RC_CHANNELS vine la 10 Hz, adica
                       # total de 250 ms. La 50 Hz raman 20 ms.
 
 # --- Moduri ArduCopter ----------------------------------------------------
+MODE_STABILIZE = 0
+MODE_ALT_HOLD = 2
 MODE_GUIDED = 4
 MODE_LOITER = 5
 MODE_RTL = 6
@@ -50,7 +52,7 @@ MODE_BRAKE = 17
 
 MODE_NAME = {MODE_GUIDED: 'GUIDED', MODE_LOITER: 'LOITER', MODE_RTL: 'RTL',
              MODE_LAND: 'LAND', MODE_BRAKE: 'BRAKE',
-             2: 'ALT_HOLD', 0: 'STABILIZE'}
+             MODE_ALT_HOLD: 'ALT_HOLD', MODE_STABILIZE: 'STABILIZE'}
 
 # Reincercarea PARAM_SET pana la confirmare prin PARAM_VALUE. Parametrii pe
 # care ii comutam in zbor (PLND_ENABLED) sunt critici pentru siguranta, deci

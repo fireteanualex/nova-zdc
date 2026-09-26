@@ -54,7 +54,8 @@ import math
 import time
 from dataclasses import dataclass
 
-from .vehicle import MODE_BRAKE, MODE_GUIDED, MODE_LAND, MODE_LOITER, MODE_RTL
+from .vehicle import (MODE_ALT_HOLD, MODE_BRAKE, MODE_GUIDED, MODE_LAND,
+                      MODE_LOITER, MODE_RTL)
 
 # --- Praguri ale masinii de stari ----------------------------------------
 #
@@ -111,6 +112,11 @@ MODE_RETRY_S = 0.15       # reincercare DO_SET_MODE
 #: had when the pilot lowered the switch. A THIRD mode means the pilot or
 #: a failsafe already acted - we stop, same rule as the supervisor (§5.66).
 ABORT_MODE_TRIES = 5
+#: Modes asked for by the pilot abort, in order. LOITER needs a position
+#: estimate; without GPS lock (the test field, §5.4) the FC refuses it and
+#: would stay in LAND with the sticks dead. ALT_HOLD needs none: sticks
+#: live, altitude held at mid throttle. Each mode gets ABORT_MODE_TRIES.
+PILOT_ABORT_MODES = (MODE_LOITER, MODE_ALT_HOLD)
 #: Phases in which AUX down is a pilot abort. Positive list (§5.25): a new
 #: phase is not abortable by the switch until someone decides it is.
 PILOT_ABORT_PHASES = ('ACQUIRE', 'DESCEND_TRACK', 'SCORING_CAPTURE',
@@ -236,6 +242,7 @@ class LandingStateMachine:
         self._abort_from_mode = None    # pilot abort: FC mode at the switch
         self._abort_req_t = None
         self._abort_req_n = 0
+        self._abort_stage = 0
 
         # Tot ce tine de timp foloseste ceasul injectat prin update() /
         # on_detection(), niciodata time.monotonic() direct din interiorul
@@ -294,6 +301,7 @@ class LandingStateMachine:
         self._abort_from_mode = None
         self._abort_req_t = None
         self._abort_req_n = 0
+        self._abort_stage = 0
 
     # -- incadrare: cat din cadru ocupa markerul ---------------------------
     def _incadrare(self, det, prag, prag_px):
@@ -417,8 +425,9 @@ class LandingStateMachine:
         self._abort_from_mode = self.v.mode
         self._abort_req_t = now
         self._abort_req_n = 1
+        self._abort_stage = 0
         self._aux_release_pending = False
-        self.v.request_mode(MODE_LOITER)
+        self.v.request_mode(PILOT_ABORT_MODES[0])
         self.set_state(State.ABORT, 'AUX jos: abort cerut de pilot -> LOITER')
         self._emit('abort', reason='AUX jos: abort cerut de pilot',
                    action='LOITER')
@@ -433,13 +442,22 @@ class LandingStateMachine:
         if self._abort_from_mode is None or self.v.mode != self._abort_from_mode:
             self._abort_from_mode = None
             return
-        if self._abort_req_n >= ABORT_MODE_TRIES:
-            return
         if now - self._abort_req_t < MODE_RETRY_S:
             return
+        if self._abort_req_n >= ABORT_MODE_TRIES:
+            # Still in the old mode after all tries: the FC refuses this
+            # mode (LOITER without position). Next mode in the list.
+            if self._abort_stage + 1 >= len(PILOT_ABORT_MODES):
+                return
+            self._abort_stage += 1
+            self._abort_req_n = 0
+            self._emit('abort_fallback', mode=PILOT_ABORT_MODES[self._abort_stage])
+            if self.verbose:
+                print(f"  !! FC-ul refuza modul; incerc "
+                      f"{PILOT_ABORT_MODES[self._abort_stage]}")
         self._abort_req_t = now
         self._abort_req_n += 1
-        self.v.request_mode(MODE_LOITER)
+        self.v.request_mode(PILOT_ABORT_MODES[self._abort_stage])
 
     def abort_to_rtl(self, reason, now=None):
         """Singura cale catre RTL. Dezactiveaza intai PLND: RTL urca la
