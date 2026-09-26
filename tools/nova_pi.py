@@ -44,6 +44,10 @@ from pymavlink import mavutil                              # noqa: E402
 
 from nova import config as nova_config                     # noqa: E402
 from nova.authority import AuthorityScheduler              # noqa: E402
+from nova.ekf_source import EkfSourceManager               # noqa: E402
+from nova.extnav import ExtNavEstimator                    # noqa: E402
+from nova.extnav_landing import (ExtNavConfig, ExtNavLanding,  # noqa: E402
+                                 SRC2_PHASES)
 from nova import preview as preview_mod                    # noqa: E402
 from nova import race_screen                              # noqa: E402
 from nova import serial_guard                             # noqa: E402
@@ -53,7 +57,7 @@ from nova.detector_pi import (CameraCalibration, PiCameraSource,  # noqa: E402
 from nova.handover import HandoverGate
 from nova.scoring import ScoringRecorder                     # noqa: E402
 from nova.rc import OverrideMonitor                        # noqa: E402
-from nova.safety import SafetySupervisor                   # noqa: E402
+from nova.safety import ExtNavSupervisor, SafetySupervisor  # noqa: E402
 from nova.state_machine import (AUX_CHANNEL, AUX_HIGH_PWM,  # noqa: E402
                                 LandingStateMachine,
                                 SequenceConfig, run_loop)
@@ -67,6 +71,7 @@ def banner(cfg):
           f"{'' if cfg['_exists'] else '  (LIPSA - valori implicite)'}")
     print(f"  E0 autonomy_enabled = {flag}"
           + ("" if flag else "   -> orice handover va fi REFUZAT"))
+    print(f"  ghidare: {nova_config.guidance(cfg).upper()}")
     print(f"  marker ID {cfg['marker_id']}, {cfg['marker_size_m']} m | "
           f"calibrare {cfg['camera_calibration']}")
     print("=" * 64)
@@ -233,6 +238,67 @@ def anunta_modul(vehicle, gate, canal, prag):
         vehicle.m.mav.statustext_send(sev, text.encode('ascii', 'replace'))
     except Exception:                                           # noqa: BLE001
         pass
+
+
+def cablaj_extnav(a, cfg, vehicle, override, gate_kw, canal, prag,
+                  signal_reject, on_sm_event):
+    """The flight configuration since 27.09.2026 (REPROIECTARE_EXTNAV.md):
+    camera -> VISION_POSITION_ESTIMATE -> EKF3 SRC2 (no GNSS), GUIDED in
+    steps of h/2 down to 1 m, LAND vertical. No PLND, no LANDING_TARGET, no
+    DISTANCE_SENSOR, no authority modulation (4.8 names anyway). The EKF
+    source manager is instantiated HERE - it is the central piece now
+    (open item 36 closed on the onboard path)."""
+    if 'alt_min_m' not in gate_kw:
+        gate_kw = dict(gate_kw, alt_min_m=1.0)          # brief D6: 1-12 m
+    gate = HandoverGate(vehicle, override, on_reject=signal_reject,
+                        dist_max_m=None, detection_max_age_s=None,
+                        **gate_kw, monitor=a.monitor_motiv or a.monitor)
+    sup = ExtNavSupervisor(vehicle, override=override)
+    est = ExtNavEstimator(vehicle, verbose=False)
+    ekf = EkfSourceManager(vehicle, faze=SRC2_PHASES)
+    sm = ExtNavLanding(vehicle, est, ekf, gate,
+                       ExtNavConfig(aux_channel=canal, aux_high_pwm=prag),
+                       on_event=on_sm_event)
+    sup.on_exit = sm.request_exit
+    print("[bord] ghidare EXTNAV: camera -> VISION_POSITION_ESTIMATE -> EKF3 "
+          "SRC2; GUIDED in trepte h/2 pana la 1 m; LAND vertical. PLND 0.")
+    print(f"[bord] poarta: {gate_kw.get('alt_min_m', 1.0):.1f}-12 m, fara "
+          f"raza; segmentul porneste la 2 detectii consistente in <= 5 s")
+    if a.no_ascent:
+        print("[bord] --no-ascent: fara efect pe extnav (secventa se "
+              "incheie la contact oricum)")
+    if not a.no_authority:
+        print("[bord] modularea de autoritate NU exista pe extnav")
+    return gate, sup, sm, None
+
+
+def cablaj_plnd(a, cfg, vehicle, override, gate_kw, canal, prag,
+                signal_reject, on_sm_event):
+    """The previous path: LAND + precision landing (LANDING_TARGET +
+    DISTANCE_SENSOR). Kept for a comparison flight; the simulator flies it."""
+    monitor = a.monitor_motiv or a.monitor
+    gate = HandoverGate(vehicle, override, on_reject=signal_reject,
+                        **gate_kw, monitor=monitor)
+    sup = SafetySupervisor(vehicle, override=override)
+    # Modularea de autoritate pe praguri de altitudine. `None` o dezactiveaza
+    # complet: fara ea, vehiculul zboara cu reglajul lui nominal, ceea ce e
+    # exact comportamentul de dinainte.
+    autoritate = (None if a.no_authority
+                  else AuthorityScheduler(
+                      vehicle, allow_fast_descent=a.fast_descent))
+    seq = SequenceConfig(conv=a.conv, do_ascent=not a.no_ascent,
+                         aux_channel=canal, aux_high_pwm=prag)
+    if a.no_ascent:
+        # 15.2.7 oprit: secventa se incheie pe sol, fara NAV_TAKEOFF. Pentru
+        # PRIMA coborare autonoma pe un vehicul real asta e ce vrei - o
+        # urcare automata imediat dupa contact e exact genul de surpriza
+        # care te face sa tragi de manse. ArduPilot dezarmeaza singur din
+        # LAND dupa contact (§5.6).
+        print("[bord] 15.2.7 OPRIT (--no-ascent): secventa se incheie pe "
+              "sol, fara urcare la 5 m")
+    sm = LandingStateMachine(vehicle, seq, gate=gate, on_event=on_sm_event)
+    print("[bord] ghidare PLND (calea veche): LAND + precision landing")
+    return gate, sup, sm, autoritate
 
 
 def run_preflight(a):
@@ -413,13 +479,6 @@ def main():
     vehicle = Vehicle(a.conn, baud=baud).connect()
 
     override = OverrideMonitor(vehicle)
-    sup = SafetySupervisor(vehicle, override=override)
-    # Modularea de autoritate pe praguri de altitudine. `None` o dezactiveaza
-    # complet: fara ea, vehiculul zboara cu reglajul lui nominal, ceea ce e
-    # exact comportamentul de dinainte.
-    autoritate = (None if a.no_authority
-                  else AuthorityScheduler(
-                      vehicle, allow_fast_descent=a.fast_descent))
 
     def signal_reject(reason):
         if ecran is not None:
@@ -445,13 +504,7 @@ def main():
     if cfg.get('handover_alt_min_m') is not None:
         gate_kw['alt_min_m'] = float(cfg['handover_alt_min_m'])
         print(f"[bord] ATENTIE: handover acceptat de la "
-              f"{gate_kw['alt_min_m']:.1f} m (config handover_alt_min_m; "
-              f"implicit 5 m)")
-    gate = HandoverGate(vehicle, override, on_reject=signal_reject,
-                        **gate_kw, monitor=monitor)
-    if monitor:
-        print("[bord] MONITOR: poarta inchisa pentru rularea asta, oricare "
-              f"ar fi config/nova.json. Motiv: {gate.monitor_reason}")
+              f"{gate_kw['alt_min_m']:.1f} m (config handover_alt_min_m)")
     # Ecranul are nevoie de ultima detectie (px si varsta). O ia dintr-un
     # invelis peste detector, nu dintr-o modificare in run_loop: bucla e
     # validata si nu vrem sa o atingem pentru afisare.
@@ -469,21 +522,9 @@ def main():
     canal = int(a.aux_channel if a.aux_channel is not None
                 else cfg.get('aux_channel', AUX_CHANNEL))
     prag = int(cfg.get('aux_high_pwm', AUX_HIGH_PWM))
-    seq = SequenceConfig(conv=a.conv, do_ascent=not a.no_ascent,
-                         aux_channel=canal, aux_high_pwm=prag)
     print(f"[bord] handover: frontul crescator pe canalul RC {canal} "
           f"(sus = peste {prag} PWM)")
-    # Pe teren, fara retea, pilotul nu are alt ecran decat OSD-ul / GCS-ul:
-    # modul in care a pornit companion-ul se spune o data, prin FC.
-    anunta_modul(vehicle, gate, canal, prag)
-    if a.no_ascent:
-        # 15.2.7 oprit: secventa se incheie pe sol, fara NAV_TAKEOFF. Pentru
-        # PRIMA coborare autonoma pe un vehicul real asta e ce vrei - o
-        # urcare automata imediat dupa contact e exact genul de surpriza
-        # care te face sa tragi de manse. ArduPilot dezarmeaza singur din
-        # LAND dupa contact (§5.6).
-        print("[bord] 15.2.7 OPRIT (--no-ascent): secventa se incheie pe "
-              "sol, fara urcare la 5 m")
+
     def on_sm_event(name, info):
         rec.on_event(name, info)
         if name == 'abort' and info.get('action') == 'LOITER':
@@ -497,7 +538,18 @@ def main():
             except Exception:                               # noqa: BLE001
                 pass
 
-    sm = LandingStateMachine(vehicle, seq, gate=gate, on_event=on_sm_event)
+    # The guidance is decided in the versioned config, like E0 (§5.16):
+    # nothing on the command line can switch it.
+    cablaj = (cablaj_extnav if nova_config.guidance(cfg) == 'extnav'
+              else cablaj_plnd)
+    gate, sup, sm, autoritate = cablaj(a, cfg, vehicle, override, gate_kw,
+                                       canal, prag, signal_reject, on_sm_event)
+    if monitor:
+        print("[bord] MONITOR: poarta inchisa pentru rularea asta, oricare "
+              f"ar fi config/nova.json. Motiv: {gate.monitor_reason}")
+    # Pe teren, fara retea, pilotul nu are alt ecran decat OSD-ul / GCS-ul:
+    # modul in care a pornit companion-ul se spune o data, prin FC.
+    anunta_modul(vehicle, gate, canal, prag)
 
     ecran = race_screen.RaceScreen() if a.race else None
 

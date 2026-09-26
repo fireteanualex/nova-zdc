@@ -20,7 +20,8 @@
 #   pilotul aduce vehiculul la 5-12 m deasupra markerului, in LOITER
 #   pilotul ridica AUX (can. 8)   -> poarta valideaza si ACCEPTA sau REFUZA
 #   companion-ul cere LAND        -> asteapta confirmarea FC-ului
-#   coborare cu PLND              -> LANDING_TARGET la 20 Hz din camera
+#   coborare EXTNAV (din 27.09.2026) -> camera = pozitie EKF, GUIDED in trepte
+#   (calea PLND ramane in cod, config guidance=plnd)
 #   incadrarea atinge final_fill  -> coborare verticala, fara corectii
 #   contact                       -> pauza pe sol
 #   implicit AICI SE OPRESTE. Cu --full-sequence urmeaza urcarea la 5 m.
@@ -313,19 +314,22 @@ cat <<FIN
   =========================================================================
 
    Ce faci tu, pilotul:
-     1. decolezi si aduci vehiculul la 5-12 m DEASUPRA markerului,
-        in raza de 6.5 m lateral, in LOITER
+     1. decolezi si aduci vehiculul la 1-12 m DEASUPRA markerului, cu
+        markerul in cadrul camerei, in LOITER (cu GPS)
      2. manse libere, in neutru, ~1 s (poarta masoara in fereastra asta)
      3. ridici comutatorul de pe canalul RC $AUX_CH
-     4. MANA PE COMUTATORUL DE MOD pana se termina
+     4. MANA PE COMUTATORUL DE MOD pana se termina; THROTTLE LA MIJLOC
 
-   Ce face vehiculul:
-     LAND cu precision landing, coborare, contact, pauza pe sol
+   Ce face vehiculul (ghidare EXTNAV, config guidance):
+     cauta 2 detectii consistente (<= 5 s, un retry) - pana atunci NIMIC
+     ENGAGE: EKF pe setul 2 (camera = pozitie, fara GNSS), apoi GUIDED
+     MOVE deasupra markerului, verificare cu detectie proaspata,
+     coborare in trepte h/2 pana la 1 m, aliniere, captura, LAND vertical
+     contact -> ArduPilot dezarmeaza singur
+   Iesire (AUX jos, comutator de mod, supervizor): SRC1 inapoi, apoi
+     LOITER (sau ALT_HOLD daca LOITER e refuzat). Fara BRAKE, fara RTL.
 $(if [[ $FULL_SEQ -eq 1 ]]; then
-    echo "     apoi URCARE AUTOMATA la 5 m deasupra markerului (15.2.7)"
-  else
-    echo "     si SE OPRESTE. Fara urcare (--no-ascent)."
-    echo "     ArduPilot dezarmeaza singur dupa contact."
+    echo "     (--full-sequence: fara efect pe extnav)"
   fi)
 
    Daca poarta refuza, spune de ce si nu se intampla nimic. Un refuz

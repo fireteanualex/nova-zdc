@@ -355,22 +355,32 @@ pornește, după ce coborârea a mers o dată.
 Ce face vehiculul:
 
 ```
-pilotul aduce la 5–12 m deasupra markerului, LOITER, manșe libere ~1 s
-pilotul ridică AUX (8) → poarta ACCEPTĂ sau REFUZĂ, cu motiv
-companion-ul cere LAND → așteaptă confirmarea FC
-coborâre cu PLND       → LANDING_TARGET la 20 Hz
-încadrarea la 0.72     → coborâre verticală
-contact                → pauză pe sol → STOP
+pilotul aduce la 1–12 m deasupra markerului, LOITER (cu GPS), manșe libere ~1 s
+pilotul ridică AUX (8) → poarta (E0, manșe, altitudine) + GATE_SEARCH:
+                         2 detecții consistente în ≤ 5 s (un retry);
+                         fără → GATE_FAIL, rămâne LOITER, STATUSTEXT
+ENGAGE                 → EKF pe setul 2 (camera = poziție, fără GNSS),
+                         VISION_POSITION_ESTIMATE, GUIDED confirmat
+MOVE / CENTER_CHECK    → deasupra markerului; centrarea cere o detecție
+                         PROASPĂTĂ, nu doar EKF-ul
+DESCEND în trepte      → h/2 până la 1 m (8 → 4 → 2 → 1)
+FINAL_ALIGN la 1 m     → yaw aliniat, captura de scoring
+LAND                   → vertical (PLND 0) → contact → ArduPilot dezarmează
 
-AUX (8) JOS, oricând după acceptare → ABORT cerut de pilot: LOITER,
-                         manșele sunt ale pilotului. THROTTLE LA MIJLOC
+AUX (8) JOS, oricând după ENGAGE → EXIT: setul 1 înapoi (cu ACK), apoi
+                         LOITER (ALT_HOLD dacă e refuzat). THROTTLE LA MIJLOC
                          ÎNAINTE — LOITER cu throttle jos coboară repede.
 ```
 
-Două ieșiri din mâna companion-ului, independente: comutatorul AUX (prin
-companion, care cere LOITER și devine pasiv) și comutatorul de mod (direct
-în FC; companion-ul nu retrimite nimic peste el — §5.66). Din BRAKE manșele
-nu fac nimic, prin proiectul ArduPilot: se iese cu unul dintre comutatoare.
+Ghidarea e **ExtNav** din 27.09.2026 (`config/nova.json: guidance`;
+`REPROIECTARE_EXTNAV.md`). Calea veche cu PLND rămâne în cod
+(`guidance: "plnd"`) pentru un zbor de comparație; simulatorul e pe ea.
+Nu se trimit `LANDING_TARGET` / `DISTANCE_SENSOR`, PLND rămâne 0 permanent.
+
+Ieșirile, independente: comutatorul AUX (prin companion: SRC1, apoi
+LOITER) și comutatorul de mod (direct în FC; companion-ul vede modul pus
+de altcineva, restaurează SRC1 și nu mai trimite nimic — §5.66). Niciodată
+RTL cât timp EKF-ul e pe setul 2: home e în alt cadru după reset.
 
 ### Pe teren fără rețea
 
@@ -415,12 +425,11 @@ Apoi, la manșe:
 1. **Un LAND manual întâi.** Înainte de orice coborâre autonomă, aterizează
    o dată manual pe marker. Dacă vehiculul nu aterizează curat singur, PLND
    nu are ce repara.
-2. Decolezi și aduci vehiculul la **6–8 m deasupra markerului**. Fereastra
-   porții e 5–12 m; pe la 7 m ai și marjă de recuperare, și markerul bine în
-   cadru.
-3. Lateral, **sub ~2 m** de marker. Poarta acceptă 6.5 m, dar geometria nu:
-   la 7 m altitudine bugetul de înclinare dă ~2.6 m (§5.48). Mai aproape e
-   mai bine.
+2. Decolezi și aduci vehiculul la **3–8 m deasupra markerului** (prima
+   dată jos, apoi mai sus — brief §9). Fereastra porții e 1–12 m.
+3. Lateral, cu **markerul în cadru**: nu mai există rază fixă — dacă se
+   vede, e în rază. Mai aproape de verticală e mai bine (mai puțină
+   înclinare la MOVE).
 4. **LOITER**, manșe libere, ~1 s. Poarta măsoară amplitudinea în fereastra
    asta — dacă tremuri, refuză.
 5. Ridici comutatorul de pe **canalul 8**. Ori ACCEPT și pornește, ori REJECT cu motiv.
@@ -429,15 +438,20 @@ Apoi, la manșe:
 Ce vezi în log, dacă merge:
 
 ```
->> IDLE -> HANDOVER_CHECK   (AUX sus, alt 7.2 m)
->> HANDOVER_CHECK -> ACQUIRE
->> ACQUIRE -> DESCEND_TRACK
->> DESCEND_TRACK -> SCORING_CAPTURE   (incadrare 0.63)
->> SCORING_CAPTURE -> FINAL_DESCENT   (incadrare 0.72)
->> FINAL_DESCENT -> TOUCHDOWN_CONFIRM
+>> IDLE -> GATE_SEARCH   (AUX sus, alt 7.2 m)
+  == doua detectii consistente (0.83 m lateral): ENGAGE
+>> GATE_SEARCH -> ENGAGE   (alt 7.2 m)
+>> ENGAGE -> MOVE   (GUIDED confirmat, h 7.2 m)
+>> MOVE -> CENTER_CHECK   (EKF la 0.31 m de (0,0))
+>> CENTER_CHECK -> DESCEND   (centrat (0.28 m < 0.72); cobor la 3.60 m)
+   ... CENTER_CHECK / DESCEND pana la 1 m ...
+>> CENTER_CHECK -> FINAL_ALIGN   (centrat (0.09 m) la 1.05 m)
+>> FINAL_ALIGN -> LAND   (centrat 0.08 m, 2 s)
+>> LAND -> TOUCHDOWN   (ON_GROUND; FC-ul dezarmeaza)
 ```
 
-Fără `--full-sequence` se oprește aici și ArduPilot dezarmează.
+Se oprește aici și ArduPilot dezarmează; la dezarmare EKF-ul revine pe
+setul 1.
 
 **Prima încercare, pe iarbă sau pământ moale.** Eroarea în simulare e sub
 1 cm, dar asta e simulare — pe hardware nu ai încă nicio cifră.
@@ -446,9 +460,10 @@ Fără `--full-sequence` se oprește aici și ArduPilot dezarmează.
 
 | | cale | depinde de Pi? |
 |---|---|---|
-| 1 | **comutatorul de mod** (`FLTMODE_CH`) | **nu** — merge direct în FC |
-| 2 | manșele → companion comandă LOITER (150 ms în SITL) | da |
-| 3 | Safety Supervisor → BRAKE / RTL | da |
+| 1 | **comutatorul de mod** (`FLTMODE_CH`) | **nu** — merge direct în FC; companion-ul restaurează SRC1 și tace |
+| 2 | AUX (8) jos → EXIT: SRC1, apoi LOITER / ALT_HOLD | da |
+| 3 | manșele → supervizor EXIT (același drum) | da |
+| 4 | supervizor (EKF invalid, legătură, înclinare, rază, plafon) → EXIT | da |
 
 Prima e singura care funcționează dacă Pi-ul e mort, blocat sau
 deconectat. Scriptul refuză să pornească fără ea. **Mâna pe comutator tot

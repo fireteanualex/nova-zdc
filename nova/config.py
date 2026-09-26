@@ -73,6 +73,15 @@ DEFAULTS = {
     # mijloc). Pentru unul de 2 pozitii (~1000/2000), 1500 e chiar mijlocul.
     'aux_high_pwm': 1700,
 
+    # Which guidance the onboard app flies (27.09.2026 redesign):
+    #   "extnav"  camera -> VISION_POSITION_ESTIMATE -> EKF3 SRC2, GUIDED in
+    #             steps of h/2 down to 1 m, then LAND vertical. PLND stays 0,
+    #             nothing is sent as LANDING_TARGET / DISTANCE_SENSOR.
+    #   "plnd"    the previous path (LAND + precision landing), kept for a
+    #             comparison flight; the simulator is on it regardless.
+    # Anything else = extnav. Written in the versioned file, like E0.
+    'guidance': 'extnav',
+
     # Handover gate altitude floor, metres. None = the gate's own default
     # (nova/handover.py: HANDOVER_ALT_MIN_M, 5 m). A number here REPLACES
     # the floor for the onboard app only - the gate code stays untouched.
@@ -141,6 +150,11 @@ def autostart_mode(path=None):
     if cfg.get('autonomy_enabled') is not True:
         return 'monitor', 'autostart=zbor dar E0 inchis'
     return 'zbor', ''
+
+
+def guidance(cfg):
+    """'plnd' only when the file says exactly "plnd"; otherwise 'extnav'."""
+    return 'plnd' if cfg.get('guidance') == 'plnd' else 'extnav'
 
 
 def resolve(cfg, key):

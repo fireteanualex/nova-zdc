@@ -1829,6 +1829,67 @@ def test_pornirea_automata_de_zbor_e_proba_de_coborare():
     return "decizie in config.py, zbor = descent_test --auto, 4 -> monitor"
 
 
+def test_ExtNav_cablajul_de_bord():
+    """Reproiectarea din 27.09.2026 (claude-markdown/REPROIECTARE_EXTNAV.md):
+    bordul zboara pe ExtNav din config (`guidance`), nu din linia de
+    comanda. Drumul ExtNav nu are AuthorityScheduler, LANDING_TARGET,
+    DISTANCE_SENSOR sau PLND_ENABLED=1, si instantiaza managerul de surse
+    EKF (elementul 36). Verificat pe SURSA si prin apelul real al
+    cablajului, cu un Vehicle neconectat (§5.14: cablajul, nu piesele)."""
+    import types
+    src = open(os.path.join(REPO, 'tools', 'nova_pi.py')).read()
+    i = src.index('def cablaj_extnav(')
+    j = src.index('def cablaj_plnd(')
+    k = src.index('def run_preflight(')
+    ext, plnd = src[i:j], src[j:k]
+    for interzis in ('AuthorityScheduler(', 'LandingStateMachine(',
+                     'SequenceConfig(', 'send_landing_target',
+                     'PLND_ENABLED', 'set_precland'):
+        assert interzis not in ext, f"{interzis} pe drumul ExtNav"
+    for cerut in ('ExtNavLanding(', 'ExtNavSupervisor(', 'ExtNavEstimator(',
+                  'EkfSourceManager(', 'faze=SRC2_PHASES',
+                  'dist_max_m=None', 'detection_max_age_s=None',
+                  'sup.on_exit = sm.request_exit'):
+        assert cerut in ext, f"{cerut} lipseste de pe drumul ExtNav"
+    assert 'LandingStateMachine(' in plnd and 'AuthorityScheduler(' in plnd
+    assert "nova_config.guidance(cfg) == 'extnav'" in src
+    # config: implicitul din cod si fisierul versionat spun amandoua extnav
+    from nova import config as nova_config
+    assert nova_config.DEFAULTS['guidance'] == 'extnav'
+    cfg = nova_config.load()
+    assert nova_config.guidance(cfg) == 'extnav', cfg.get('guidance')
+    assert nova_config.guidance({'guidance': 'plnd'}) == 'plnd'
+    assert nova_config.guidance({'guidance': 'PLND'}) == 'extnav'
+    # apelul real al cablajului
+    import nova_pi
+    from nova.vehicle import Vehicle
+    from nova.rc import OverrideMonitor
+    from nova.extnav_landing import ExtNavLanding, SRC2_PHASES
+    from nova.safety import ExtNavSupervisor
+    v = Vehicle('udpin:127.0.0.1:1')
+    v.m = types.SimpleNamespace(mav=types.SimpleNamespace(), target_system=1,
+                                target_component=1)
+    a = types.SimpleNamespace(monitor=False, monitor_motiv=None, no_ascent=True,
+                        no_authority=True, conv=2, fast_descent=False)
+    import io, contextlib
+    with contextlib.redirect_stdout(io.StringIO()):
+        gate, sup, sm, aut = nova_pi.cablaj_extnav(
+            a, cfg, v, OverrideMonitor(v), {'alt_min_m': 0.0}, 8, 1500,
+            lambda r: None, lambda n, i: None)
+    assert isinstance(sm, ExtNavLanding) and isinstance(sup, ExtNavSupervisor)
+    assert aut is None and sup.on_exit == sm.request_exit
+    assert gate.dist_max_m is None and gate.detection_max_age_s is None
+    assert gate.alt_min_m == 0.0 and gate.alt_max_m == 12.0
+    assert tuple(sm.ekf.faze) == SRC2_PHASES and sm.cfg.aux_channel == 8
+    # fara cheia de altitudine: 1 m (D6), nu 5
+    with contextlib.redirect_stdout(io.StringIO()):
+        gate2, _, _, _ = nova_pi.cablaj_extnav(
+            a, cfg, v, OverrideMonitor(v), {}, 8, 1500, lambda r: None,
+            lambda n, i: None)
+    assert gate2.alt_min_m == 1.0
+    return "extnav din config; fara authority/LT/PLND; EKF manager; poarta 1-12 m fara raza"
+
+
 def test_monitor_motiv_ajunge_in_poarta():
     src = open(os.path.join(REPO, 'tools', 'nova_pi.py')).read()
     assert "'--monitor-motiv'" in src
@@ -1993,6 +2054,7 @@ TESTS = [
     ('pornirea automata de zbor e proba de coborare',
      test_pornirea_automata_de_zbor_e_proba_de_coborare),
     ('--monitor-motiv ajunge in poarta', test_monitor_motiv_ajunge_in_poarta),
+    ('ExtNav: cablajul de bord', test_ExtNav_cablajul_de_bord),
     ('logurile poarta numarul de boot', test_logurile_poarta_numarul_de_boot),
     ('poza de verificare e cablata corect',
      test_poza_de_verificare_e_cablata_corect),
