@@ -674,6 +674,73 @@ def test_ratarile_consecutive_pe_clasa_din_productie():
     return f"contor pe cadre: {urme}"
 
 
+def test_B9_firul_mort_nu_arata_sanatos():
+    """26.09.2026 seara (B9). O exceptie in read()/detect() (ex. timeout
+    picamera2) omora firul cu un traceback si nimic altceva: contorul de
+    ratari ingheta (0 daca ultimul cadru avea marker), fps/det% ramaneau
+    pe ultimele cadre, iar coborarea era oprita doar de plafonul de 1.5 s.
+    Un detector mort trebuie sa arate ca un marker pierdut."""
+    import contextlib
+    import io
+    from nova.safety import DETECTION_MAX_MISSES
+
+    class SursaCareMoare(ArraySource):
+        def __init__(self, frames, dupa):
+            super().__init__(frames)
+            self.dupa = dupa
+
+        def read(self):
+            if self.i >= self.dupa:
+                raise RuntimeError('picamera2: capture timeout')
+            return super().read()
+
+    cal = synthetic_calibration()
+    frame, _ = render(cal, R_FLAT, (0.0, 0.0, 6.0))
+    src = SursaCareMoare([frame] * 3, dupa=3)
+    with contextlib.redirect_stderr(io.StringIO()), \
+            contextlib.redirect_stdout(io.StringIO()):
+        pd = PiDetector(src, ArucoMarkerDetector(cal), threaded=True).start()
+        got = []
+        t0 = time.time()
+        while time.time() - t0 < 5.0 and pd.died is None:
+            got.extend(pd.poll(time.monotonic()))
+            time.sleep(0.005)
+        pd._thread.join(timeout=2.0)
+    assert pd.died and 'RuntimeError' in pd.died, pd.died
+    assert not pd._thread.is_alive()
+    got.extend(pd.poll(time.monotonic()))
+    assert len(got) == 3, len(got)
+    # ultimul cadru AVEA marker: contorul intern e 0 - dar fiecare poll
+    # de dupa moarte e o ratare, deci supervizorul ajunge la prag
+    for _ in range(DETECTION_MAX_MISSES + 1):
+        pd.poll(time.monotonic())
+    assert pd.miss_streak >= DETECTION_MAX_MISSES, pd.miss_streak
+    s = pd.stats()
+    assert s['fps'] == 0.0 and s['detection_rate'] == 0.0, s
+    assert 'MORT' in pd.status_line() and 'RuntimeError' in pd.status_line()
+    pd.stop()
+    # NEGATIV: un fir care se termina normal (sursa epuizata) nu e mort,
+    # si contorul ramane cel al detectorului
+    pd2 = PiDetector(ArraySource([frame] * 3), ArucoMarkerDetector(cal),
+                     threaded=True).start()
+    t0 = time.time()
+    while time.time() - t0 < 5.0 and not pd2.exhausted:
+        pd2.poll(time.monotonic())
+        time.sleep(0.005)
+    for _ in range(10):
+        pd2.poll(time.monotonic())
+    assert pd2.died is None and pd2.miss_streak == 0, (pd2.died, pd2.miss_streak)
+    assert 'MORT' not in pd2.status_line()
+    # si fps-ul viu se masoara pana ACUM: un fir blocat nu tine cifra veche
+    f1 = pd2.stats()['fps']
+    time.sleep(0.3)
+    f2 = pd2.stats()['fps']
+    assert f1 is not None and f2 < f1, (f1, f2)
+    pd2.stop()
+    return (f"mort: miss_streak {pd.miss_streak}, fps 0, MORT in linie; "
+            f"viu: fps {f1:.0f} -> {f2:.0f} dupa 0.3 s fara cadre")
+
+
 def test_timpii_pe_etape_se_masoara_pe_clasele_din_productie():
     """Step 0 (§5.65): per-stage timings must come from the production
     wiring - PiDetector attaches one StageTimer to the source and the
@@ -871,6 +938,7 @@ TESTS = [
      test_verificarea_asteapta_aplicarea_controlului),
     ('ratarile consecutive pe clasa din productie',
      test_ratarile_consecutive_pe_clasa_din_productie),
+    ('B9: firul mort nu arata sanatos', test_B9_firul_mort_nu_arata_sanatos),
     ('REGRESIE 1 m: marker mare deplasat intre cadre',
      test_regresie_1m_marker_mare_deplasat_intre_cadre),
     ('parametrii de urmarire nu pierd markerul in ROI',

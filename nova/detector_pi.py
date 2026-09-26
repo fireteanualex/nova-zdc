@@ -37,6 +37,7 @@ import math
 import os
 import threading
 import time
+import traceback
 
 import cv2
 import numpy as np
@@ -1323,6 +1324,15 @@ class PiDetector:
         self._stop = threading.Event()
         self._thread = None
         self.exhausted = False
+        #: B9 (26.09.2026): the worker died on an exception (text), and
+        #: when. Before, a picamera2 timeout or any error in detect() ended
+        #: the thread with a traceback on stderr and NOTHING else: the
+        #: miss counter froze (at 0 if the last frame had the marker), fps
+        #: and det% kept showing the last 300 frames, and only the 1.5 s
+        #: hard age cap in the supervisor would stop a descent.
+        self.died = None
+        self.died_t = None
+        self._dead_polls = 0
 
         self.latencies = collections.deque(maxlen=STATS_WINDOW)
         self.frame_times = collections.deque(maxlen=STATS_WINDOW)
@@ -1334,8 +1344,15 @@ class PiDetector:
     def miss_streak(self):
         """Cadre consecutive fara marker, pentru supervizor. Delegat, ca
         n_frames: un atribut care lipseste pe clasa din productie ar face
-        regula de abort inerta, fara nicio eroare (§5.56)."""
-        return getattr(self.det, 'miss_streak', None)
+        regula de abort inerta, fara nicio eroare (§5.56).
+
+        A dead worker (B9) processes no frames, so the counter would never
+        grow again: every poll() after death counts as a miss instead. A
+        detector that died must look like a lost marker, not healthy."""
+        inner = getattr(self.det, 'miss_streak', None)
+        if self.died is not None:
+            return (inner or 0) + self._dead_polls
+        return inner
 
     @property
     def n_frames(self):
@@ -1427,15 +1444,28 @@ class PiDetector:
         return True
 
     def _worker(self):
-        while not self._stop.is_set():
-            if not self._process_one():
-                break
+        try:
+            while not self._stop.is_set():
+                if not self._process_one():
+                    break
+        except Exception as e:                              # noqa: BLE001
+            # B9: say it, mark it, and let miss_streak / stats show it.
+            # The thread ends either way; what changes is that the loop
+            # can no longer mistake a dead detector for a healthy one.
+            self.died = f"{type(e).__name__}: {e}"
+            self.died_t = self.clock()
+            traceback.print_exc()
+            print(f"[detector] MORT: firul de detectie a picat cu "
+                  f"{self.died}. Fara cadre de acum; supervizorul vede "
+                  f"ratari.", flush=True)
 
     def poll(self, now):
         """Interfata din nova/detection.py. Fara fir, proceseaza un cadru
         aici (teste, E2); cu fir, doar goleste coada."""
         if not self.threaded:
             self._process_one()
+        elif self.died is not None:
+            self._dead_polls += 1
         with self.lock:
             out = list(self.queue)
             self.queue.clear()
@@ -1458,12 +1488,20 @@ class PiDetector:
             dets = list(self.frame_detected)
         fps = None
         if len(times) >= 2 and times[-1] > times[0]:
-            fps = (len(times) - 1) / (times[-1] - times[0])
+            # Live (threaded): measured up to NOW, not up to the last frame.
+            # A worker stuck in capture, or dead, then shows a decaying fps
+            # instead of the last 300 healthy frames forever (B9).
+            end = max(times[-1], time.monotonic()) if self.threaded else times[-1]
+            fps = (len(times) - 1) / (end - times[0])
+        if self.died is not None:
+            fps = 0.0
         d = {
             'latency_p50_ms': None,
             'latency_p99_ms': None,
             'fps': fps,
-            'detection_rate': (sum(dets) / len(dets)) if dets else None,
+            'detection_rate': (0.0 if self.died is not None else
+                               (sum(dets) / len(dets)) if dets else None),
+            'died': self.died,
             'published': self.n_published,
             'dropped': self.n_dropped,
             'window': len(times),
@@ -1481,7 +1519,8 @@ class PiDetector:
     def status_line(self):
         s = self.stats()
         f = lambda v, fmt: '-' if v is None else format(v, fmt)     # noqa: E731
-        return (f"cam {f(s['fps'], '4.1f')} fps | det "
+        mort = f"DETECTOR MORT ({s['died']}) | " if s['died'] else ''
+        return (f"{mort}cam {f(s['fps'], '4.1f')} fps | det "
                 f"{f(s['detection_rate'], '.0%')} | lat p50 "
                 f"{f(s['latency_p50_ms'], '4.0f')} p99 "
                 f"{f(s['latency_p99_ms'], '4.0f')} ms | lum "
