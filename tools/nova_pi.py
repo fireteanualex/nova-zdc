@@ -472,7 +472,20 @@ def main():
         # LAND dupa contact (§5.6).
         print("[bord] 15.2.7 OPRIT (--no-ascent): secventa se incheie pe "
               "sol, fara urcare la 5 m")
-    sm = LandingStateMachine(vehicle, seq, gate=gate, on_event=rec.on_event)
+    def on_sm_event(name, info):
+        rec.on_event(name, info)
+        if name == 'abort' and info.get('action') == 'LOITER':
+            # Pilot abort (AUX down): the sticks are live again. Said through
+            # the FC, like the reject, so it reaches the OSD/GCS if there is
+            # telemetry; nothing depends on it arriving.
+            try:
+                vehicle.m.mav.statustext_send(
+                    mavutil.mavlink.MAV_SEVERITY_WARNING,
+                    b"NOVA ABORT pilot: LOITER, throttle la mijloc")
+            except Exception:                               # noqa: BLE001
+                pass
+
+    sm = LandingStateMachine(vehicle, seq, gate=gate, on_event=on_sm_event)
 
     ecran = race_screen.RaceScreen() if a.race else None
 

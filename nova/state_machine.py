@@ -54,7 +54,7 @@ import math
 import time
 from dataclasses import dataclass
 
-from .vehicle import MODE_GUIDED, MODE_LAND, MODE_RTL
+from .vehicle import MODE_BRAKE, MODE_GUIDED, MODE_LAND, MODE_LOITER, MODE_RTL
 
 # --- Praguri ale masinii de stari ----------------------------------------
 #
@@ -106,6 +106,15 @@ NO_LATERAL_ALT_M = 0.50
 TD_DEBOUNCE_S = 0.20      # cat trebuie mentinute conditiile de contact
 TD_TIMEOUT_S = 8.0        # contact -> comanda de urcare
 MODE_RETRY_S = 0.15       # reincercare DO_SET_MODE
+#: Pilot abort (AUX down during the autonomous segment): how many times
+#: the LOITER request is re-sent while the FC still sits in the mode it
+#: had when the pilot lowered the switch. A THIRD mode means the pilot or
+#: a failsafe already acted - we stop, same rule as the supervisor (§5.66).
+ABORT_MODE_TRIES = 5
+#: Phases in which AUX down is a pilot abort. Positive list (§5.25): a new
+#: phase is not abortable by the switch until someone decides it is.
+PILOT_ABORT_PHASES = ('ACQUIRE', 'DESCEND_TRACK', 'SCORING_CAPTURE',
+                      'FINAL_DESCENT', 'TOUCHDOWN_CONFIRM', 'ASCENT')
 TAKEOFF_RETRY_S = 1.50    # reincercare NAV_TAKEOFF (peste MOT_SPOOL_TIME)
 TAKEOFF_TRIES = 6
 ASCENT_TIMEOUT_S = 25.0   # comanda de urcare -> 5 m AGL
@@ -220,6 +229,13 @@ class LandingStateMachine:
         #: in fereastra ceruta de 15.2.3, si nu exista cale de refuz.
         self.gate = gate
         self._aux_was_high = False
+        self._aux_was_high_prev = False
+        # The segment was ended by a mode change (supervisor BRAKE/RTL) while
+        # the switch was still up: the next AUX down is the pilot asking out.
+        self._aux_release_pending = False
+        self._abort_from_mode = None    # pilot abort: FC mode at the switch
+        self._abort_req_t = None
+        self._abort_req_n = 0
 
         # Tot ce tine de timp foloseste ceasul injectat prin update() /
         # on_detection(), niciodata time.monotonic() direct din interiorul
@@ -275,6 +291,9 @@ class LandingStateMachine:
         self.rel_alt_touchdown = None
         self.takeoff_tries = 0
         self.takeoff_alt_cmd = None
+        self._abort_from_mode = None
+        self._abort_req_t = None
+        self._abort_req_n = 0
 
     # -- incadrare: cat din cadru ocupa markerul ---------------------------
     def _incadrare(self, det, prag, prag_px):
@@ -392,6 +411,36 @@ class LandingStateMachine:
         exista (grupul B), apelul se muta acolo."""
         self.set_precland(True, now)
 
+    def _pilot_abort(self, now):
+        """AUX lowered by the pilot inside the autonomous segment."""
+        self.set_precland(False, now)
+        self._abort_from_mode = self.v.mode
+        self._abort_req_t = now
+        self._abort_req_n = 1
+        self._aux_release_pending = False
+        self.v.request_mode(MODE_LOITER)
+        self.set_state(State.ABORT, 'AUX jos: abort cerut de pilot -> LOITER')
+        self._emit('abort', reason='AUX jos: abort cerut de pilot',
+                   action='LOITER')
+        if self.verbose:
+            print("\n!! ABORT cerut de pilot (AUX jos): LOITER, mansele sunt "
+                  "ale pilotului. Throttle la mijloc!\n")
+
+    def _retry_pilot_abort(self, now):
+        """Re-send LOITER only while the FC is STILL in the mode it had when
+        the switch went down. Any other mode - LOITER (delivered) or a third
+        one (pilot's mode switch, failsafe) - ends the retries for good."""
+        if self._abort_from_mode is None or self.v.mode != self._abort_from_mode:
+            self._abort_from_mode = None
+            return
+        if self._abort_req_n >= ABORT_MODE_TRIES:
+            return
+        if now - self._abort_req_t < MODE_RETRY_S:
+            return
+        self._abort_req_t = now
+        self._abort_req_n += 1
+        self.v.request_mode(MODE_LOITER)
+
     def abort_to_rtl(self, reason, now=None):
         """Singura cale catre RTL. Dezactiveaza intai PLND: RTL urca la
         RTL_ALT inainte sa coboare, deci parametrul are timp sa se propage."""
@@ -426,6 +475,7 @@ class LandingStateMachine:
         # imediat dupa orice iesire din ea.
         aux_high = self.aux_high()
         aux_rising = aux_high and not self._aux_was_high
+        self._aux_was_high_prev = self._aux_was_high
         self._aux_was_high = aux_high
         self.prev_mode = self.v.mode
 
@@ -442,6 +492,32 @@ class LandingStateMachine:
                 self._emit('aux_ignored_disarmed')
             return
 
+        # Pilot abort (team decision 26.09.2026, after the crash of §5.66):
+        # the same switch that starts the segment ends it. AUX down in any
+        # autonomous phase -> LOITER, so the sticks are live again (BRAKE
+        # ignores them by FC design), PLND off, and nothing more is sent
+        # unless the FC stays in the mode it had. This is the pilot's clean
+        # exit; the mode switch remains the second, FC-level one.
+        aux_falling = self._aux_was_high_prev and not aux_high
+        if aux_rising:
+            self._aux_release_pending = False
+        if aux_falling and self.state in PILOT_ABORT_PHASES:
+            self._pilot_abort(now)
+            return
+        # The incident's exact shape: the supervisor ended the segment with
+        # BRAKE (or RTL), the state machine is back in IDLE, the vehicle
+        # hangs there and the sticks are dead. The switch that is still up
+        # is the pilot's handle on us: lowering it asks for LOITER. Only for
+        # modes the supervisor commands - if the pilot flies STABILIZE or
+        # LOITER already, lowering the switch must not send anything.
+        if (aux_falling and self.state == State.IDLE
+                and self._aux_release_pending
+                and self.v.mode in (MODE_BRAKE, MODE_RTL)):
+            self._pilot_abort(now)
+            return
+        if aux_falling:
+            self._aux_release_pending = False
+
         # HANDBACK / ABORT: se iese doar printr-o cerere noua de handover.
         # Fara asta, al doilea tur din acelasi slot de 15 minute nu ar mai
         # porni niciodata segmentul autonom.
@@ -449,6 +525,8 @@ class LandingStateMachine:
             if aux_rising:
                 self.reset_sequence('cerere noua de handover')
                 self._request_handover(now, alt)
+            else:
+                self._retry_pilot_abort(now)
             return
 
         # REJECT ramane afisat pana cand pilotul lasa comutatorul jos. Asa
@@ -478,6 +556,7 @@ class LandingStateMachine:
         if self.state in (State.DESCEND_TRACK, State.SCORING_CAPTURE,
                           State.FINAL_DESCENT) and self.v.mode != MODE_LAND:
             self.reset_sequence(f"mod schimbat ({self.v.mode})")
+            self._aux_release_pending = aux_high
             return
 
         if self.state in (State.DESCEND_TRACK, State.SCORING_CAPTURE):

@@ -361,7 +361,16 @@ companion-ul cere LAND → așteaptă confirmarea FC
 coborâre cu PLND       → LANDING_TARGET la 20 Hz
 încadrarea la 0.72     → coborâre verticală
 contact                → pauză pe sol → STOP
+
+AUX (8) JOS, oricând după acceptare → ABORT cerut de pilot: LOITER,
+                         manșele sunt ale pilotului. THROTTLE LA MIJLOC
+                         ÎNAINTE — LOITER cu throttle jos coboară repede.
 ```
+
+Două ieșiri din mâna companion-ului, independente: comutatorul AUX (prin
+companion, care cere LOITER și devine pasiv) și comutatorul de mod (direct
+în FC; companion-ul nu retrimite nimic peste el — §5.66). Din BRAKE manșele
+nu fac nimic, prin proiectul ArduPilot: se iese cu unul dintre comutatoare.
 
 ### Pe teren fără rețea
 

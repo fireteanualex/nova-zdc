@@ -409,6 +409,130 @@ def test_neutrul_se_memoreaza_la_accept():
 
 # --- cablajul aplicatiei (regresia raportata din zbor) ---------------------
 
+def test_AUX_jos_in_coborare_e_abort_cerut_de_pilot():
+    """Decizia echipei 26.09.2026 (dupa §5.66): acelasi comutator care
+    porneste segmentul il si opreste. AUX jos in DESCEND_TRACK -> LOITER
+    (mansele redevin ale pilotului), PLND 0, stare ABORT, si nimic altceva
+    pe MAVLink. Ridicat din nou = cerere noua, prin poarta."""
+    from nova.vehicle import MODE_LOITER
+    v, det, sm, events, args = build()
+    run(v, det, sm, args, stop_states=(State.DESCEND_TRACK,))
+    assert sm.state == State.DESCEND_TRACK, sm.state
+    n_lt = v.n_lt
+    v.set_aux(1000)
+    run(v, det, sm, args, seconds=0.5)
+    assert sm.state == State.ABORT, sm.state
+    assert v.mode_reqs[-1] == MODE_LOITER, v.mode_reqs
+    assert v.param_sets[-1] == ('PLND_ENABLED', 0.0), v.param_sets[-1]
+    ab = [i for n, i in events if n == 'abort']
+    assert ab and ab[-1]['action'] == 'LOITER', ab
+    n_req = len(v.mode_reqs)
+    run(v, det, sm, args, seconds=3.0)
+    assert sm.state == State.ABORT, "a iesit din ABORT fara cerere noua"
+    assert len(v.mode_reqs) == n_req, f"a mai comandat moduri: {v.mode_reqs}"
+    assert v.n_lt == n_lt, "a mai emis LANDING_TARGET dupa abort"
+    # ridicat din nou: cerere noua, prin poarta (front crescator)
+    v.mode = MODE_LOITER
+    v.set_aux(AUX_HIGH_PWM)
+    run(v, det, sm, args, seconds=0.2)
+    assert sm.state == State.HANDOVER_CHECK, sm.state
+    return "DESCEND_TRACK + AUX jos -> LOITER, PLND 0, ABORT; AUX sus = cerere noua"
+
+
+def test_AUX_jos_in_afara_segmentului_nu_face_nimic():
+    """NEGATIV: in IDLE (comutatorul lasat jos dupa un refuz, sau jos de la
+    inceput) coborarea lui nu trimite nicio comanda. Abortul e doar in
+    fazele autonome - lista pozitiva."""
+    from nova.state_machine import PILOT_ABORT_PHASES
+    from nova.safety import AUTONOMOUS_PHASES
+    assert set(PILOT_ABORT_PHASES) == set(AUTONOMOUS_PHASES), (
+        "fazele abortabile de pilot trebuie sa fie exact cele autonome")
+    v, det, sm, events, args = build(alt=14.0)       # refuzat pe altitudine
+    run(v, det, sm, args, seconds=3.0)
+    assert sm.state == State.REJECT
+    v.set_aux(1000)
+    run(v, det, sm, args, seconds=1.0)
+    assert sm.state == State.IDLE
+    assert not v.mode_reqs, f"a comandat moduri in afara segmentului: {v.mode_reqs}"
+    assert not [1 for n, _ in events if n == 'abort']
+    return "REJECT/IDLE + AUX jos: zero comenzi"
+
+
+def test_abortul_pilotului_nu_se_bate_cu_pilotul():
+    """LOITER se retrimite doar cat FC-ul e inca in LAND. Daca FC-ul apare
+    intr-un al treilea mod (pilotul a comutat el, sau un failsafe), gata -
+    aceeasi regula ca supervizorul (§5.66). Plafon ABORT_MODE_TRIES."""
+    from nova.vehicle import MODE_LOITER
+    from nova.state_machine import ABORT_MODE_TRIES
+    v, det, sm, events, args = build()
+    run(v, det, sm, args, stop_states=(State.DESCEND_TRACK,))
+    # FC-ul nu adopta modul (comanda pierduta pe serial)
+    v.request_mode = lambda m: v.mode_reqs.append(m)
+    v.set_aux(1000)
+    run(v, det, sm, args, seconds=0.1)
+    assert sm.state == State.ABORT
+    n1 = len(v.mode_reqs)
+    v.mode = 0                                  # pilotul: STABILIZE
+    run(v, det, sm, args, seconds=3.0)
+    assert len(v.mode_reqs) == n1, f"a retrimis peste pilot: {v.mode_reqs[n1:]}"
+
+    v, det, sm, events, args = build()
+    run(v, det, sm, args, stop_states=(State.DESCEND_TRACK,))
+    v.request_mode = lambda m: v.mode_reqs.append(m)
+    base = len(v.mode_reqs)
+    v.set_aux(1000)
+    run(v, det, sm, args, seconds=3.0)          # FC ramane in LAND
+    sent = v.mode_reqs[base:]
+    assert sent == [MODE_LOITER] * ABORT_MODE_TRIES, sent
+    return f"LAND: {ABORT_MODE_TRIES} incercari; al treilea mod: zero"
+
+
+def test_AUX_jos_peste_BRAKE_confirmat_in_cablajul_real():
+    """Scenariul din zbor, cu iesirea noua: supervizorul a comandat BRAKE
+    (detectie pierduta), FC-ul l-a confirmat, drona sta pe loc. Pilotul
+    lasa AUX jos: masina de stari comanda LOITER, supervizorul vede ca
+    FC-ul a parasit BRAKE si devine PASIV - nu retrimite BRAKE."""
+    from nova.vehicle import MODE_LOITER, MODE_BRAKE
+    v, det, sm, sup, events, args = build_app()
+    run_app(v, det, sm, sup, args, stop_states=(State.DESCEND_TRACK,))
+    det.dropout = 1.0                           # markerul dispare complet
+    run_app(v, det, sm, sup, args, seconds=3.0)
+    assert sup.latched == Action.BRAKE, sup.latched
+    assert v.mode == MODE_BRAKE
+    assert sm.state == State.IDLE, sm.state     # "mod schimbat"
+    n_brake = v.mode_reqs.count(MODE_BRAKE)
+    v.set_aux(1000)
+    run_app(v, det, sm, sup, args, seconds=2.0)
+    assert v.mode_reqs[-1] == MODE_LOITER, v.mode_reqs[-3:]
+    assert v.mode == MODE_LOITER
+    assert v.mode_reqs.count(MODE_BRAKE) == n_brake, "a retrimis BRAKE peste pilot"
+    assert sup.passive and 'PASIV' in sup.status(), sup.status()
+    assert sm.state == State.ABORT, sm.state
+    # NEGATIV: pilotul a preluat el (STABILIZE) si abia apoi lasa AUX jos:
+    # nu i se trimite nimic - zboara deja.
+    # (o singura bucla: un run_app reluat porneste cu varsta detectiei
+    # necunoscuta si ar declansa singur BRAKE, adica alt scenariu)
+    v, det, sm, sup, events, args = build_app()
+    mark = {'t_pilot': None, 'n': None}
+
+    def on_step(t, vv, ssm, ssup):
+        if mark['t_pilot'] is None and ssm.state == State.DESCEND_TRACK:
+            mark['t_pilot'] = t
+            vv.mode = 0                         # pilotul: STABILIZE
+        elif mark['t_pilot'] is not None and mark['n'] is None \
+                and t - mark['t_pilot'] > 0.5:
+            assert ssm.state == State.IDLE, ssm.state
+            mark['n'] = len(vv.mode_reqs)
+            vv.set_aux(1000)
+
+    run_app(v, det, sm, sup, args, seconds=6.0, on_step=on_step)
+    assert mark['n'] is not None, "scenariul nu s-a produs"
+    assert len(v.mode_reqs) == mark['n'], (
+        f"a comandat peste pilotul in STABILIZE: {v.mode_reqs[mark['n']:]}")
+    assert sm.state == State.IDLE, sm.state
+    return "BRAKE confirmat + AUX jos -> LOITER, supervizor PASIV; peste STABILIZE: nimic"
+
+
 def test_supervizorul_se_armeaza_in_cablajul_real():
     """REGRESIE. Supervizorul a fost inert in aplicatie pentru ca se arma pe
     tranzitia IDLE -> DESCEND_TRACK, care a disparut cand intrarea a devenit
@@ -714,6 +838,14 @@ TESTS = [
     ('mansa opreste coborarea autonoma', test_mansa_opreste_coborarea_autonoma),
     ('linia de stare arata canalul de handover',
      test_linia_de_stare_arata_canalul_de_handover),
+    ('AUX jos in coborare = abort cerut de pilot',
+     test_AUX_jos_in_coborare_e_abort_cerut_de_pilot),
+    ('NEGATIV: AUX jos in afara segmentului nu face nimic',
+     test_AUX_jos_in_afara_segmentului_nu_face_nimic),
+    ('abortul pilotului nu se bate cu pilotul',
+     test_abortul_pilotului_nu_se_bate_cu_pilotul),
+    ('AUX jos peste BRAKE confirmat, cablajul real',
+     test_AUX_jos_peste_BRAKE_confirmat_in_cablajul_real),
     ('AUX sus dezarmat se spune, nu se tace',
      test_aux_sus_dezarmat_se_spune_nu_se_tace),
     ('distanta laterala: baro x unghiul camerei',
