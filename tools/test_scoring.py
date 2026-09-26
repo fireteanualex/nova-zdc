@@ -185,6 +185,84 @@ def test_fara_ring_raporteaza_lipsa_nu_arunca():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_B6_cadrul_de_contact_vine_dupa_eveniment():
+    """26.09.2026 seara (B6). `touchdown` poarta t = acum, iar ringul are
+    doar cadre capturate INAINTE de acum: cautarea sincrona nu gasea
+    niciodata imaginea de contact (reprodus 5/5 lipsa, la orice
+    toleranta). Cererea asteapta primul cadru capturat dupa t si se
+    rezolva din bucla, prin update(now)."""
+    d = tempfile.mkdtemp()
+    try:
+        ring = ring_cu([10.00, 10.03])
+        rec = ScoringRecorder(d, ring, FakeVehicle(), verbose=False)
+        rec.on_event('touchdown', {'t': 10.05, 'alt': 0.19})   # t = acum
+        assert 'touchdown' not in rec.lipsa and 'touchdown' not in rec.salvate
+        assert rec.pending() == ['touchdown']
+        rec.update(10.06)                       # inca niciun cadru nou
+        assert rec.pending() == ['touchdown']
+        ring.push(np.full((8, 8), 90, dtype=np.uint8), 10.09)   # primul dupa
+        rec.update(10.10)
+        assert rec.pending() == [] and 'touchdown' in rec.salvate, rec.lipsa
+        png, js = rec.salvate['touchdown']
+        m = json.load(open(js))
+        assert abs(m['t_cadru'] - 10.09) < 1e-9 and abs(m['decalaj_ms'] - 40) < 1e-6, m
+        import cv2
+        assert int(cv2.imread(png, cv2.IMREAD_GRAYSCALE)[0, 0]) == 90
+        # scoring_capture: cadrul e deja in ring, se salveaza pe loc
+        rec.on_event('scoring_capture', {'t': 10.00, 'marker_px': 800})
+        assert 'scoring_capture' in rec.salvate and rec.pending() == []
+        return "touchdown asteapta, primul cadru de dupa (+40 ms) e salvat; scoring pe loc"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_B6_asteptarea_expira_si_nu_ia_alt_cadru():
+    """NEGATIV: daca in TOLERANTA_S nu vine niciun cadru, lipsa - nu un
+    cadru vechi, nu unul prea tarziu. Si la iesire (raport) ce mai
+    asteapta e lipsa, ca sa nu ramana o cerere "in aer" nescrisa."""
+    d = tempfile.mkdtemp()
+    try:
+        ring = ring_cu([10.00])
+        rec = ScoringRecorder(d, ring, FakeVehicle(), verbose=False)
+        rec.on_event('touchdown', {'t': 10.05})
+        rec.update(10.05 + ScoringRecorder.TOLERANTA_S + 0.01)
+        assert 'touchdown' in rec.lipsa and rec.pending() == [], rec.lipsa
+        # un cadru care vine PREA tarziu nu se ia nici el
+        ring2 = ring_cu([10.00])
+        rec2 = ScoringRecorder(d, ring2, FakeVehicle(), verbose=False)
+        rec2.on_event('touchdown', {'t': 10.05})
+        ring2.push(np.full((8, 8), 5, dtype=np.uint8),
+                   10.05 + ScoringRecorder.TOLERANTA_S + 0.2)
+        rec2.update(10.05 + ScoringRecorder.TOLERANTA_S + 0.3)
+        assert 'touchdown' in rec2.lipsa and not rec2.salvate
+        # iesire cu cererea inca in asteptare
+        rec3 = ScoringRecorder(d, ring_cu([10.00]), FakeVehicle(), verbose=False)
+        rec3.on_event('touchdown', {'t': 10.05})
+        r = rec3.raport()
+        assert 'touchdown' in r['lipsa'] and not r['complet_8_3_3']
+        assert not os.path.exists(d) or not os.listdir(d), os.listdir(d)
+        return "expirat / prea tarziu / iesire: lipsa, niciun alt cadru"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_B6_recorderul_e_chemat_din_bucla_pe_bord_si_in_sim():
+    """Fara update(now) din bucla, asteptarea nu se rezolva niciodata -
+    piesa merge, cablajul lipseste (§5.14). run_loop e validat si comun,
+    deci pe bord carligul e invelisul detectorului; in sim, bucla proprie."""
+    radacina = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pi = open(os.path.join(radacina, 'tools', 'nova_pi.py')).read()
+    assert 'LastDetection(detector, on_poll=rec.update)' in pi, (
+        "nova_pi.py nu cheama ScoringRecorder.update din bucla")
+    assert pi.index('rec = ScoringRecorder(') < pi.index(
+        'LastDetection(detector, on_poll=rec.update)')
+    sim = open(os.path.join(radacina, 'tools', 'nova_sim.py')).read()
+    i = sim.index('self.sm.update(now)')
+    assert 'self.rec.update(now)' in sim[i:i + 200], (
+        "nova_sim.py nu cheama rec.update dupa sm.update")
+    return "bord: on_poll=rec.update; sim: rec.update dupa sm.update"
+
+
 def test_ringul_e_acelasi_cod_peste_tot():
     """§8: acelasi cod in sim si pe Pi. Doua copii ale ringului ar fi
     divergat la prima modificare (§5.14)."""
@@ -218,6 +296,12 @@ def test_ringul_primeste_cadrul_chiar_daca_detectia_pica():
 TESTS = [
     ('cadrul se alege dupa timestampul capturii',
      test_cadrul_se_alege_dupa_timestampul_capturii),
+    ('B6: cadrul de contact vine dupa eveniment',
+     test_B6_cadrul_de_contact_vine_dupa_eveniment),
+    ('B6 NEGATIV: asteptarea expira, fara alt cadru',
+     test_B6_asteptarea_expira_si_nu_ia_alt_cadru),
+    ('B6: recorderul e chemat din bucla',
+     test_B6_recorderul_e_chemat_din_bucla_pe_bord_si_in_sim),
     ('un cadru lipsa nu se inlocuieste',
      test_un_cadru_lipsa_nu_se_inlocuieste),
     ('nu se ia un cadru de DINAINTE', test_nu_se_ia_un_cadru_de_DINAINTE),

@@ -122,17 +122,23 @@ def camera_check(cfg, seconds, show_window=False, preview_scale=0.5,
 class LastDetection:
     """Invelis peste detector care retine ultima Detection publicata.
 
-    Deleaga tot restul. Exista doar pentru ecran: `poll()` goleste coada, deci
-    fara asta ultima detectie s-ar pierde intre doua redesenari."""
+    Deleaga tot restul. Exista pentru ecran: `poll()` goleste coada, deci
+    fara asta ultima detectie s-ar pierde intre doua redesenari. Si pentru
+    `on_poll(now)`: singurul carlig per ciclu pe care il avem fara sa
+    atingem `run_loop` (validat, comun cu simularea) - B6 il foloseste ca
+    ScoringRecorder sa isi rezolve cererea de cadru de contact."""
 
-    def __init__(self, inner):
+    def __init__(self, inner, on_poll=None):
         self._inner = inner
         self.last_detection = None
+        self.on_poll = on_poll
 
     def poll(self, now):
         dets = self._inner.poll(now)
         if dets:
             self.last_detection = dets[-1]
+        if self.on_poll is not None:
+            self.on_poll(now)
         return dets
 
     def __getattr__(self, name):
@@ -449,16 +455,14 @@ def main():
     # Ecranul are nevoie de ultima detectie (px si varsta). O ia dintr-un
     # invelis peste detector, nu dintr-o modificare in run_loop: bucla e
     # validata si nu vrem sa o atingem pentru afisare.
-    detector = LastDetection(detector)
-
     # 8.3.3: imaginea predata juriului. Cadrele se scot din ringul
     # detectorului dupa timestamp-ul CAPTURII purtat de eveniment, nu dupa
     # cel al deciziei si nici dupa "ultimul cadru de acum" - intre ele sunt
-    # zeci de milisecunde de coborare (§5.55).
-    # LastDetection deleaga prin __getattr__, deci ringul detectorului
-    # se vede direct prin invelis.
+    # zeci de milisecunde de coborare (§5.55). Cadrul de contact vine DUPA
+    # eveniment, deci recorder-ul e chemat la fiecare ciclu (B6).
     ring = getattr(detector, 'ring', None)
     rec = ScoringRecorder(a.scoring_dir, ring, vehicle=vehicle)
+    detector = LastDetection(detector, on_poll=rec.update)
     if ring is None:
         print("[bord] ATENTIE: detectorul nu are ring buffer; 8.3.3 NU va "
               "avea imagine. Vezi --ring-frames.")

@@ -347,6 +347,8 @@ class SimApp:
         for det in dets:
             self.sm.on_detection(det, now)
         self.sm.update(now)
+        if self.rec is not None:
+            self.rec.update(now)         # B6: cadrul de contact vine dupa
         self._track(now)
         return now
 

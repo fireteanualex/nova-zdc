@@ -58,6 +58,14 @@ class ScoringRecorder:
         self.on_note = on_note
         self.salvate = {}
         self.lipsa = {}
+        #: B6 (26.09.2026): requests whose frame is not in the ring YET.
+        #: `touchdown` carries t = now, and the ring only holds frames
+        #: captured BEFORE now - so a synchronous lookup never found the
+        #: contact image (reproduced: 5/5 missing, at any tolerance). The
+        #: request waits here for the first frame captured after t, and
+        #: update(now) resolves it from the loop; past TOLERANTA_S it is
+        #: reported missing, like a frame that never came.
+        self._pending = {}           # nume -> (t, info)
 
     # -- alegerea cadrului -------------------------------------------------
     def cadru_la(self, t):
@@ -138,8 +146,10 @@ class ScoringRecorder:
     def on_event(self, nume, info):
         """De dat ca `on_event` lui `LandingStateMachine`.
 
-        Ambele evenimente poarta `t` = momentul CAPTURII cadrului care le-a
-        declansat, nu al deciziei."""
+        `scoring_capture` poarta `t` = momentul CAPTURII cadrului care l-a
+        declansat: cadrul e deja in ring, se salveaza pe loc. `touchdown`
+        poarta `t` = acum: cadrul de contact inca nu exista, se asteapta
+        (B6) - vezi update()."""
         if nume not in self.EVENIMENTE:
             return
         t = (info or {}).get('t')
@@ -148,10 +158,50 @@ class ScoringRecorder:
                           f"nu pot alege cadrul")
             self.lipsa[nume] = None
             return
+        if self.ring is not None and self._nimic_dupa(t):
+            self._pending[nume] = (t, info)
+            self._noteaza(f"  .. {nume}: astept primul cadru capturat dupa "
+                          f"t={t:.3f} (cel mult {self.TOLERANTA_S:g} s)")
+            return
         self.salveaza(nume, t, info)
+
+    def _nimic_dupa(self, t):
+        """True cand ringul nu are inca NICIUN cadru cu ts >= t - deci unul
+        poate inca sosi. Fals si cand exista unul (bun sau prea tarziu):
+        atunci decizia e finala si o ia salveaza()."""
+        try:
+            return not self.ring.since(t)
+        except Exception:                                    # noqa: BLE001
+            return False
+
+    def update(self, now):
+        """De apelat din bucla, la fiecare ciclu: rezolva cererile care
+        asteptau un cadru. Fara asta imaginea de contact nu se scrie
+        niciodata (B6); pe bord o cheama invelisul detectorului din
+        nova_pi.py, in sim bucla din nova_sim.py."""
+        for nume, (t, info) in list(self._pending.items()):
+            if self._nimic_dupa(t):
+                if now - t > self.TOLERANTA_S:
+                    del self._pending[nume]
+                    self.lipsa[nume] = t
+                    self._noteaza(f"!! {nume}: niciun cadru capturat in "
+                                  f"{self.TOLERANTA_S:g} s dupa t={t:.3f} "
+                                  f"- NU salvez altul")
+                continue
+            del self._pending[nume]
+            self.salveaza(nume, t, info)
+
+    def pending(self):
+        return sorted(self._pending)
 
     # -- ce se raporteaza --------------------------------------------------
     def raport(self):
+        # La iesire, ce inca astepta nu mai are de unde primi un cadru.
+        for nume, (t, _info) in list(self._pending.items()):
+            del self._pending[nume]
+            self.lipsa[nume] = t
+            self._noteaza(f"!! {nume}: cerut la t={t:.3f}, niciun cadru "
+                          f"pana la iesire - lipsa")
         return {
             'salvate': {k: os.path.basename(v[0])
                         for k, v in sorted(self.salvate.items())},
