@@ -97,14 +97,19 @@ def bench_aruco(frames, cal, cfg, **over):
 def bench_pi(frames_dir, cal, cfg):
     """Pipeline 3: the full PiDetector loop, unthreaded, on ImageDirSource."""
     src = ImageDirSource(frames_dir)
+    # Offline there is no capture clock: ImageDirSource stamps frames with
+    # synthetic times, so PiDetector's capture->publish latency would be
+    # "now minus a synthetic stamp" = uptime (the §5.43 clock mix, seen as
+    # lat p50 448938 ms on the first Pi run). Latency is a flight number;
+    # offline the honest figures are the per-stage times below, where
+    # 'achizitie' is the JPEG/PNG decode, not the camera.
     pid = PiDetector(src, _make_detector(cal, cfg), threaded=False,
-                     ring_frames=30)
+                     ring_frames=30, clock=lambda: 0.0)
     n = len(src.paths)
     for i in range(n):
         pid.poll(float(i) / 30.0)
     s = pid.stats()
-    return {'rate': s['detection_rate'], 'lat_p50': s['latency_p50_ms'],
-            'lat_p99': s['latency_p99_ms'], 'stages': pid.timer.table(),
+    return {'rate': s['detection_rate'], 'stages': pid.timer.table(),
             'stats': pid.timer.stats()}
 
 
@@ -177,10 +182,12 @@ def main():
     print(f"1. plain cv2.aruco   {fmt(r['plain'])}")
     print(f"2. ArucoMarkerDet.   {fmt(r['aruco'])}")
     pi = r['pi']
+    tot = pi['stats'].get('total')
     print(f"3. PiDetector        det {100 * pi['rate']:5.1f}%  "
-          f"lat p50 {pi['lat_p50'] or float('nan'):6.1f} ms  "
-          f"p99 {pi['lat_p99'] or float('nan'):6.1f} ms")
+          f"total/frame p50 {tot[0]:6.1f} ms  p99 {tot[1]:6.1f} ms  "
+          f"(latency is a flight number: see [etape] in the flight log)")
     print()
+    print("per-stage (offline: 'achizitie' = image decode, not the camera)")
     print(pi['stages'])
     if a.variants:
         print()
