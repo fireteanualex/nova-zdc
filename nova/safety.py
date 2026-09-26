@@ -235,6 +235,7 @@ class SafetySupervisor:
         self._mode_req_n = 0
         self._want_mode = None
         self._mode_confirmed = None
+        self._mode_before = None
 
     # -- ciclu de viata ----------------------------------------------------
     def arm(self, now, origin_n, origin_e, origin_alt=0.0,
@@ -377,6 +378,10 @@ class SafetySupervisor:
         self.latched_monitor = monitor
         self._emit(now, monitor, action, detail, phase)
         self._want_mode = Action.MODES[action]
+        # The mode the FC was in when we decided. While unconfirmed we
+        # re-send only as long as the FC is STILL in this mode; any third
+        # mode means the pilot or a failsafe acted in the meantime (§5.66).
+        self._mode_before = self.v.mode
         self._mode_req_t = 0.0
         self._mode_req_n = 0
         self._drive_mode(now)
@@ -416,6 +421,22 @@ class SafetySupervisor:
                        f"{self.v.mode_name()} dupa confirmare: decizia "
                        f"pilotului sau a unui failsafe. Supervizorul devine "
                        f"PASIV, nu retrimite nimic.", 'PASSIVE')
+            self._want_mode = None
+            self.passive = True
+            return
+        if (self._mode_before is not None and self.v.mode is not None
+                and self.v.mode != self._mode_before):
+            # Unconfirmed, but the FC is in a THIRD mode: neither the one it
+            # had when we decided nor the one we asked for. Someone else set
+            # it (pilot switch or failsafe) inside our retry window. A lost
+            # serial command cannot produce a third mode, so this is not a
+            # delivery problem to retry - it outranks us. Same rule as the
+            # confirmed case above: passive, nothing more is sent.
+            self._emit(now, 'mode_taken', self.latched,
+                       f"FC a trecut in {self.v.mode_name()}, un mod pe care "
+                       f"nu l-am cerut, inainte de confirmare: decizia "
+                       f"pilotului sau a unui failsafe. Supervizorul devine "
+                       f"PASIV.", 'PASSIVE')
             self._want_mode = None
             self.passive = True
             return

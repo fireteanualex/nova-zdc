@@ -225,6 +225,38 @@ def test_zavorul_neconfirmat_inca_retrimite_pana_la_plafon():
     return f"neconfirmat: {MODE_RETRY_MAX} comenzi, apoi mode_fail"
 
 
+def test_INCIDENT_pilotul_castiga_si_in_fereastra_de_reincercare():
+    """Completarea §5.66: cat timp comanda NU e confirmata, se reincearca
+    (testul de mai sus) - dar numai cat FC-ul e inca in modul de dinainte.
+    Daca FC-ul apare intr-un AL TREILEA mod (nici cel vechi, nici cel
+    cerut), l-a pus pilotul sau un failsafe in fereastra noastra de
+    reincercare, iar noi nu mai trimitem nimic. Fara asta, un comutator
+    apasat in cele ~1.5 s de dupa declansare ar fi anulat de retrimitere."""
+    from nova.safety import MODE_RETRY_MAX
+    v, sup = build()
+    v.mode = 9                                  # LAND: coborarea autonoma
+    v.accept_mode = False                       # BRAKE nu ajunge (serial)
+    sup.update(100.7, 0.6, 'DESCEND_TRACK')     # declansare -> 1 comanda
+    sup.update(101.0, 1.0, 'DESCEND_TRACK')     # a doua, FC inca in LAND
+    n = len(v.mode_reqs)
+    assert 1 <= n < MODE_RETRY_MAX, n
+    v.mode = 0                                  # pilotul: STABILIZE
+    for i in range(10):
+        sup.update(101.5 + 0.5 * i, 1.0, 'DESCEND_TRACK')
+    assert len(v.mode_reqs) == n, f"a retrimis peste pilot: {v.mode_reqs}"
+    assert sup.passive
+    assert 'PASIV' in sup.status()
+    # Cazul negativ: FC-ul ramane in modul VECHI -> e livrare, se reincearca.
+    v, sup = build()
+    v.mode = 9
+    v.accept_mode = False
+    sup.update(100.7, 0.6, 'DESCEND_TRACK')
+    for i in range(12):
+        sup.update(101.0 + 0.5 * i, 1.0, 'DESCEND_TRACK')
+    assert len(v.mode_reqs) == MODE_RETRY_MAX
+    return "al treilea mod inainte de confirmare: 0 retrimiteri, PASIV"
+
+
 def test_exceptia_final_descent():
     """Sub 0.38 m markerul iese din cadru prin constructie (5.2). Monitorul
     NU are voie sa se aplice acolo, altfel abortam in ultimul metru mereu."""
@@ -552,6 +584,8 @@ TESTS = [
      test_INCIDENT_zavorul_confirmat_nu_retrimite_peste_pilot_sau_failsafe),
     ('NEGATIV: zavorul neconfirmat inca retrimite pana la plafon',
      test_zavorul_neconfirmat_inca_retrimite_pana_la_plafon),
+    ('INCIDENT: pilotul castiga si in fereastra de reincercare',
+     test_INCIDENT_pilotul_castiga_si_in_fereastra_de_reincercare),
     ('incercarea noua elibereaza zavorul confirmat',
      test_incercarea_noua_elibereaza_zavorul_confirmat),
     ('NEGATIV: zavorul neconfirmat NU se elibereaza',
