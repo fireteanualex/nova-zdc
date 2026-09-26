@@ -688,7 +688,7 @@ def ruleaza_extnav(v, sup, faze, t0, dt=0.1, n=None):
         v.rc_t = t
         v.ekf_t = t if v.ekf_t is not None else None
         v.hb_t = t if v.hb_t is not None else None
-        sup.update(t, faza)
+        sup.update(t, None, faza)
         t += dt
     return t
 
@@ -704,7 +704,7 @@ def test_ExtNav_fara_monitor_de_detectie_si_fara_comenzi_de_mod():
     assert sup.latched == Action.NONE and not exits
     assert v.mode_reqs == [], v.mode_reqs
     # iar argumentele vechi (varsta detectiei, ratari) sunt ignorate
-    assert sup.update(t, 'MOVE', detection_age_s=99.0, miss_streak=50) == Action.NONE
+    assert sup.update(t, 99.0, 'MOVE', miss_streak=50) == Action.NONE
     assert v.mode_reqs == [] and not exits
     return "3 s fara detectii in MOVE: nimic; 0 comenzi de mod"
 
@@ -718,7 +718,7 @@ def test_ExtNav_EKF_invalid_cere_EXIT_o_singura_data():
     t = ruleaza_extnav(v, sup, 'MOVE', t, n=3)
     v.ekf_ok = False
     v.rc_t = v.ekf_t = v.hb_t = t
-    assert sup.update(t, 'MOVE') == Action.EXIT
+    assert sup.update(t, None, 'MOVE') == Action.EXIT
     assert exits and exits[0].startswith('ekf_position'), exits
     assert sup.latched == Action.EXIT and 'EXIT' in sup.status()
     n = len(exits)
@@ -754,7 +754,7 @@ def test_ExtNav_fara_raport_EKF_e_necunoscut_nu_valid():
     t = ruleaza_extnav(v, sup, 'MOVE', 100.0, n=3)
     v.ekf_t = t - 3.0
     v.rc_t = v.hb_t = t
-    assert sup.update(t, 'MOVE') == Action.EXIT and 'vechi' in exits[0]
+    assert sup.update(t, None, 'MOVE') == Action.EXIT and 'vechi' in exits[0]
     return "None > 2 s in MOVE -> EXIT; in GATE_SEARCH nu; raport vechi -> EXIT"
 
 
@@ -770,7 +770,7 @@ def test_ExtNav_celelalte_monitoare_dau_tot_EXIT():
     for i in range(4):
         v.set_rc(2, 1500 + 300, t)
         v.ekf_t = v.hb_t = t
-        act = sup.update(t, 'DESCEND')
+        act = sup.update(t, None, 'DESCEND')
         t += OVERRIDE_HOLD_S / 2 + 0.01
     assert act == Action.EXIT and exits[0].startswith('pilot_override'), exits
     assert sup.passive
@@ -780,8 +780,8 @@ def test_ExtNav_celelalte_monitoare_dau_tot_EXIT():
     t = ruleaza_extnav(v, sup, 'GATE_SEARCH', 100.0, n=3)
     v.hb_t = t - 5.0
     v.rc_t = v.ekf_t = t
-    assert sup.update(t, 'GATE_SEARCH') == Action.NONE
-    assert sup.update(t + 0.1, 'MOVE') == Action.EXIT and exits[0].startswith('link_age')
+    assert sup.update(t, None, 'GATE_SEARCH') == Action.NONE
+    assert sup.update(t + 0.1, None, 'MOVE') == Action.EXIT and exits[0].startswith('link_age')
     cazuri.append('legatura')
     # inclinare 35 grade, 0.3 s, in CENTER_CHECK
     v, sup, exits = build_extnav()

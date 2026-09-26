@@ -220,6 +220,9 @@ class SafetySupervisor:
         #: phase names; the module constants keep the PLND behaviour.
         self.autonomous_phases = AUTONOMOUS_PHASES
         self.link_phases = DETECTION_MONITORED_PHASES
+        #: Radius / ceiling: phases in which the position frame is the one
+        #: the origin was captured in. PLND: all autonomous phases.
+        self.geometry_phases = AUTONOMOUS_PHASES
 
         self.armed = False
         self.auto_arm = True      # se armeaza singur din faza primita
@@ -581,7 +584,7 @@ class SafetySupervisor:
 
     def _mon_radius(self, now, age, phase):
         """15.2.4: raza fata de punctul de handover."""
-        if phase not in self.autonomous_phases:
+        if phase not in self.geometry_phases:
             return Action.NONE, None, ''
         d = ((self.v.x - self.origin_n) ** 2 +
              (self.v.y - self.origin_e) ** 2) ** 0.5
@@ -593,7 +596,7 @@ class SafetySupervisor:
 
     def _mon_ceiling(self, now, age, phase):
         """15.2.4: plafon deasupra punctului de handover."""
-        if phase not in self.autonomous_phases:
+        if phase not in self.geometry_phases:
             return Action.NONE, None, ''
         agl = self.v.alt - self.origin_alt
         if agl > self.ceiling_agl_m:
@@ -697,13 +700,18 @@ class ExtNavSupervisor(SafetySupervisor):
         self.autonomous_phases = EXTNAV_PHASES
         self.link_phases = EXTNAV_ENGAGED_PHASES
         self.ekf_phases = EXTNAV_ENGAGED_PHASES
+        # Radius / ceiling only once the frame is the marker's and the
+        # origin has been re-anchored (see update): in GATE_SEARCH the
+        # vehicle is the pilot's, in ENGAGE the EKF position is being reset.
+        self.geometry_phases = EXTNAV_ENGAGED_PHASES
         self.ekf_report_max_age_s = EKF_REPORT_MAX_AGE_S
         self._engaged_since = None
 
-    def update(self, now=None, phase='IDLE', detection_age_s=None,
+    def update(self, now=None, detection_age_s=None, phase='IDLE',
                miss_streak=None):
-        """(now, phase). The detection arguments are accepted and ignored
-        so a loop written for SafetySupervisor keeps working."""
+        """Same positional order as SafetySupervisor.update, because the
+        shared run_loop calls it positionally: (now, age, phase). The
+        detection arguments are accepted and ignored."""
         now = now if now is not None else time.monotonic()
         new_attempt = (phase in self.autonomous_phases
                        and self._last_phase not in self.autonomous_phases)
@@ -711,6 +719,19 @@ class ExtNavSupervisor(SafetySupervisor):
         if phase in self.ekf_phases:
             if self._engaged_since is None:
                 self._engaged_since = now
+                # The EKF position has just been RESET onto the marker frame
+                # (the state machine enters MOVE only after observing it).
+                # The radius / ceiling origin captured at arm time was in
+                # the previous frame: measured against it, the reset alone
+                # reads as tens of metres and would EXIT at once. Re-anchor
+                # here; from now on the frame is stable.
+                if self.armed and self.v.have_pos:
+                    self.origin_n, self.origin_e = self.v.x, self.v.y
+                    self.origin_alt = self.v.alt
+                    self._emit(now, 'anchor', Action.NONE,
+                               f"origine geometrica reancorata dupa resetul "
+                               f"EKF: N={self.v.x:.2f} E={self.v.y:.2f} "
+                               f"alt={self.v.alt:.2f}", phase)
         else:
             self._engaged_since = None
 

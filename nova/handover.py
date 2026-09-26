@@ -175,13 +175,20 @@ class HandoverGate:
                 now, f"{Reject.ALTITUDE}: {alt:.1f} m "
                      f"(cerut {self.alt_min_m:.0f}-{self.alt_max_m:.0f} m)")
 
-        if dist_to_marker_m is None:
-            return self._reject(now, f"{Reject.NO_MARKER} (fara pozitie)")
-        if dist_to_marker_m > self.dist_max_m:
-            return self._reject(
-                now, f"{Reject.DISTANCE}: {dist_to_marker_m:.2f} m")
+        # ExtNav (27.09.2026, brief D6/D7): the marker criteria move to the
+        # state machine's search window (two consistent detections), and
+        # the radius disappears - a seen marker is in range. A caller that
+        # passes dist_max_m=None / detection_max_age_s=None asks for
+        # exactly that; the PLND path keeps both checks, unchanged.
+        if self.dist_max_m is not None:
+            if dist_to_marker_m is None:
+                return self._reject(now, f"{Reject.NO_MARKER} (fara pozitie)")
+            if dist_to_marker_m > self.dist_max_m:
+                return self._reject(
+                    now, f"{Reject.DISTANCE}: {dist_to_marker_m:.2f} m")
 
-        if (detection_age_s is None
+        if self.detection_max_age_s is not None and (
+                detection_age_s is None
                 or detection_age_s > self.detection_max_age_s):
             age = ('niciodata' if detection_age_s is None
                    else f"{detection_age_s:.2f} s")

@@ -115,10 +115,15 @@ class EkfSourceManager:
         'IDLE', 'CITESTE', 'ACTIV', 'RESTAURAT', 'REFUZAT')
 
     def __init__(self, vehicle, set_autonom=SET_AUTONOM,
-                 set_normal=SET_NORMAL, on_event=None, verbose=True):
+                 set_normal=SET_NORMAL, on_event=None, verbose=True,
+                 faze=FAZE_AUTONOME):
         self.v = vehicle
         self.set_autonom = set_autonom
         self.set_normal = set_normal
+        #: Phases in which the GNSS-free set must be active. Default: the
+        #: PLND phases; the ExtNav state machine passes its own (ENGAGE ..
+        #: TOUCHDOWN) - and calls release() itself, first thing in EXIT.
+        self.faze = tuple(faze)
         self.on_event = on_event
         self.verbose = verbose
         self.state = self.IDLE
@@ -168,7 +173,7 @@ class EkfSourceManager:
     def update(self, now=None, phase='IDLE'):
         """De apelat din bucla. Se armeaza si elibereaza din FAZA (§5.14)."""
         now = time.monotonic() if now is None else now
-        in_segment = phase in FAZE_AUTONOME
+        in_segment = phase in self.faze
 
         if not in_segment:
             if self.state in (self.ACTIV, self.CITESTE):
