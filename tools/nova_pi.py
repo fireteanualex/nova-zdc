@@ -433,8 +433,16 @@ def main():
     # fiecare boot ar porni un sistem autonom viu, cu alte setari decat
     # proba de coborare.
     monitor = a.monitor_motiv or a.monitor
+    # Altitude floor from config, if set; otherwise the gate's default.
+    # Passed as a kwarg only when present, so a missing key changes nothing.
+    gate_kw = {}
+    if cfg.get('handover_alt_min_m') is not None:
+        gate_kw['alt_min_m'] = float(cfg['handover_alt_min_m'])
+        print(f"[bord] ATENTIE: handover acceptat de la "
+              f"{gate_kw['alt_min_m']:.1f} m (config handover_alt_min_m; "
+              f"implicit 5 m)")
     gate = HandoverGate(vehicle, override, on_reject=signal_reject,
-                        monitor=monitor)
+                        **gate_kw, monitor=monitor)
     if monitor:
         print("[bord] MONITOR: poarta inchisa pentru rularea asta, oricare "
               f"ar fi config/nova.json. Motiv: {gate.monitor_reason}")

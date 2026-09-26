@@ -22,6 +22,9 @@
   "aux_channel": 8,
   "aux_high_pwm": 1500,
 
+  "_handover_alt_min_m": "TEMPORAR (echipa, 26.09.2026): poarta accepta handover de la orice inaltime, pentru teste de coborare. Implicitul din cod e 5 m; sterge cheia ca sa revii la el. Plafonul de 12 m ramane.",
+  "handover_alt_min_m": 0.0,
+
   "_camera_auto_expose": "Expunerea se masoara pe scena la pornire si apoi se blocheaza (plafon 2 ms, limita de blur). Valorile fixe de banc erau cu ~5-6 trepte prea luminoase afara - detectia intermitenta din zborul de pe 24.09.2026.",
   "camera_auto_expose": true,
   "camera_fresh_capture": true,

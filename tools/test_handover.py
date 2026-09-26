@@ -175,6 +175,38 @@ def test_accept_la_marginile_ferestrei():
     return f"{HANDOVER_ALT_MIN_M:.0f} m si {HANDOVER_ALT_MAX_M:.0f} m acceptate"
 
 
+def test_pragul_de_altitudine_din_config_ajunge_in_poarta():
+    """Team, 26.09.2026: descent tests from any height. The floor comes
+    from config/nova.json (`handover_alt_min_m`) through tools/nova_pi.py,
+    the gate code itself keeps 5 m. Checked here on the real files: the
+    key is a number, the app passes it as `alt_min_m`, and a gate built
+    with it accepts low but still refuses above the 12 m ceiling."""
+    import json
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, '..', 'config', 'nova.json')) as f:
+        cfg = json.load(f)
+    floor = cfg.get('handover_alt_min_m')
+    assert isinstance(floor, (int, float)) and not isinstance(floor, bool), \
+        f"handover_alt_min_m lipseste sau nu e numar: {floor!r}"
+    with open(os.path.join(here, 'nova_pi.py')) as f:
+        src = f.read()
+    assert "cfg.get('handover_alt_min_m')" in src and "alt_min_m" in src, \
+        "nova_pi.py nu mai duce handover_alt_min_m in poarta"
+    assert HANDOVER_ALT_MIN_M == 5.0, "implicitul din cod trebuie sa ramana 5 m"
+    for alt, expect in ((2.0, True), (float(floor), True),
+                        (HANDOVER_ALT_MAX_M + 0.5, False)):
+        v = StubVehicle(alt)
+        ov = OverrideMonitor(v)
+        gate = HandoverGate(v, ov, autonomy_enabled=True,
+                            alt_min_m=float(floor))
+        gate.on_aux_requested(100.0)
+        settle(gate)
+        ok, why = gate.check(SETTLED, **GOOD)
+        assert ok is expect, f"la {alt} m: {ok} ({why})"
+    return f"config {floor:g} m: accepta la 2 m, refuza peste {HANDOVER_ALT_MAX_M:.0f} m"
+
+
 def test_refuz_prea_departe():
     v, ov, gate, rej = build()
     settle(gate)
@@ -364,6 +396,7 @@ TESTS = [
     ('NEGATIV: altitudine prea mica', test_refuz_altitudine_prea_mica),
     ('NEGATIV: altitudine prea mare', test_refuz_altitudine_prea_mare),
     ('accept pe limitele ferestrei', test_accept_la_marginile_ferestrei),
+    ('pragul de altitudine din config', test_pragul_de_altitudine_din_config_ajunge_in_poarta),
     ('NEGATIV: prea departe de marker', test_refuz_prea_departe),
     ('NEGATIV: marker nedetectat', test_refuz_marker_nedetectat),
     ('fara neutru dupa refuz', test_neutrul_nu_se_memoreaza_la_refuz),

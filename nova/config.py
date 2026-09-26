@@ -73,6 +73,13 @@ DEFAULTS = {
     # mijloc). Pentru unul de 2 pozitii (~1000/2000), 1500 e chiar mijlocul.
     'aux_high_pwm': 1700,
 
+    # Handover gate altitude floor, metres. None = the gate's own default
+    # (nova/handover.py: HANDOVER_ALT_MIN_M, 5 m). A number here REPLACES
+    # the floor for the onboard app only - the gate code stays untouched.
+    # Exists for descent tests from any height (team, 26.09.2026); the
+    # 12 m ceiling is not configurable. Remove the key to get 5 m back.
+    'handover_alt_min_m': None,
+
     # Expunerea camerei: masurata pe scena la pornire (AE converge ~1 s),
     # apoi BLOCATA, cu plafon la 2000 us (limita de blur). False = valorile
     # fixe de banc (2000 us / gain 8) - care pe teren, la lumina zilei, s-au
