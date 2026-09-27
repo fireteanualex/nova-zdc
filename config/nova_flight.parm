@@ -104,8 +104,16 @@ ARMING_SKIPCHK,32768
 # nimic; asa l-am pierdut in toate cele 13 rulari din Faza 1.
 WP_RFND_USE,0
 
-# Dupa contact ramanem armati pe sol ~1 s (15.2.7) inainte de urcare.
+# Dupa contact ramanem armati pe sol (touchdown_hold_s, 1.5 s) si urcam
+# in GUIDED la h_ref + alt_riseup (15.1.2, 15.2.7). Masurat in SITL
+# Copter-4.5.7 (27.09.2026): in GUIDED dezarmarea automata cere throttle-ul
+# pilotului la ZERO, pe sol, timp de DISARM_DELAY - 21.1 s cu 20 aici; cu
+# throttle-ul la mijloc nu dezarmeaza deloc. 20 s >> 1.5 s de sol.
 DISARM_DELAY,20
+# Throttle NE-arcuit (bitul 0 = 0): cu bitul 0 aprins, in GUIDED "throttle
+# jos" inseamna sub MIJLOC (motors.cpp, auto_disarm_check) si un pilot cu
+# stick-ul la mijloc ar dezarma drona pe marker dupa DISARM_DELAY.
+PILOT_THR_BHV,0
 
 # --- [ZBOR] Failsafe de emitator ---
 # SINGURA diferenta functionala fata de nova_sitl.parm, si e deliberata.

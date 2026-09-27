@@ -36,6 +36,13 @@
   "extnav_tol_min_m": 0.10,
   "extnav_tol_frac": 0.0667,
 
+  "_touchdown": "Dupa FINAL_ALIGN (27.09.2026, regulile 15.1.2/15.1.3/15.2.7): coborare GUIDED cu touchdown_speed m/s pana la contact (ON_GROUND de la FC), armat pe sol touchdown_hold_s (refuz sub 1 s: 15.1.3), apoi decolare GUIDED la h_ref + alt_riseup deasupra markerului (h_ref = altitudinea baro la contact; avertisment sub 5 m: 15.1.2), confirmare de hover hover_confirm_s cu detectie proaspata centrata, apoi SRC1 -> LOITER. Urcarea trebuie sa ajunga in riseup_timeout_s. Modul LAND nu mai e folosit in secventa.",
+  "alt_riseup": 5.5,
+  "touchdown_speed": 0.4,
+  "touchdown_hold_s": 1.5,
+  "riseup_timeout_s": 15.0,
+  "hover_confirm_s": 1.0,
+
   "_camera_fresh_capture": "false (27.09.2026): capture_request(flush=True) astepta un cadru capturat DUPA apel, ~62 ms in serie cu detectia la fiecare cadru (etapa 'achizitie' in b29). Cadrul din coada e cu 50-90 ms mai vechi, dar ExtNav foloseste timpul capturii, nu al publicarii, deci varsta nu conteaza pentru pozitie.",
   "camera_fresh_capture": false,
 

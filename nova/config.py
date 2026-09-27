@@ -136,6 +136,19 @@ DEFAULTS = {
     'extnav_tol_min_m': None,
     'extnav_tol_frac': None,
 
+    # Touchdown without disarming and the climb back (ZDC rules 15.1.2,
+    # 15.1.3, 15.2.7, 8.2.2): after FINAL_ALIGN the vehicle descends in
+    # GUIDED to contact, stays armed on the ground, then climbs in GUIDED
+    # to h_ref + alt_riseup above the marker (h_ref = baro height at
+    # contact). Validated by touchdown_settings(): alt_riseup < 5 m is a
+    # WARNING (15.1.2 asks for at least 5 m; 5.5 leaves 0.5 m for baro
+    # error), touchdown_hold_s < 1 s is REFUSED (15.1.3: stable >= 1 s).
+    'alt_riseup': 5.5,
+    'touchdown_speed': 0.4,
+    'touchdown_hold_s': 1.5,
+    'riseup_timeout_s': 15.0,
+    'hover_confirm_s': 1.0,
+
     # OLD KEY, replaced by `exposure` (27.09.2026): true = 'auto_lock',
     # false = 'fixed'. Read only when `exposure` is unset. None = not set:
     # the preset decides (a default of True here would override every
@@ -202,6 +215,40 @@ def autostart_mode(path=None):
     if cfg.get('autonomy_enabled') is not True:
         return 'monitor', 'autostart=zbor dar E0 inchis'
     return 'zbor', ''
+
+
+#: Keys of the touchdown sequence and their accepted ranges.
+TOUCHDOWN_KEYS = ('alt_riseup', 'touchdown_speed', 'touchdown_hold_s',
+                  'riseup_timeout_s', 'hover_confirm_s')
+
+
+def touchdown_settings(cfg):
+    """(values dict, warnings list) for the touchdown sequence, or
+    ValueError. touchdown_hold_s < 1.0 is refused: rule 15.1.3 wants a
+    stable touchdown of at least 1 s in the FC log. alt_riseup < 5.0 is
+    only a warning: 15.1.2 asks for >= 5 m above the marker, and the
+    default 5.5 keeps 0.5 m of margin for the barometer."""
+    v = {}
+    for k in TOUCHDOWN_KEYS:
+        raw = cfg.get(k, DEFAULTS[k])
+        try:
+            v[k] = float(DEFAULTS[k] if raw is None else raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"config: `{k}` = {raw!r} nu e un numar")
+        if v[k] <= 0:
+            raise ValueError(f"config: `{k}` = {v[k]} trebuie sa fie pozitiv")
+    warnings = []
+    if v['touchdown_hold_s'] < 1.0:
+        raise ValueError(
+            f"config: touchdown_hold_s = {v['touchdown_hold_s']} s < 1.0 s: "
+            f"regula 15.1.3 cere contact stabil >= 1 s in logul FC")
+    if v['alt_riseup'] < 5.0:
+        warnings.append(
+            f"alt_riseup = {v['alt_riseup']} m < 5.0 m: regula 15.1.2 cere "
+            f"urcare la cel putin 5 m deasupra markerului")
+    if v['touchdown_speed'] > 1.0:
+        warnings.append(f"touchdown_speed = {v['touchdown_speed']} m/s: contact dur")
+    return v, warnings
 
 
 def guidance(cfg):
