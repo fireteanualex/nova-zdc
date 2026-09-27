@@ -130,6 +130,12 @@ DEFAULTS = {
     # 12 m ceiling is not configurable. Remove the key to get 5 m back.
     'handover_alt_min_m': None,
 
+    # ExtNav lateral tolerance tol(h) = max(extnav_tol_min_m,
+    # extnav_tol_frac * h), metres (MOVE exit, CENTER_CHECK, FINAL_ALIGN).
+    # None = the brief's 0.15 m / 0.10 h (nova/extnav.py).
+    'extnav_tol_min_m': None,
+    'extnav_tol_frac': None,
+
     # OLD KEY, replaced by `exposure` (27.09.2026): true = 'auto_lock',
     # false = 'fixed'. Read only when `exposure` is unset. None = not set:
     # the preset decides (a default of True here would override every

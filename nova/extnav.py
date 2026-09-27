@@ -61,9 +61,13 @@ MIN_DOWN_COMPONENT = 0.05
 MIN_H_M = 0.30
 
 
-def tol_m(h):
-    """Centering tolerance at height h, metres."""
-    return max(TOL_MIN_M, TOL_FRAC * float(h))
+def tol_m(h, tol_min_m=None, tol_frac=None):
+    """Centering tolerance at height h, metres. The two coefficients can
+    come from the config (ExtNavConfig.tol_min_m / tol_frac); None = the
+    brief's values above."""
+    lo = TOL_MIN_M if tol_min_m is None else float(tol_min_m)
+    fr = TOL_FRAC if tol_frac is None else float(tol_frac)
+    return max(lo, fr * float(h))
 
 
 def consistency_tol_m(h):

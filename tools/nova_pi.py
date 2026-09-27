@@ -237,6 +237,17 @@ def anunta_modul(vehicle, gate, canal, prag):
         pass
 
 
+def extnav_config(cfg, canal, prag):
+    """ExtNavConfig from config/nova.json: the switch, and the lateral
+    tolerance (extnav_tol_min_m / extnav_tol_frac; absent = the brief's)."""
+    kw = {}
+    for key, field in (('extnav_tol_min_m', 'tol_min_m'),
+                       ('extnav_tol_frac', 'tol_frac')):
+        if cfg.get(key) is not None:
+            kw[field] = float(cfg[key])
+    return ExtNavConfig(aux_channel=canal, aux_high_pwm=prag, **kw)
+
+
 def cablaj_extnav(a, cfg, vehicle, override, gate_kw, canal, prag,
                   signal_reject, on_sm_event):
     """The flight configuration since 27.09.2026 (REPROIECTARE_EXTNAV.md):
@@ -258,7 +269,7 @@ def cablaj_extnav(a, cfg, vehicle, override, gate_kw, canal, prag,
     est = ExtNavEstimator(vehicle, verbose=False)
     ekf = EkfSourceManager(vehicle, faze=SRC2_PHASES)
     sm = ExtNavLanding(vehicle, est, ekf, gate,
-                       ExtNavConfig(aux_channel=canal, aux_high_pwm=prag),
+                       extnav_config(cfg, canal, prag),
                        on_event=on_sm_event)
     sm.attach_supervisor(sup)
     print("[bord] ghidare EXTNAV: camera -> VISION_POSITION_ESTIMATE -> EKF3 "

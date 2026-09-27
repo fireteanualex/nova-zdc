@@ -135,6 +135,14 @@ class ExtNavConfig:
     final_h_m: float = FINAL_H_M
     final_hold_s: float = FINAL_HOLD_S
     align_yaw: bool = True
+    #: Lateral tolerance tol(h) = max(tol_min_m, tol_frac * h) - MOVE exit,
+    #: CENTER_CHECK, FINAL_ALIGN. Defaults = the brief (0.15 m, 0.10 h).
+    #: config/nova.json sets 0.10 / 0.0667 (27.09.2026): the flights that
+    #: landed well had angles 1.5x too large (calibration scaled for the
+    #: wrong sensor mode), so their REAL tolerance was the brief's / 1.5;
+    #: with the geometry fixed (62808e9) these values reproduce it.
+    tol_min_m: float = extnav.TOL_MIN_M
+    tol_frac: float = extnav.TOL_FRAC
 
 
 class ExtNavLanding:
@@ -280,7 +288,8 @@ class ExtNavLanding:
         return -self.v.z
 
     def tol_now(self):
-        return extnav.tol_m(max(self.h_now(), 0.0))
+        return extnav.tol_m(max(self.h_now(), 0.0), self.cfg.tol_min_m,
+                            self.cfg.tol_frac)
 
     def _fresh_est(self, since):
         e = self.last_est

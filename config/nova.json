@@ -31,6 +31,10 @@
   "_handover_alt_min_m": "Altitudinea minima la care poarta accepta handover-ul, m (decizia echipei, 27.09.2026: 1 m, brief D6). Fara cheie: 5 m pe calea plnd, 1 m pe extnav. Plafonul de 12 m ramane. Pe extnav estimatorul refuza oricum sub 0.3 m.",
   "handover_alt_min_m": 1.0,
 
+  "_extnav_tol": "Toleranta laterala ExtNav tol(h) = max(extnav_tol_min_m, extnav_tol_frac * h), in m (iesirea din MOVE, CENTER_CHECK, FINAL_ALIGN; si fazele noi de touchdown). Brief-ul: 0.15 / 0.10. Zborurile reusite din 27.09.2026 au avut unghiurile de 1.5x prea mari (calibrarea scalata pentru alt mod de senzor), deci toleranta lor REALA a fost 0.10 m / 0.0667 h. Dupa corectia geometriei (62808e9) valorile de aici reproduc exact ce a zburat; se revine la brief doar dupa zbor validat.",
+  "extnav_tol_min_m": 0.10,
+  "extnav_tol_frac": 0.0667,
+
   "_camera_fresh_capture": "false (27.09.2026): capture_request(flush=True) astepta un cadru capturat DUPA apel, ~62 ms in serie cu detectia la fiecare cadru (etapa 'achizitie' in b29). Cadrul din coada e cu 50-90 ms mai vechi, dar ExtNav foloseste timpul capturii, nu al publicarii, deci varsta nu conteaza pentru pozitie.",
   "camera_fresh_capture": false,
 

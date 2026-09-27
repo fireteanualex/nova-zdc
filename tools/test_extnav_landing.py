@@ -572,7 +572,35 @@ def test_a_doua_incercare_din_acelasi_zbor_se_angajeaza():
             f"VPE {n_vpe} -> {len(app.v.vpe)}")
 
 
+def test_toleranta_din_config_reproduce_ce_a_zburat():
+    """Retus 27.09: toleranta laterala vine din config. nova.json are 0.10 m
+    / 0.0667 h = toleranta REALA a zborurilor reusite (unghiurile erau de
+    1.5x prea mari). Implicitul din cod ramane brief-ul (0.15 / 0.10).
+    Secventa completa trece si cu toleranta stransa."""
+    import nova_pi
+    from nova import config as nova_config
+    cfg = nova_config.load()
+    c = nova_pi.extnav_config(cfg, AUX, 1500)
+    assert (c.tol_min_m, c.tol_frac) == (0.10, 0.0667), (c.tol_min_m, c.tol_frac)
+    d = ExtNavConfig()
+    assert (d.tol_min_m, d.tol_frac) == (ex.TOL_MIN_M, ex.TOL_FRAC) == (0.15, 0.10)
+    for h, t in ((1.0, 0.10), (4.0, 0.2668), (8.0, 0.5336)):
+        assert abs(ex.tol_m(h, c.tol_min_m, c.tol_frac) - t) < 1e-9, h
+        assert abs(ex.tol_m(h, c.tol_min_m, c.tol_frac)
+                   - ex.tol_m(h) / 1.5) < 0.001, h
+    app = App(h=8.0, p=(2.0, -1.0), rate=0.05, cfg=c)
+    assert abs(app.sm.tol_now() - 0.5336) < 1e-6
+    app.handover()
+    st = app.run(120.0, stop=(Phase.TOUCHDOWN, Phase.ABORT, Phase.GATE_FAIL))
+    assert st == Phase.TOUCHDOWN, (st, app.states, app.sm.exit_reason)
+    err = math.hypot(*app.v.p)
+    assert err < 0.10, f"eroare la contact {err:.3f} m"
+    return f"0.10 / 0.0667 h = brief / 1.5; secventa completa, contact la {100 * err:.1f} cm"
+
+
 TESTS = [
+    ('toleranta din config reproduce ce a zburat',
+     test_toleranta_din_config_reproduce_ce_a_zburat),
     ('secventa completa cu detectii la 5%', test_secventa_completa_cu_detectii_rare),
     ('poarta: fara detectii -> retry -> GATE_FAIL, 0 comenzi',
      test_poarta_fara_detectii_reincearca_apoi_esueaza_fara_comenzi),
