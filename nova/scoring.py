@@ -42,10 +42,22 @@ class ScoringRecorder:
     cronologic - `nova.frame_ring.FrameRing`, sau altceva in teste.
     """
 
-    #: Cat de departe de timestamp-ul cerut acceptam un cadru. La 30 fps un
-    #: cadru e la 33 ms; peste 0.2 s inseamna ca ringul nu acoperea momentul,
-    #: iar un cadru "apropiat" ar fi de fapt alt moment al coborarii.
-    TOLERANTA_S = 0.2
+    #: Two tolerances, because the two events mean different things (B6,
+    #: 27.09.2026 decision with the user):
+    #:  - scoring_capture carries t = the CAPTURE time of the frame that
+    #:    triggered it, and that frame is already in the ring (pushed
+    #:    before detection). The gap is 0 by construction; anything later
+    #:    is another moment of the descent. A few ms absorb clock jitter.
+    #:  - touchdown carries t = the moment of the contact decision; the
+    #:    contact frame is captured AFTER it (update() waits for it). The
+    #:    vehicle is on the ground, so a frame 0.4 s later shows the same
+    #:    thing - the wait only has to outlast a hiccup of the detector
+    #:    thread (frames come every 33-150 ms).
+    TOLERANTA_SCORING_S = 0.05
+    TOLERANTA_CONTACT_S = 0.5
+    #: Kept as the "how long may a frame come after the event" figure
+    #: (touchdown), for callers and tests that read one number.
+    TOLERANTA_S = TOLERANTA_CONTACT_S
 
     EVENIMENTE = ('scoring_capture', 'touchdown')
 
@@ -68,7 +80,11 @@ class ScoringRecorder:
         self._pending = {}           # nume -> (t, info)
 
     # -- alegerea cadrului -------------------------------------------------
-    def cadru_la(self, t):
+    def toleranta(self, nume):
+        return (self.TOLERANTA_SCORING_S if nume == 'scoring_capture'
+                else self.TOLERANTA_CONTACT_S)
+
+    def cadru_la(self, t, toleranta=None):
         """(timestamp, cadru) cel mai apropiat DUPA `t`, sau None.
 
         Se cauta inainte, nu in jur: cadrul cerut e cel care a produs
@@ -82,7 +98,8 @@ class ScoringRecorder:
         if not candidati:
             return None
         ts, frame = candidati[0]
-        if ts - t > self.TOLERANTA_S:
+        tol = self.TOLERANTA_CONTACT_S if toleranta is None else toleranta
+        if ts - t > tol:
             return None
         return ts, frame
 
@@ -114,12 +131,12 @@ class ScoringRecorder:
 
     def salveaza(self, nume, t, info=None):
         """Scrie imaginea si evidenta ei. (cale_png, cale_json) sau None."""
-        gasit = self.cadru_la(t)
+        tol = self.toleranta(nume)
+        gasit = self.cadru_la(t, tol)
         if gasit is None:
             self.lipsa[nume] = t
             self._noteaza(f"!! {nume}: niciun cadru in ring la t={t:.3f} "
-                          f"(toleranta {self.TOLERANTA_S:g} s) - NU salvez "
-                          f"altul")
+                          f"(toleranta {tol:g} s) - NU salvez altul")
             return None
         ts, frame = gasit
         os.makedirs(self.out_dir, exist_ok=True)
@@ -161,7 +178,7 @@ class ScoringRecorder:
         if self.ring is not None and self._nimic_dupa(t):
             self._pending[nume] = (t, info)
             self._noteaza(f"  .. {nume}: astept primul cadru capturat dupa "
-                          f"t={t:.3f} (cel mult {self.TOLERANTA_S:g} s)")
+                          f"t={t:.3f} (cel mult {self.toleranta(nume):g} s)")
             return
         self.salveaza(nume, t, info)
 
@@ -180,13 +197,13 @@ class ScoringRecorder:
         niciodata (B6); pe bord o cheama invelisul detectorului din
         nova_pi.py, in sim bucla din nova_sim.py."""
         for nume, (t, info) in list(self._pending.items()):
+            tol = self.toleranta(nume)
             if self._nimic_dupa(t):
-                if now - t > self.TOLERANTA_S:
+                if now - t > tol:
                     del self._pending[nume]
                     self.lipsa[nume] = t
                     self._noteaza(f"!! {nume}: niciun cadru capturat in "
-                                  f"{self.TOLERANTA_S:g} s dupa t={t:.3f} "
-                                  f"- NU salvez altul")
+                                  f"{tol:g} s dupa t={t:.3f} - NU salvez altul")
                 continue
             del self._pending[nume]
             self.salveaza(nume, t, info)

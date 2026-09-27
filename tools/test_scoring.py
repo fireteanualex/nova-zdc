@@ -86,12 +86,23 @@ def test_un_cadru_lipsa_nu_se_inlocuieste():
         assert rec.salveaza('touchdown', 12.0) is None
         assert 'touchdown' in rec.lipsa
         assert not os.path.exists(d) or not os.listdir(d), os.listdir(d)
-        # si exact la limita tolerantei
+        # scoring: cadrul cerut EXISTA prin constructie; unul la 400 ms
+        # distanta e alt moment al coborarii -> lipsa, nu inlocuire
         rec2 = ScoringRecorder(d, ring_cu([10.0, 10.5]), FakeVehicle(),
                                verbose=False)
-        assert rec2.salveaza('touchdown', 10.1) is None, (
+        assert rec2.salveaza('scoring_capture', 10.1) is None, (
             "un cadru la 400 ms distanta e alt moment al coborarii")
-        return f"peste {ScoringRecorder.TOLERANTA_S:g} s -> lipsa, nu alt cadru"
+        # contact: vehiculul e pe sol, 400 ms mai tarziu e acelasi lucru -
+        # se accepta; dar peste 0.5 s (fir blocat) tot lipsa
+        rec3 = ScoringRecorder(d, ring_cu([10.0, 10.5]), FakeVehicle(),
+                               verbose=False)
+        assert rec3.salveaza('touchdown', 10.1) is not None
+        rec4 = ScoringRecorder(d, ring_cu([10.0, 10.7]), FakeVehicle(),
+                               verbose=False)
+        assert rec4.salveaza('touchdown', 10.1) is None
+        assert ScoringRecorder.TOLERANTA_SCORING_S < 0.1 < ScoringRecorder.TOLERANTA_CONTACT_S
+        return (f"scoring: > {ScoringRecorder.TOLERANTA_SCORING_S:g} s lipsa; "
+                f"contact: pana la {ScoringRecorder.TOLERANTA_CONTACT_S:g} s")
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -104,7 +115,8 @@ def test_nu_se_ia_un_cadru_de_DINAINTE():
         rec = ScoringRecorder(d, ring_cu([10.00, 10.30]), FakeVehicle(),
                               verbose=False)
         # 10.05 e la 50 ms dupa un cadru existent, dar la 250 ms inainte de
-        # urmatorul: nu se ia niciunul
+        # urmatorul: nu se ia niciunul (scoring: cadrul cerut ar fi trebuit
+        # sa fie chiar in ring)
         assert rec.salveaza('scoring_capture', 10.05) is None
         return "un cadru anterior nu e o aproximare acceptabila"
     finally:
