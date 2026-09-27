@@ -1,0 +1,46 @@
+# NOVA - ZDC 2026 - trackerV2.py la fiecare pornire a Pi-ului, IN LOCUL
+# bring-up-ului.
+#
+# SERVICIU DE UTILIZATOR, ca nova-bringup.service, si din aceleasi motive
+# (vezi acolo). Instalat de pi/install_tracker.sh in ~/.config/systemd/user/.
+# NU se activeaza cu `enable`: il porneste la login pi/nova-tracker.desktop
+# (autostart), din sesiunea grafica. De mana:
+#     systemctl --user start|stop|status nova-tracker
+#
+# Scriptul NU e in repo: sta la ~/trackerV2.py pe Pi. Unitatea nu porneste
+# daca lipseste (pi/install_tracker.sh verifica inainte sa instaleze).
+#
+# SE EXCLUDE CU nova-bringup.service. Amandoua tin camera (si, dupa caz,
+# /dev/serial0), deci nu pot rula in acelasi timp (§5.27). `Conflicts=` face
+# ca pornirea unuia sa-l opreasca pe celalalt, indiferent cine da comanda -
+# autostart-ul sau un `systemctl --user start` de mana.
+
+[Unit]
+Description=NOVA ZDC - trackerV2.py (in locul bring-up-ului)
+Documentation=file:///home/fireteanualex/nova-zdc/pi/README.md
+After=graphical-session.target
+PartOf=graphical-session.target
+Conflicts=nova-bringup.service
+# Aceeasi limita ca la bring-up: 5 caderi in 5 minute = ceva e rupt
+# structural, ne oprim si lasam logul sa fie citit.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+Environment=PYTHONUNBUFFERED=1
+# Interpretorul: venv-ul de pe Pi (tools/setup_pi.sh), care vede si
+# pachetele de sistem (picamera2, §5.24). Daca venv-ul lipseste, cade pe
+# python3 de sistem - trackerul nu depinde de repo, deci poate merge si asa.
+ExecStart=/bin/sh -c 'PY=%h/nova-venv/bin/python; [ -x "$PY" ] || PY=python3; exec "$PY" -u %h/trackerV2.py'
+Restart=on-failure
+RestartSec=5
+# Oprirea arata ca un Ctrl-C, ca scriptul sa apuce sa elibereze camera
+# (§5.47).
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+# FARA [Install]: nu se activeaza cu `systemctl enable`. Il porneste
+# pi/nova-tracker.desktop, din sesiunea grafica, DUPA ce ii da variabilele de
+# ecran - vezi pi/nova-bringup.desktop pentru de ce.

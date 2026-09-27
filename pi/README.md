@@ -265,6 +265,33 @@ ls -t ~/nova-logs/ | head                 # logurile de rulare
 > portul **și camera**. Scriptul refuză acum, cu comanda de oprire:
 > `systemctl --user stop nova-bringup`.
 
+### 8b. `~/trackerV2.py` la boot, în locul bring-up-ului
+
+Scriptul nu e în repo: stă la `~/trackerV2.py` pe Pi. Se instalează ca
+serviciu de utilizator, cu același mecanism (autostart din sesiunea
+grafică), **în locul** bring-up-ului: ține și el camera, deci nu pot rula
+amândouă.
+
+```bash
+cd ~/nova-zdc && pi/install_tracker.sh     # opreste nova-bringup si ii scoate autostart-ul
+pi/install.sh                              # inapoi la bring-up, la boot
+```
+
+Fiecare instalare îl oprește pe celălalt **și** îi scoate intrarea de
+autostart (doar oprirea nu ar ajunge: la următorul login ar porni amândouă).
+Unitățile rămân amândouă instalate, iar `Conflicts=` face ca pornirea de
+mână a uneia să o oprească pe cealaltă:
+
+```bash
+systemctl --user status nova-tracker
+journalctl --user-unit nova-tracker -f
+systemctl --user start nova-bringup        # o data, de mana: opreste trackerul
+pi/install_tracker.sh --uninstall          # scoate trackerul; NU repune bring-up-ul
+```
+
+Interpretorul e venv-ul din `tools/setup_pi.sh` (`~/nova-venv`, vede și
+pachetele de sistem); dacă lipsește, cade pe `python3` de sistem.
+
 ---
 
 ## Override pilot și comutatorul de handover

@@ -27,6 +27,9 @@ Description=NOVA ZDC - bring-up Pi 4 + Pixhawk (monitor, fara comenzi)
 Documentation=file:///home/fireteanualex/nova-zdc/pi/README.md
 After=graphical-session.target
 PartOf=graphical-session.target
+# Se exclude cu trackerul (pi/nova-tracker.service): amandoua tin camera.
+# Pornirea unuia il opreste pe celalalt, oricine ar da comanda.
+Conflicts=nova-tracker.service
 # Daca pica de 5 ori in 5 minute, ceva e rupt structural - lipsa calibrare,
 # camera defecta, UART nepregatit. Ne oprim si lasam logul sa fie citit, in
 # loc sa reincercam la infinit si sa umplem jurnalul.

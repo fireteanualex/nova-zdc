@@ -1,0 +1,19 @@
+[Desktop Entry]
+# NOVA - ZDC 2026 - pornirea automata a lui ~/trackerV2.py, din sesiunea
+# grafica, IN LOCUL bring-up-ului.
+#
+# Instalat de pi/install_tracker.sh in ~/.config/autostart/. Il ruleaza
+# desktop-ul la login (cu autologin: la fiecare boot).
+#
+# Acelasi mecanism ca pi/nova-bringup.desktop, si din aceleasi motive
+# (vezi acolo). Diferenta: INAINTE de a porni trackerul, opreste
+# nova-bringup - amandoua tin camera, deci nu pot rula in acelasi timp.
+# pi/install_tracker.sh scoate si intrarea de autostart a bring-up-ului,
+# altfel s-ar porni amandoua la login si ar castiga cine porneste ultimul.
+Type=Application
+Name=NOVA trackerV2
+Comment=trackerV2.py in locul bring-up-ului NOVA
+Exec=sh -c 'systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY; systemctl --user stop nova-bringup.service; systemctl --user start nova-tracker.service'
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

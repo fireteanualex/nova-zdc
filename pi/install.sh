@@ -8,6 +8,9 @@
 #
 # NU cere sudo: serviciul e de utilizator (vezi pi/nova-bringup.service
 # pentru de ce). Singurul pas cu sudo e pi/setup_uart.sh, separat.
+#
+# Se exclude cu trackerul (pi/install_tracker.sh): il opreste si ii scoate
+# pornirea automata, fiindca amandoua tin camera.
 
 set -euo pipefail
 
@@ -20,6 +23,10 @@ UNIT_DST="$UNIT_DIR/nova-bringup.service"
 AUTO_SRC="$REPO/pi/nova-bringup.desktop"
 AUTO_DIR="$HOME/.config/autostart"
 AUTO_DST="$AUTO_DIR/nova-bringup.desktop"
+# Intrarea de autostart a trackerului (pi/install_tracker.sh): se scoate,
+# altfel la login ar porni amandoua si ar castiga cine porneste ultimul.
+# Unitatea lui ramane, pentru pornire de mana.
+TRACKER_AUTO="$AUTO_DIR/nova-tracker.desktop"
 
 DRY_RUN=0
 UNINSTALL=0
@@ -64,6 +71,17 @@ fi
 
 [[ -f "$UNIT_SRC" ]] || die "nu gasesc $UNIT_SRC"
 [[ -x "$REPO/pi/bringup.sh" ]] || die "pi/bringup.sh nu e executabil (chmod +x)"
+
+# Trackerul (pi/install_tracker.sh) tine camera, ca si bring-up-ul: nu pot
+# rula in acelasi timp (§5.27). Il oprim si ii scoatem pornirea automata;
+# unitatea lui ramane, pentru `systemctl --user start nova-tracker`.
+say "opresc trackerul (nova-tracker) si ii scot pornirea automata"
+run systemctl --user stop nova-tracker.service 2>/dev/null || true
+if [[ -f "$TRACKER_AUTO" ]]; then
+  run rm -f "$TRACKER_AUTO"
+else
+  printf '  (nu avea intrare de autostart)\n'
+fi
 
 say "instalez unitatea in $UNIT_DIR"
 run mkdir -p "$UNIT_DIR"
@@ -139,6 +157,9 @@ cat <<FIN
       systemctl --user restart nova-bringup
       systemctl --user stop nova-bringup
       journalctl --user-unit nova-bringup -f
+
+  In locul bring-up-ului, ~/trackerV2.py la boot:
+      pi/install_tracker.sh
 
   Loguri de rulare (si dupa repornire):
       ls -t ~/nova-logs/ | head
