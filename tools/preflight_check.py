@@ -198,35 +198,70 @@ def check_stack(os_release_path='/etc/os-release'):
     return Result('stiva', OK, detail, {'linii': linii, 'codename': codename})
 
 
-def rezolutie_asteptata(cfg, cal):
-    """(latime, inaltime, nota) pe care trebuie sa o dea camera.
+def check_geometry(cfg, cal, source):
+    """The 'rezolutie' line (27.09.2026): what the pixels the detector sees
+    are, and which calibration they get.
 
-    Implicit rezolutia calibrarii. Cu `track_size` in config (detectie pe
-    1280x720 din 27.09.2026), rezolutia ceruta, cu calibrarea scalata -
-    valabil DOAR la acelasi raport de aspect; altfel ValueError, ca in
-    CameraCalibration.scaled_to."""
-    ts = cfg.get('track_size')
-    if not ts:
-        return cal.width, cal.height, ''
-    w, h = int(ts[0]), int(ts[1])
-    if (w, h) == (cal.width, cal.height):
-        return w, h, ''
-    cal.scaled_to(w, h)                     # ridica ValueError daca nu se poate
-    return w, h, f" (calibrare {cal.width}x{cal.height} scalata)"
+    The old line compared only the stream size with the scaled calibration
+    and said "OK 1280x720 (calibrare 2304x1296 scalata)" while the sensor
+    ran the 1536x864 CROPPED mode - same 16:9, so nothing looked wrong and
+    fx was 577 instead of ~865. Now: the sensor mode read back from the
+    camera against the one the config asks for, the stream size, the
+    ScalerCrop, and calibration_for() - scale or derive, nothing else. Any
+    mismatch is ESEC."""
+    from nova.detector_pi import (CalibrationMismatch, calibration_for,
+                                  output_size_from_config,
+                                  sensor_mode_from_config)
+    try:
+        mode = sensor_mode_from_config(cfg)
+    except ValueError as e:
+        return Result('rezolutie', ESEC, str(e))
+    size = output_size_from_config(cfg, mode)
+    geom = getattr(source, 'geometry', None)
+    if geom is None:
+        return Result('rezolutie', ESEC,
+                      "camera nu raporteaza geometria (mod senzor, "
+                      "ScalerCrop): nu se poate verifica ce vede detectorul")
+    if geom.sensor_mode != mode:
+        return Result('rezolutie', ESEC,
+                      f"{geom.describe()}: modul efectiv "
+                      f"{geom.sensor_mode[0]}x{geom.sensor_mode[1]} difera de "
+                      f"cel cerut {mode[0]}x{mode[1]} (config sensor_mode)")
+    if geom.output_size != size:
+        return Result('rezolutie', ESEC,
+                      f"{geom.describe()}: fluxul difera de cel cerut "
+                      f"{size[0]}x{size[1]}")
+    try:
+        c = calibration_for(cal, geom)
+    except CalibrationMismatch as e:
+        return Result('rezolutie', ESEC, str(e))
+    return Result('rezolutie', OK,
+                  f"{geom.describe()} | calibrare {c.kind}, fx={c.fx:.1f} "
+                  f"cx={c.cx:.1f} cy={c.cy:.1f}",
+                  {'sensor_mode': list(geom.sensor_mode),
+                   'scaler_crop': list(geom.scaler_crop),
+                   'output_size': list(geom.output_size),
+                   'calibrare': c.kind, 'fx': c.fx, 'fy': c.fy,
+                   'cx': c.cx, 'cy': c.cy})
 
 
 def check_calib(cfg):
     """(Result, calibrare_sau_None). Calibrarea se intoarce pentru ca
-    verificarea de rezolutie de mai jos are nevoie de ea."""
+    verificarea de geometrie de mai jos are nevoie de ea."""
     path = nova_config.resolve(cfg, 'camera_calibration')
     try:
         cal = check_calibration(path)
-    except StartupRefusal as e:
+        mode, crop, legacy = cal.recorded_geometry()
+    except (StartupRefusal, ValueError) as e:
         return Result('calibrare', ESEC, str(e).replace('\n', ' ').strip()), None
+    geo = (f"mod {mode[0]}x{mode[1]}, ScalerCrop {crop}"
+           + (" implicit: fisier fara geometrie" if legacy else ''))
     return (Result('calibrare', OK,
                    f"{cal.width}x{cal.height} fx={cal.fx:.1f} "
-                   f"rms={cal.rms:.3f} px n={cal.n_images}",
-                   {'fx': cal.fx, 'rms': cal.rms, 'n_images': cal.n_images}),
+                   f"rms={cal.rms:.3f} px n={cal.n_images} ({geo})",
+                   {'fx': cal.fx, 'rms': cal.rms, 'n_images': cal.n_images,
+                    'sensor_mode': list(mode), 'scaler_crop': list(crop),
+                    'geometrie_implicita': legacy}),
             cal)
 
 
@@ -406,9 +441,14 @@ def run_checks(args, source_factory=None):
             if source_factory is not None:
                 source = source_factory()
             else:
-                from nova.detector_pi import PiCameraSource, TRACK_SIZE
-                marime = tuple(int(x) for x in (cfg.get('track_size') or TRACK_SIZE))
-                source = PiCameraSource(size=marime, verbose=False)
+                from nova.detector_pi import (PiCameraSource,
+                                              output_size_from_config,
+                                              sensor_mode_from_config)
+                mod = sensor_mode_from_config(cfg)
+                source = PiCameraSource(
+                    size=output_size_from_config(cfg, mod), sensor_mode=mod,
+                    verbose=False,
+                    auto_expose=cfg.get('camera_auto_expose', True))
         except Exception as e:                               # noqa: BLE001
             msg = f"{type(e).__name__}: {e}"
             if isinstance(e, ModuleNotFoundError):
@@ -418,25 +458,14 @@ def run_checks(args, source_factory=None):
             results.append(Result('controale', ESEC, 'camera indisponibila'))
         if source is not None:
             try:
-                # Rezolutia sursei fata de cea a calibrarii: o nepotrivire
-                # da distante gresite fara niciun simptom vizibil.
-                if cal is not None and getattr(source, 'size', None):
-                    w, h = source.size
-                    try:
-                        ew, eh, nota = rezolutie_asteptata(cfg, cal)
-                    except ValueError as e:
-                        results.append(Result('rezolutie', ESEC, str(e)))
-                    else:
-                        if (w, h) != (ew, eh):
-                            results.append(Result(
-                                'rezolutie', ESEC,
-                                f"camera {w}x{h}, asteptat {ew}x{eh} "
-                                f"(calibrare {cal.width}x{cal.height}"
-                                f"{', track_size din config' if nota else ''}). "
-                                f"Recalibreaza la rezolutia de tracking."))
-                        else:
-                            results.append(Result('rezolutie', OK,
-                                                  f"{w}x{h}{nota}"))
+                # Geometria sursei fata de cea a calibrarii: o nepotrivire
+                # da unghiuri si distante gresite fara niciun simptom
+                # vizibil (27.09.2026: fx 577 in loc de ~865, 16:9 ambele).
+                if cal is not None:
+                    results.append(check_geometry(cfg, cal, source))
+                else:
+                    results.append(Result('rezolutie', ESEC,
+                                          'fara calibrare utilizabila'))
                 results.extend(check_camera(source, args.frames))
                 results.append(check_controls(source))
             finally:

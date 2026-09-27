@@ -47,13 +47,17 @@ DEFAULTS = {
     'search_downscale': 2,
     'roi_size_px': [640, 480],
 
-    # Detection resolution [w, h]. None = the calibration's (2304x1296).
-    # Team decision 27.09.2026: 1280x720 - the sensor keeps its binned
-    # 2304x1296 mode, the ISP scales the stream, the calibration is scaled
-    # to match (CameraCalibration.scaled_to; same aspect ratio required).
-    # detectMarkers on 0.9 MP instead of 3 MP: ~3x cheaper per frame; the
-    # marker keeps its angular size, so at 10 m it has ~19 px instead of
-    # ~35 - still decodable (the 4x4 marker needs ~5 px per module).
+    # IMX708 sensor mode [w, h], MANDATORY - no default on purpose. Without
+    # it libcamera picks the mode itself: asked for a 1280x720 stream it
+    # picked the 1536x864 CROPPED mode while the calibration was scaled as
+    # full-field 2304x1296 (fx 577 instead of ~865; found 27.09.2026).
+    # One of 4608x2592, 2304x1296 (binned, full field), 1536x864 (binned,
+    # central crop). The camera reads it back and refuses a different one.
+    'sensor_mode': None,
+
+    # Detection stream [w, h]. None = the sensor mode's own size. The ISP
+    # scales the mode down to it; the calibration follows through
+    # nova.detector_pi.calibration_for (scale / derive, nothing else).
     'track_size': None,
 
     # Cum e montata camera pe VEHICULUL REAL: cu cate grade trebuie rotita

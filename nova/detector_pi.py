@@ -329,7 +329,7 @@ class CameraCalibration:
     """
 
     def __init__(self, K, dist, width, height, rms=None, n_images=0,
-                 source='necunoscut', meta=None):
+                 source='necunoscut', meta=None, kind='nativa'):
         self.K = np.asarray(K, dtype=np.float64).reshape(3, 3)
         self.dist = np.asarray(dist, dtype=np.float64).reshape(-1)
         self.width = int(width)
@@ -337,6 +337,11 @@ class CameraCalibration:
         self.rms = None if rms is None else float(rms)
         self.n_images = int(n_images)
         self.source = source
+        #: How this calibration relates to the file it came from, for the
+        #: geometry actually running: 'nativa' (the file itself), 'scalata'
+        #: (ISP scale only), 'derivata' (crop mode at the same binning) or
+        #: 'derivata+scalata'. Set by calibration_for().
+        self.kind = kind
         #: Trasabilitate pentru Compliance Matrix: tipul de tinta, latura
         #: MASURATA a patratului, cate poze au fost acceptate si cate
         #: respinse, LensPosition-ul folosit. Fara ele, fisierul de calibrare
@@ -413,7 +418,47 @@ class CameraCalibration:
             rms=None if self.rms is None else self.rms * sx,
             n_images=self.n_images,
             source=f"{self.source} (scalata {self.width}x{self.height} -> "
-                   f"{width}x{height})", meta=meta)
+                   f"{width}x{height})", meta=meta,
+            kind='scalata' if self.kind == 'nativa' else f"{self.kind}+scalata")
+
+    # -- geometry the calibration was made in (27.09.2026) -----------------
+    def recorded_geometry(self):
+        """(sensor_mode, scaler_crop, legacy): the sensor mode and the
+        ScalerCrop the calibration images were taken in. Files written
+        before 27.09.2026 do not say; they were all made in the 2304x1296
+        binned, full-field mode, so that is what `legacy` = True means."""
+        m, c = self.meta.get('sensor_mode'), self.meta.get('scaler_crop')
+        if m is None and c is None:
+            return LEGACY_CAL_MODE, LEGACY_CAL_CROP, True
+        if m is None or c is None:
+            raise ValueError(
+                f"calibrarea are doar jumatate din geometrie (sensor_mode="
+                f"{m}, scaler_crop={c}): refac calibrarea sau completeaza "
+                f"fisierul")
+        return parse_size(m), parse_rect(c), False
+
+    def set_geometry(self, sensor_mode, scaler_crop):
+        """Record the geometry in the meta (saved as meta_sensor_mode,
+        meta_scaler_crop next to image_width/height)."""
+        w, h = parse_size(sensor_mode)
+        self.meta['sensor_mode'] = f"{w}x{h}"
+        self.meta['scaler_crop'] = ','.join(str(v) for v in parse_rect(scaler_crop))
+        return self
+
+    def cropped(self, dx, dy, width, height, note):
+        """The same lens and pixel pitch, a window of the image: the
+        principal point moves by the window's offset, nothing else does
+        (focal length and distortion are properties of the lens and of the
+        pixel size, both unchanged)."""
+        K = self.K.copy()
+        K[0, 2] -= dx
+        K[1, 2] -= dy
+        meta = dict(self.meta)
+        meta['derivata_din'] = f"{self.width}x{self.height}"
+        return CameraCalibration(K, self.dist, width, height, rms=self.rms,
+                                 n_images=self.n_images,
+                                 source=f"{self.source} ({note})", meta=meta,
+                                 kind='derivata')
 
     @classmethod
     def geometric(cls, width, height, hfov_deg=102.0):
@@ -499,6 +544,219 @@ class CameraCalibration:
                 f"cx={self.cx:.1f} cy={self.cy:.1f} HFOV={self.hfov_deg():.1f} "
                 f"VFOV={self.vfov_deg():.1f} rms={rms} n={self.n_images} "
                 f"[{self.source}]")
+
+
+# --- Camera geometry: sensor mode, ScalerCrop, stream (27.09.2026) -----------
+#
+# Found by `descent_test.sh --check` on the vehicle: the camera was asked for
+# a 1280x720 stream without a sensor mode, libcamera picked the 1536x864
+# CROPPED mode (the central 3072x1728 of the array, binned 2x2), and the
+# calibration was scaled as if the sensor ran the 2304x1296 full-field mode.
+# Same 16:9 aspect, so the old "same aspect -> scale" rule let it through:
+# fx 577 instead of ~865, angles 1.5x too large, solvePnP distance 1.5x too
+# small. Nothing is implicit any more: the mode comes from the config, is
+# read back after configure, the ScalerCrop is read from the first frame,
+# and a calibration is used only through calibration_for(), which knows
+# exactly two legal transforms and refuses everything else.
+
+#: IMX708 active pixel array. ScalerCrop rectangles are in its coordinates.
+SENSOR_ARRAY = (4608, 2592)
+#: The IMX708 (Camera Module 3) sensor modes, 10 bit, and the region of the
+#: array each one reads. Only used to validate the config offline and to
+#: say what is expected; at run time the camera's own list (sensor_modes)
+#: and the ScalerCrop read back are the truth.
+IMX708_MODES = {
+    (4608, 2592): (0, 0, 4608, 2592),      # full resolution, ~14 fps
+    (2304, 1296): (0, 0, 4608, 2592),      # binned 2x2, full field, ~56 fps
+    (1536, 864): (768, 432, 3072, 1728),   # binned 2x2, central crop, ~120 fps
+}
+SENSOR_BIT_DEPTH = 10
+#: What a calibration file without recorded geometry was made in: every
+#: calibration before 27.09.2026 (tools/calibrate_camera.py opened the
+#: camera at 2304x1296, which libcamera serves from the full-field mode).
+LEGACY_CAL_MODE = (2304, 1296)
+LEGACY_CAL_CROP = (0, 0, 4608, 2592)
+
+
+class CameraModeError(ValueError):
+    """The camera is not (or cannot be) in the sensor mode the config asks
+    for. A ValueError: the onboard app refuses cleanly, it does not crash."""
+
+
+class CalibrationMismatch(ValueError):
+    """The calibration file cannot be used for the geometry running."""
+
+
+def parse_size(v):
+    """(w, h) from [w, h], (w, h) or 'WxH'."""
+    if isinstance(v, str):
+        parts = v.lower().split('x')
+    else:
+        parts = list(v)
+    if len(parts) != 2:
+        raise ValueError(f"dimensiune invalida: {v!r} (se astepta [latime, inaltime])")
+    w, h = (int(float(p)) for p in parts)
+    if w <= 0 or h <= 0:
+        raise ValueError(f"dimensiune invalida: {v!r}")
+    return w, h
+
+
+def parse_rect(v):
+    """(x, y, w, h) from a 4-sequence or 'x,y,w,h'."""
+    parts = v.split(',') if isinstance(v, str) else list(v)
+    if len(parts) != 4:
+        raise ValueError(f"dreptunghi invalid: {v!r} (se astepta x, y, w, h)")
+    x, y, w, h = (int(float(p)) for p in parts)
+    if w <= 0 or h <= 0 or x < 0 or y < 0:
+        raise ValueError(f"dreptunghi invalid: {v!r}")
+    return x, y, w, h
+
+
+class CameraGeometry:
+    """What the detector's pixels are: the sensor mode (binned pixels), the
+    region of the array the image covers (ScalerCrop, array pixels) and the
+    size of the stream the ISP delivers."""
+
+    __slots__ = ('sensor_mode', 'scaler_crop', 'output_size')
+
+    def __init__(self, sensor_mode, scaler_crop, output_size):
+        self.sensor_mode = parse_size(sensor_mode)
+        self.scaler_crop = parse_rect(scaler_crop)
+        self.output_size = parse_size(output_size)
+
+    @property
+    def binning(self):
+        """Array pixels per sensor-mode pixel, (x, y)."""
+        return (self.scaler_crop[2] / float(self.sensor_mode[0]),
+                self.scaler_crop[3] / float(self.sensor_mode[1]))
+
+    def __eq__(self, other):
+        return (isinstance(other, CameraGeometry)
+                and (self.sensor_mode, self.scaler_crop, self.output_size)
+                == (other.sensor_mode, other.scaler_crop, other.output_size))
+
+    def __repr__(self):
+        return f"CameraGeometry({self.describe()})"
+
+    def describe(self):
+        m, c, o = self.sensor_mode, self.scaler_crop, self.output_size
+        return (f"mod {m[0]}x{m[1]}, ScalerCrop ({c[0]}, {c[1]}, {c[2]}, "
+                f"{c[3]}), flux {o[0]}x{o[1]}")
+
+
+def sensor_mode_from_config(cfg):
+    """The sensor mode the config asks for. Mandatory: without it libcamera
+    chooses, and that is exactly how 1536x864 flew with a 2304x1296
+    calibration. Checked against the IMX708 modes (a typo must fail here,
+    not as 'the camera would not start' on the field)."""
+    raw = cfg.get('sensor_mode')
+    if raw is None:
+        raise CameraModeError(
+            "config: lipseste `sensor_mode` (modul senzorului, ex. [1536, 864]). "
+            "Fara el libcamera alege singur modul - asa a zburat 1536x864 cu "
+            "calibrarea de 2304x1296 (27.09.2026).")
+    try:
+        mode = parse_size(raw)
+    except (TypeError, ValueError) as e:
+        raise CameraModeError(f"config: `sensor_mode` invalid: {e}") from e
+    if mode not in IMX708_MODES:
+        disp = ', '.join(f"{w}x{h}" for w, h in IMX708_MODES)
+        raise CameraModeError(
+            f"config: modul {mode[0]}x{mode[1]} nu exista pe IMX708 "
+            f"(moduri: {disp})")
+    return mode
+
+
+def geometric_focal_px(image_width, scaler_crop=LEGACY_CAL_CROP,
+                       hfov_full_deg=102.0):
+    """The datasheet focal length, in pixels of an image `image_width` wide
+    that covers `scaler_crop` of the array. The lens's nominal field spans
+    the WHOLE array; a crop mode sees less of it with the same pixels, so
+    its focal length in pixels is the full field's, not a narrower lens's.
+    A plausibility reference for calibrate_camera, never a calibration."""
+    f_array = (SENSOR_ARRAY[0] / 2.0) / math.tan(math.radians(hfov_full_deg / 2.0))
+    return f_array * image_width / float(parse_rect(scaler_crop)[2])
+
+
+def output_size_from_config(cfg, sensor_mode):
+    """The stream size: `track_size` if set, else the mode's own size."""
+    ts = cfg.get('track_size')
+    return parse_size(ts) if ts else tuple(sensor_mode)
+
+
+def calibration_for(cal, geom):
+    """The calibration to use for `geom`, or CalibrationMismatch.
+
+    Two transforms are legal, nothing else:
+
+      scale    ISP scaling only - same sensor mode AND same ScalerCrop as
+               the calibration, same aspect ratio. Intrinsics scale with
+               the image, distortion stays.
+      derive   a CROP mode at the same binning, from a calibration made
+               over the full field at its mode's own size: the pixels are
+               the same pixels, so fx, fy and the distortion stay; the
+               principal point moves by the crop offset, READ from the
+               ScalerCrop (in binned pixels: offset / binning). Then, if
+               the stream is smaller, a scale as above.
+
+    The result carries `kind` ('nativa', 'scalata', 'derivata',
+    'derivata+scalata') and the geometry it is valid for."""
+    cmode, ccrop, legacy = cal.recorded_geometry()
+    csize = (cal.width, cal.height)
+    mode, crop, out = geom.sensor_mode, geom.scaler_crop, geom.output_size
+    orig = (f"calibrarea {csize[0]}x{csize[1]} (mod {cmode[0]}x{cmode[1]}, "
+            f"ScalerCrop {ccrop}{', implicit - fisier fara geometrie' if legacy else ''})")
+    refa = (f"Refa calibrarea in modul {mode[0]}x{mode[1]} (tools/"
+            f"calibrate_camera.py --live cu acelasi `sensor_mode`).")
+
+    if mode == cmode and crop == ccrop:
+        # `kind` is relative to the calibration handed in, whatever it was
+        # derived from before: its own geometry = native to it.
+        res = CameraCalibration(cal.K, cal.dist, cal.width, cal.height,
+                                rms=cal.rms, n_images=cal.n_images,
+                                source=cal.source, meta=cal.meta,
+                                kind='nativa')
+        if out != csize:
+            try:
+                res = res.scaled_to(*out)
+            except ValueError as e:
+                raise CalibrationMismatch(
+                    f"{orig} nu se poate scala la {out[0]}x{out[1]}: {e}") from e
+        return res.set_geometry(mode, crop)
+
+    bx, by = geom.binning
+    cbx, cby = ccrop[2] / float(cmode[0]), ccrop[3] / float(cmode[1])
+    motive = []
+    if ccrop != (0, 0) + SENSOR_ARRAY:
+        motive.append("calibrarea nu e facuta pe campul intreg")
+    if csize != cmode:
+        motive.append("calibrarea e deja scalata (nu e la dimensiunea modului ei)")
+    if abs(bx - cbx) > 1e-6 or abs(by - cby) > 1e-6:
+        motive.append(f"binning diferit ({bx:g}x{by:g} fata de {cbx:g}x{cby:g}"
+                      f": ScalerCrop {crop} pe modul {mode[0]}x{mode[1]})")
+    if not (crop[0] >= ccrop[0] and crop[1] >= ccrop[1]
+            and crop[0] + crop[2] <= ccrop[0] + ccrop[2]
+            and crop[1] + crop[3] <= ccrop[1] + ccrop[3]):
+        motive.append(f"decupajul {crop} iese din campul calibrarii {ccrop}")
+    if motive:
+        raise CalibrationMismatch(
+            f"{orig} nu se poate folosi pentru {geom.describe()}: "
+            f"{'; '.join(motive)}. {refa}")
+
+    dx = (crop[0] - ccrop[0]) / bx
+    dy = (crop[1] - ccrop[1]) / by
+    res = cal.cropped(dx, dy, mode[0], mode[1],
+                      f"derivata pentru modul {mode[0]}x{mode[1]}, "
+                      f"ScalerCrop {crop}: centrul optic -{dx:g}, -{dy:g} px")
+    res.set_geometry(mode, crop)
+    if out != mode:
+        try:
+            res = res.scaled_to(*out)
+        except ValueError as e:
+            raise CalibrationMismatch(
+                f"calibrarea derivata {mode[0]}x{mode[1]} nu se poate scala "
+                f"la {out[0]}x{out[1]}: {e}") from e
+    return res.set_geometry(mode, crop)
 
 
 # --- Detectia ------------------------------------------------------------------
@@ -1152,13 +1410,25 @@ class PiCameraSource(FrameSource):
 
     nominal_fps = TRACK_FPS
 
-    def __init__(self, size=TRACK_SIZE, fps=TRACK_FPS, controls=None,
-                 verbose=True, auto_expose=True, fresh=True):
+    def __init__(self, size=None, sensor_mode=None, fps=TRACK_FPS,
+                 controls=None, verbose=True, auto_expose=True, fresh=True):
+        """`sensor_mode` is MANDATORY (27.09.2026): the camera never lets
+        libcamera choose. `size` is the stream (default: the mode's size).
+        After start, `geometry` says what the pixels are - the mode read
+        back from the configuration and the ScalerCrop of the first frame;
+        a mode other than the one asked for is a CameraModeError."""
+        if sensor_mode is None:
+            raise CameraModeError(
+                "PiCameraSource: modul senzorului e obligatoriu (config "
+                "`sensor_mode`). Fara el libcamera il alege singur.")
         from picamera2 import Picamera2               # noqa: import lenes
         from libcamera import controls as lc
 
         self.verbose = verbose
-        self.size = tuple(size)
+        self.sensor_mode = parse_size(sensor_mode)
+        self.size = parse_size(size) if size is not None else self.sensor_mode
+        self.geometry = None
+        self.mode_info = None
         # Step 5 (§5.65): `capture_request()` returns the OLDEST completed
         # request, so with buffer_count=4 a frame was already 50-90 ms old
         # when it left the source (measured: 'varsta' p50 50 ms). With
@@ -1179,13 +1449,27 @@ class PiCameraSource(FrameSource):
             if cine:
                 raise RuntimeError(f"{e}\n  {cine}") from e
             raise
+        try:
+            self._start(fps, controls, auto_expose, lc)
+        except Exception:
+            # a camera left open holds the sensor until the process exits:
+            # the next attempt (preflight, then the app) would fail on it
+            self.close()
+            raise
+
+    def _start(self, fps, controls, auto_expose, lc):
+        self._check_mode_exists()
+        sensor = {'output_size': self.sensor_mode, 'bit_depth': SENSOR_BIT_DEPTH}
         self.video_cfg = self.picam2.create_video_configuration(
             main={'size': self.size, 'format': 'YUV420'},
+            sensor=sensor,
             controls={'FrameRate': float(fps)},
             buffer_count=4)
         self.still_cfg = self.picam2.create_still_configuration(
-            main={'size': SCORING_SIZE, 'format': 'YUV420'})
+            main={'size': SCORING_SIZE, 'format': 'YUV420'},
+            sensor={'output_size': SCORING_SIZE, 'bit_depth': SENSOR_BIT_DEPTH})
         self.picam2.configure(self.video_cfg)
+        self._check_configured_mode()
 
         ctrl = dict(CAMERA_CONTROLS)
         ctrl.update(controls or {})
@@ -1209,6 +1493,65 @@ class PiCameraSource(FrameSource):
         self._boot_offset = (time.monotonic()
                              - time.clock_gettime(time.CLOCK_BOOTTIME))
         self._verify_controls(ctrl)
+        self._read_geometry()
+
+    # -- the sensor mode: asked, validated, read back (27.09.2026) ---------
+    def _check_mode_exists(self):
+        """The mode must be one the sensor has (picam2.sensor_modes, which
+        reconfigures the camera once per mode to read them - so BEFORE our
+        own configure)."""
+        modes = self.picam2.sensor_modes or []
+        found = [m for m in modes
+                 if tuple(m.get('size') or ()) == self.sensor_mode
+                 and m.get('bit_depth') == SENSOR_BIT_DEPTH]
+        if not found:
+            disp = ', '.join(sorted({f"{m['size'][0]}x{m['size'][1]}/"
+                                     f"{m.get('bit_depth')}bit"
+                                     for m in modes if m.get('size')}))
+            raise CameraModeError(
+                f"modul {self.sensor_mode[0]}x{self.sensor_mode[1]}/"
+                f"{SENSOR_BIT_DEPTH}bit nu exista pe senzor (moduri: {disp})")
+        self.mode_info = found[0]
+
+    def _check_configured_mode(self):
+        """Read back what libcamera accepted: the sensor configuration and
+        the stream size. Different from what was asked = the camera does
+        not start."""
+        cc = self.picam2.camera_configuration() or {}
+        sensor = cc.get('sensor') or {}
+        got = tuple(sensor.get('output_size') or ())
+        bits = sensor.get('bit_depth')
+        main = tuple((cc.get('main') or {}).get('size') or ())
+        if self.verbose:
+            print(f"[camera] mod cerut {self.sensor_mode[0]}x{self.sensor_mode[1]}"
+                  f"/{SENSOR_BIT_DEPTH}bit, configurat {got} {bits}bit, "
+                  f"flux {main}")
+        if got != self.sensor_mode or bits != SENSOR_BIT_DEPTH:
+            raise CameraModeError(
+                f"modul efectiv al senzorului {got} / {bits} bit difera de "
+                f"cel cerut {self.sensor_mode} / {SENSOR_BIT_DEPTH} bit: "
+                f"camera nu porneste")
+        if main and main != self.size:
+            raise CameraModeError(
+                f"fluxul configurat {main} difera de cel cerut {self.size}")
+
+    def _read_geometry(self):
+        """ScalerCrop from the metadata of a frame: the region of the array
+        the image covers. With the mode, it decides which calibration
+        transform is legal (calibration_for)."""
+        md = self.picam2.capture_metadata() or {}
+        crop = md.get('ScalerCrop')
+        if crop is None:
+            raise CameraModeError(
+                "metadatele cadrului nu au ScalerCrop: geometria imaginii nu "
+                "se poate verifica, camera nu porneste")
+        self.geometry = CameraGeometry(self.sensor_mode, tuple(crop), self.size)
+        if self.verbose:
+            asteptat = IMX708_MODES.get(self.sensor_mode)
+            nota = ('' if asteptat is None or tuple(crop) == asteptat
+                    else f"  (ATENTIE: modul citeste de obicei {asteptat})")
+            print(f"[camera] geometrie: {self.geometry.describe()}{nota}")
+        return self.geometry
 
     def _lock_exposure(self, ctrl):
         """Lasa AE-ul sa convearga, apoi fixeaza ce a masurat (plafonat).
@@ -1698,6 +2041,24 @@ def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None,
               f"peste pragul de zbor de {MAX_REPROJ_ERR_PX} px.")
         print(f"[detector]           acceptata doar pentru rularea asta "
               f"(--max-rms {prag}). De refacut inainte de zbor.")
+    # 27.09.2026: the sensor mode comes from the config (mandatory, checked
+    # before the camera opens), the stream from `track_size`. The camera is
+    # opened FIRST: the calibration can only be chosen once the geometry
+    # actually running is known (mode read back + ScalerCrop).
+    mode = sensor_mode_from_config(cfg)
+    size = output_size_from_config(cfg, mode)
+    source = PiCameraSource(size=size, sensor_mode=mode, verbose=verbose,
+                            auto_expose=cfg.get('camera_auto_expose', True),
+                            fresh=cfg.get('camera_fresh_capture', True))
+    try:
+        calib = calibration_for(calib, source.geometry)
+    except CalibrationMismatch:
+        source.close()
+        raise
+    if verbose:
+        print(f"[detector] {source.geometry.describe()} | calibrare "
+              f"{calib.kind}: fx={calib.fx:.1f} fy={calib.fy:.1f} "
+              f"cx={calib.cx:.1f} cy={calib.cy:.1f} HFOV={calib.hfov_deg():.1f}")
     aruco = ArucoMarkerDetector(calib, marker_id=cfg['marker_id'],
                                 marker_size_m=cfg['marker_size_m'],
                                 roi_below_m=cfg['roi_below_m'],
@@ -1707,24 +2068,5 @@ def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None,
     if verbose and aruco.camera_rotation_deg:
         print(f"[detector] camera montata rotit: imaginea se roteste cu "
               f"{aruco.camera_rotation_deg} grade la stanga (axe, nu pixeli)")
-    # Detection resolution (config `track_size`, default the calibration's).
-    # Smaller than the calibration = the same lens, scaled: fewer pixels
-    # for detectMarkers, the marker keeps its angular size.
-    size = tuple(int(x) for x in (cfg.get('track_size') or TRACK_SIZE))
-    if size != (calib.width, calib.height):
-        calib = calib.scaled_to(*size)
-        aruco.calib = calib
-        aruco.cam = calib.camera_model(aruco.marker_size_m)
-        if verbose:
-            print(f"[detector] detectie pe {size[0]}x{size[1]}: calibrare "
-                  f"scalata, fx={calib.fx:.1f} fy={calib.fy:.1f}")
-    source = PiCameraSource(size=size, verbose=verbose,
-                            auto_expose=cfg.get('camera_auto_expose', True),
-                            fresh=cfg.get('camera_fresh_capture', True))
-    if (source.size[0], source.size[1]) != (calib.width, calib.height):
-        raise ValueError(
-            f"calibrarea e pentru {calib.width}x{calib.height}, camera da "
-            f"{source.size[0]}x{source.size[1]}. Recalibreaza la rezolutia "
-            f"de tracking.")
     return PiDetector(source, aruco, ring_frames=ring_frames, threaded=True,
                       keep_last_frame=keep_last_frame).start()

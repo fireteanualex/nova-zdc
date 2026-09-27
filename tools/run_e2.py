@@ -416,6 +416,17 @@ def run_session(args, source_factory, input_fn=input):
         print(f"    captez {args.frames} cadre...")
         source = source_factory()
         try:
+            # 27.09.2026: the calibration follows the geometry the camera
+            # actually runs (sensor mode read back + ScalerCrop): derived /
+            # scaled, or the station is refused. Image dirs have none.
+            geom = getattr(source, 'geometry', None)
+            if geom is not None:
+                from nova.detector_pi import calibration_for
+                c = calibration_for(cal, geom)
+                detector.calib = c
+                detector.cam = c.camera_model(detector.marker_size_m)
+                print(f"    {geom.describe()} | calibrare {c.kind}, "
+                      f"fx={c.fx:.1f}")
             rows = capture_station(source, detector, args.frames, sdir,
                                    save_frames=not args.no_frames)
         finally:
@@ -474,8 +485,14 @@ def main(argv=None):
             return ImageDirSource(a.images)
     else:
         def source_factory():
-            from nova.detector_pi import PiCameraSource
-            return PiCameraSource(verbose=False)
+            from nova.detector_pi import (PiCameraSource,
+                                          output_size_from_config,
+                                          sensor_mode_from_config)
+            cfg = nova_config.load(a.config)
+            mode = sensor_mode_from_config(cfg)
+            return PiCameraSource(size=output_size_from_config(cfg, mode),
+                                  sensor_mode=mode, verbose=False,
+                                  auto_expose=cfg.get('camera_auto_expose', True))
 
     try:
         return run_session(a, source_factory)

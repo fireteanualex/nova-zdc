@@ -88,20 +88,13 @@ def camera_check(cfg, seconds, show_window=False, preview_scale=0.5,
     Asta e singurul loc din aplicatia de bord unde fereastra are sens
     implicit: --camera-check se ruleaza pe banc, nu in cursa. Chiar si aici
     ramane pe fals, ca sa mearga si prin SSH fara X."""
-    cal_path = nova_config.resolve(cfg, 'camera_calibration')
-    calib = CameraCalibration.load(
-        cal_path, require_real=True,
-        max_rms=MAX_REPROJ_ERR_PX if max_rms is None else float(max_rms))
-    print(f"[camera-check] calibrare: {calib}")
-    aruco = ArucoMarkerDetector(calib, marker_id=cfg['marker_id'],
-                                marker_size_m=cfg['marker_size_m'],
-                                roi_below_m=cfg['roi_below_m'],
-                                roi_size_px=cfg['roi_size_px'],
-                                camera_rotation_deg=cfg['camera_rotation_deg'])
-    src = PiCameraSource(verbose=True)
+    # The same construction as the flight (27.09.2026): sensor mode from the
+    # config, geometry read back, calibration derived / scaled for it. Its
+    # own copy used to open the camera without a mode and scale blindly.
+    det = build_pi_detector(cfg, verbose=True, max_rms=max_rms)
+    src = det.source
     if src.control_problems:
         print("[camera-check] ATENTIE: controale neaplicate, vezi mai sus")
-    det = PiDetector(src, aruco, threaded=True).start()
     pv = preview_mod.bench_preview('NOVA camera-check', enabled=show_window,
                                    scale=preview_scale,
                                    rotate_deg=cfg['camera_rotation_deg'])

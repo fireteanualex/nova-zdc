@@ -71,7 +71,10 @@ def make_cfg(tmp, cal=None):
     with open(cfg_path, 'w') as f:
         json.dump({'autonomy_enabled': False, 'marker_id': 26,
                    'marker_size_m': 0.48, 'camera_calibration': cal_path,
-                   'roi_below_m': 5.0, 'roi_size_px': [640, 480]}, f)
+                   'roi_below_m': 5.0, 'roi_size_px': [640, 480],
+                   # 27.09.2026: mandatory; the calibration here is 2304x1296
+                   # full field, like every file without recorded geometry
+                   'sensor_mode': [2304, 1296]}, f)
     return cfg_path, cal_path
 
 
@@ -652,9 +655,12 @@ def test_G4_totul_trece_da_zero():
     tmp = tempfile.mkdtemp()
     cfg_path, _ = make_cfg(tmp)
 
+    from nova.detector_pi import CameraGeometry
+
     class SursaBuna:
         nominal_fps = 30.0
         size = (W, H)
+        geometry = CameraGeometry((2304, 1296), (0, 0, 4608, 2592), (W, H))
         control_problems = []
         def __init__(self):
             self.f = marker_frames([5.0] * 12)
@@ -765,18 +771,23 @@ def test_rata_camerei_nu_include_costul_analizei():
 
 
 def test_rezolutia_din_config_cu_calibrare_scalata():
-    """track_size 1280x720 in config (27.09.2026): camera la 1280x720 e OK
-    cu calibrarea de 2304x1296 scalata; fara cheie ramane ESEC (testul de
-    mai jos); un raport de aspect diferit e ESEC cu motiv."""
+    """Linia 'rezolutie' a preflight-ului (27.09.2026): modul senzorului
+    citit inapoi fata de cel cerut, fluxul, ScalerCrop-ul si calibrarea
+    aleasa prin calibration_for. full1280 (2304 camp intreg -> 1280x720) =
+    scalata; crop1280 (1536 decupat -> 1280x720) = derivata+scalata; un
+    decupaj cu alt raport de aspect = ESEC. Situatia gasita pe vehicul are
+    testul ei, in tools/test_camera_geometry.py."""
     import json as _json
+    from nova.detector_pi import CameraGeometry
     tmp = tempfile.mkdtemp()
     cfg_path, _ = make_cfg(tmp)
 
     class Sursa:
         nominal_fps = 30.0
         control_problems = []
-        def __init__(self, size):
-            self.size = size
+        def __init__(self, geom):
+            self.geometry = geom
+            self.size = geom.output_size
             self.i = 0
         def read(self):
             import time as _t
@@ -787,37 +798,44 @@ def test_rezolutia_din_config_cu_calibrare_scalata():
         def close(self):
             pass
 
-    def ruleaza(track, size):
+    def ruleaza(mode, track, geom):
         c = _json.load(open(cfg_path))
-        c['track_size'] = track
+        c['sensor_mode'], c['track_size'] = mode, track
         _json.dump(c, open(cfg_path, 'w'))
         args = argparse.Namespace(config=cfg_path, conn='/dev/null', baud=1,
                                   parm='x', frames=4, mavlink_timeout=0.1,
                                   no_camera=False, no_mavlink=True, json=False,
                                   os_release='/etc/os-release')
-        res = {r.name: r for r in pf.run_checks(args, source_factory=lambda: Sursa(size))}
+        res = {r.name: r for r in pf.run_checks(args, source_factory=lambda: Sursa(geom))}
         return res['rezolutie']
 
-    r = ruleaza([1280, 720], (1280, 720))
-    assert r.status == pf.OK and 'scalata' in r.detail, (r.status, r.detail)
-    r = ruleaza([1280, 720], (2304, 1296))
-    assert r.status == pf.ESEC and 'asteptat 1280x720' in r.detail, r.detail
-    r = ruleaza([1024, 600], (1024, 600))
+    full, crop = (0, 0, 4608, 2592), (768, 432, 3072, 1728)
+    r = ruleaza([2304, 1296], [1280, 720], CameraGeometry((2304, 1296), full, (1280, 720)))
+    assert r.status == pf.OK and 'calibrare scalata' in r.detail, (r.status, r.detail)
+    r = ruleaza([1536, 864], [1280, 720], CameraGeometry((1536, 864), crop, (1280, 720)))
+    assert r.status == pf.OK and 'derivata+scalata' in r.detail, (r.status, r.detail)
+    r = ruleaza([2304, 1296], [1024, 600], CameraGeometry((2304, 1296), full, (1024, 600)))
     assert r.status == pf.ESEC and 'decupaj' in r.detail, r.detail
-    # si fisierul din repo cere chiar 1280x720
+    # si fisierul din repo cere modul decupat si 1280x720
     from nova import config as nova_config
-    assert list(nova_config.load()['track_size']) == [1280, 720]
-    return "1280x720 OK (scalata); 2304 cu track_size -> ESEC; 1024x600 -> ESEC (decupaj)"
+    cfg = nova_config.load()
+    assert list(cfg['sensor_mode']) == [1536, 864] and list(cfg['track_size']) == [1280, 720]
+    return "full1280 scalata; crop1280 derivata+scalata; 1024x600 -> ESEC (decupaj)"
 
 
 def test_G4_NEGATIV_rezolutie_nepotrivita():
-    """Calibrare pentru alta rezolutie: eroare tacuta de distanta."""
+    """Fluxul camerei difera de cel cerut: eroare tacuta de distanta."""
+    from nova.detector_pi import CameraGeometry
     tmp = tempfile.mkdtemp()
     cfg_path, _ = make_cfg(tmp)
+    c = json.load(open(cfg_path))
+    c['sensor_mode'] = [2304, 1296]             # fara track_size: 2304x1296
+    json.dump(c, open(cfg_path, 'w'))
 
     class SursaMica:
         nominal_fps = 30.0
         size = (1280, 720)
+        geometry = CameraGeometry((2304, 1296), (0, 0, 4608, 2592), (1280, 720))
         control_problems = []
         def __init__(self):
             self.i = 0
@@ -836,7 +854,7 @@ def test_G4_NEGATIV_rezolutie_nepotrivita():
                               os_release='/etc/os-release')
     res = {r.name: r for r in pf.run_checks(args, source_factory=SursaMica)}
     assert res['rezolutie'].status == pf.ESEC, res['rezolutie'].detail
-    assert '1280x720' in res['rezolutie'].detail
+    assert '1280x720' in res['rezolutie'].detail and '2304x1296' in res['rezolutie'].detail
     return f"prins: {res['rezolutie'].detail[:52]}..."
 
 

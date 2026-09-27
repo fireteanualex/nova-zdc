@@ -158,6 +158,11 @@ except Exception as e:                                        # noqa: BLE001
     raise SystemExit(0)
 print(f"  OK    fy={cal.fy:.1f} px  VFOV={cal.vfov_deg():.1f} deg  "
       f"rms={cal.rms:.3f} px")
+# 27.09.2026: the geometry the file was made in; which transform the
+# running mode gets (scale / derive) is the preflight's 'rezolutie' line.
+mode, crop, legacy = cal.recorded_geometry()
+print(f"        facuta in modul {mode[0]}x{mode[1]}, ScalerCrop {crop}"
+      + (" (implicit: fisier fara geometrie)" if legacy else ""))
 if cal.rms and cal.rms > 0.5:
     print(f"  NOTA: rms {cal.rms:.3f} px - acceptat (prag {MAX_REPROJ_ERR_PX}),")
     print(f"        dar peste 0.2-0.5 cat da o calibrare buna. Distanta din")

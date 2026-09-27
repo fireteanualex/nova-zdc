@@ -7,8 +7,10 @@ Record raw camera frames on the Pi, for offline detection benchmarks
     ~/nova-venv/bin/python tools/record_frames.py --seconds 30
     ~/nova-venv/bin/python tools/record_frames.py --seconds 30 --out ~/nova-frames/1m
 
-Uses the SAME camera setup as the flight app (PiCameraSource: mode, size,
-locked exposure, LensPosition), so the frames are what the detector sees.
+Uses the SAME camera setup as the flight app (PiCameraSource: sensor mode
+and stream from config/nova.json, locked exposure, LensPosition), so the
+frames are what the detector sees; meta.json records the sensor mode and
+the ScalerCrop, which decide the calibration (calibration_for).
 Frames are kept in RAM during the recording (writing PNG at 30 fps on a
 Pi 4 would throttle the camera and bias the measurement) and written as
 lossless PNG afterwards, with a meta.json carrying per-frame timestamps and
@@ -30,7 +32,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from nova import config as nova_config                          # noqa: E402
 from nova import serial_guard                                   # noqa: E402
-from nova.detector_pi import PiCameraSource                     # noqa: E402
+from nova.detector_pi import (PiCameraSource,                  # noqa: E402
+                              output_size_from_config,
+                              sensor_mode_from_config)
 
 META_KEYS = ('ExposureTime', 'AnalogueGain', 'LensPosition', 'SensorTimestamp',
              'FrameDuration', 'Lux', 'ColourTemperature')
@@ -78,7 +82,11 @@ def main():
         time.strftime('~/nova-frames/%Y%m%d-%H%M%S'))
     os.makedirs(out, exist_ok=True)
 
-    src = PiCameraSource(verbose=True,
+    # 27.09.2026: the flight's sensor mode and stream (config), never the
+    # camera's own choice - the frames must be what the detector sees.
+    mode = sensor_mode_from_config(cfg)
+    src = PiCameraSource(size=output_size_from_config(cfg, mode),
+                         sensor_mode=mode, verbose=True,
                          auto_expose=cfg.get('camera_auto_expose', True))
     budget = int(mem_available_bytes() * a.mem_frac)
     print(f"[record] {a.seconds:.0f} s into RAM (budget {budget / 1e6:.0f} MB), "
@@ -119,8 +127,11 @@ def main():
 
     def write_meta(n_written):
         with open(meta_path, 'w') as f:
+            g = src.geometry
             json.dump({'frames': meta, 'written': n_written, 'fps_measured': fps,
                        'format': a.format, 'size': list(src.size),
+                       'sensor_mode': list(g.sensor_mode),
+                       'scaler_crop': list(g.scaler_crop),
                        'config': {k: cfg.get(k) for k in
                                   ('camera_rotation_deg', 'camera_auto_expose',
                                    'marker_size_m')}}, f, indent=1)

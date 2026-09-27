@@ -49,7 +49,8 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from nova.detector_pi import (CameraCalibration, MAX_REPROJ_ERR_PX,  # noqa: E402
-                              TRACK_SIZE, ImageDirSource)
+                              ImageDirSource, geometric_focal_px,
+                              parse_rect, parse_size)
 
 DEFAULT_OUT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -319,11 +320,17 @@ def save_if_acceptable(cal, path, max_rms=MAX_REPROJ_ERR_PX, min_images=20,
 
     # Garzile impotriva calibrarii degenerate. Se verifica DUPA RMS tocmai
     # pentru ca un set degenerat trece pragul de RMS fara probleme.
-    geo = CameraCalibration.geometric(cal.width, cal.height)
-    dev = abs(cal.fx / geo.fx - 1)
+    # The reference is the lens's nominal field over the part of the
+    # sensor the images cover (27.09.2026): a calibration made in the
+    # 1536x864 crop mode has the SAME focal length in pixels as the
+    # full-field 2304x1296 one, over a narrower field - compared with a
+    # 102-degree field on 1536 px it would read +67% and be refused.
+    _mode, crop, _legacy = cal.recorded_geometry()
+    geo_fx = geometric_focal_px(cal.width, crop)
+    dev = abs(cal.fx / geo_fx - 1)
     if dev > FOCAL_SANITY_REL:
         print(f"  REFUZ: focala {cal.fx:.0f} px se abate cu {dev:+.0%} de la "
-              f"cea geometrica ({geo.fx:.0f} px).")
+              f"cea geometrica ({geo_fx:.0f} px).")
         print(f"  RMS-ul de {cal.rms:.3f} px nu salveaza asta: un set de poze "
               f"care nu constrange\n  geometria da RMS mic si parametri "
               f"absurzi. Vezi §5.22 din CLAUDE.md.")
@@ -371,6 +378,28 @@ def report(cal, seen, target=None, n_total=None):
     if not all(all(r) for r in seen):
         print("  ATENTIE: celule nevizitate - distorsiunea de acolo e "
               "extrapolata, nu masurata. Marginile conteaza cel mai mult.")
+
+
+def geometry_for_dir(path, sensor_mode=None, scaler_crop=None):
+    """(sensor_mode, scaler_crop) the images in `path` were taken in:
+    from the command line, else from the meta.json record_frames.py writes
+    next to them. Neither = refused: a calibration without its geometry
+    would be taken for the 2304x1296 full field, and if the images came
+    from another mode every angle computed with it would be wrong."""
+    import json
+    meta = {}
+    mp = os.path.join(path, 'meta.json')
+    if os.path.exists(mp):
+        with open(mp) as f:
+            meta = json.load(f)
+    mode = sensor_mode if sensor_mode is not None else meta.get('sensor_mode')
+    crop = scaler_crop if scaler_crop is not None else meta.get('scaler_crop')
+    if mode is None or crop is None:
+        raise ValueError(
+            f"nu stiu in ce geometrie sunt pozele din {path}: da --sensor-mode "
+            f"W H si --scaler-crop X Y W H, sau foloseste pozele scrise de "
+            f"tools/record_frames.py (meta.json le are)")
+    return parse_size(mode), parse_rect(crop)
 
 
 def collect_from_dir(path, target):
@@ -422,10 +451,13 @@ def draw_overlay(gray, corners, n_dets, cov, total, acceptat):
 
 
 def collect_live(target, min_images, max_images, show_window=True,
-                 preview_scale=0.5):
+                 preview_scale=0.5, sensor_mode=None, size=None):
     from nova.detector_pi import PiCameraSource
     from nova.preview import bench_preview
-    src = PiCameraSource(verbose=True)
+    # 27.09.2026: an explicit sensor mode, read back; the geometry it
+    # returns is written into the calibration file.
+    src = PiCameraSource(size=size, sensor_mode=sensor_mode, verbose=True)
+    geometry = src.geometry
     # H3, contextul 1: unealta de banc -> fullscreen. Operatorul trebuie sa
     # vada colturile detectate ca sa stie daca a acoperit marginile cadrului,
     # si ecranul Pi-ului e mic.
@@ -436,7 +468,7 @@ def collect_live(target, min_images, max_images, show_window=True,
           f"{LIVE_MIN_MOVE_PX:.0f} px. "
           f"{'q sau Esc' if pv.enabled else 'Ctrl-C'} cand ai destule.\n")
     dets, sets, last_c, last_t = [], [], None, 0.0
-    size = TRACK_SIZE
+    size = src.size
     lens = None
     cov = 0
     total = target.expected_corners()
@@ -487,7 +519,7 @@ def collect_live(target, min_images, max_images, show_window=True,
         except Exception:                                   # noqa: BLE001
             lens = None
         src.close()
-    return dets, sets, size, lens
+    return dets, sets, size, lens, geometry
 
 
 def main():
@@ -518,6 +550,21 @@ def main():
                    help='fara previzualizare (implicit: fullscreen)')
     p.add_argument('--preview-scale', type=float, default=0.5,
                    help='scara ferestrei; detectia ruleaza pe cadrul plin')
+    # 27.09.2026: the calibration records the geometry it was made in
+    # (sensor mode + ScalerCrop); nova.detector_pi.calibration_for uses it
+    # to decide what may be scaled or derived.
+    p.add_argument('--config', default=None)
+    p.add_argument('--sensor-mode', type=int, nargs=2, metavar=('W', 'H'),
+                   default=None, help='--live: modul senzorului (implicit '
+                   '`sensor_mode` din config); --from-dir: modul in care au '
+                   'fost facute pozele')
+    p.add_argument('--size', type=int, nargs=2, metavar=('W', 'H'),
+                   default=None, help='--live: fluxul (implicit dimensiunea '
+                   'modului: calibrare nativa, fara scalare ISP)')
+    p.add_argument('--scaler-crop', type=int, nargs=4,
+                   metavar=('X', 'Y', 'W', 'H'), default=None,
+                   help='--from-dir: ScalerCrop-ul pozelor (implicit din '
+                   'meta.json scris de record_frames.py)')
     a = p.parse_args()
 
     if a.square_mm is None:
@@ -533,11 +580,23 @@ def main():
 
     lens = None
     if a.from_dir:
+        try:
+            geom_mode, geom_crop = geometry_for_dir(a.from_dir, a.sensor_mode,
+                                                    a.scaler_crop)
+        except ValueError as e:
+            print(f"\n  REFUZ: {e}\n")
+            return 1
         dets, sets, size = collect_from_dir(a.from_dir, target)
     elif a.live:
-        dets, sets, size, lens = collect_live(
+        from nova import config as nova_config
+        from nova.detector_pi import sensor_mode_from_config
+        mode = (tuple(a.sensor_mode) if a.sensor_mode
+                else sensor_mode_from_config(nova_config.load(a.config)))
+        dets, sets, size, lens, geometry = collect_live(
             target, a.min_images, a.max_images,
-            show_window=not a.no_window, preview_scale=a.preview_scale)
+            show_window=not a.no_window, preview_scale=a.preview_scale,
+            sensor_mode=mode, size=tuple(a.size) if a.size else None)
+        geom_mode, geom_crop = geometry.sensor_mode, geometry.scaler_crop
     else:
         p.error('alege --from-dir sau --live')
 
@@ -560,6 +619,9 @@ def main():
         'lens_position': lens,
         'calibrated_at': time.strftime('%Y-%m-%d %H:%M:%S'),
     })
+    cal.set_geometry(geom_mode, geom_crop)
+    print(f"  geometrie: mod {geom_mode[0]}x{geom_mode[1]}, ScalerCrop "
+          f"{tuple(geom_crop)}, imagini {size[0]}x{size[1]}")
     seen = coverage(size, sets)
     report(cal, seen, target, n_total)
     return 0 if save_if_acceptable(cal, a.out, a.max_rms, a.min_images,

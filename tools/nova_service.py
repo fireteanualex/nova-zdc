@@ -387,19 +387,29 @@ def build_monitor_detector(cfg, cal, ring, source=None):
     rezolutie e aceeasi si e la fel de necesara - o calibrare pentru alta
     rezolutie da distante gresite, tacut."""
     from nova.detector_pi import (ArucoMarkerDetector, PiCameraSource,
-                                  PiDetector)
+                                  PiDetector, calibration_for,
+                                  output_size_from_config,
+                                  sensor_mode_from_config)
+    if source is None:
+        # 27.09.2026: sensor mode from the config (never libcamera's
+        # choice), calibration chosen for the geometry read back.
+        try:
+            mode = sensor_mode_from_config(cfg)
+            source = PiCameraSource(size=output_size_from_config(cfg, mode),
+                                    sensor_mode=mode, verbose=False,
+                                    auto_expose=cfg.get('camera_auto_expose', True))
+        except ValueError as e:
+            raise StartupRefusal(str(e)) from e
+        try:
+            cal = calibration_for(cal, source.geometry)
+        except ValueError as e:
+            source.close()
+            raise StartupRefusal(str(e)) from e
     aruco = ArucoMarkerDetector(cal, marker_id=cfg['marker_id'],
                                 marker_size_m=cfg['marker_size_m'],
                                 roi_below_m=cfg['roi_below_m'],
                                 roi_size_px=cfg['roi_size_px'],
                                 camera_rotation_deg=cfg['camera_rotation_deg'])
-    if source is None:
-        source = PiCameraSource(verbose=False)
-        if (source.size[0], source.size[1]) != (cal.width, cal.height):
-            raise StartupRefusal(
-                f"calibrarea e pentru {cal.width}x{cal.height}, camera da "
-                f"{source.size[0]}x{source.size[1]}. Recalibreaza la "
-                f"rezolutia de tracking.")
     return PiDetector(RingTapSource(source, ring), aruco, threaded=True).start()
 
 
