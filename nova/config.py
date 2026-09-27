@@ -146,6 +146,11 @@ DEFAULTS = {
     #               verificari, fara confirmarea tastata. Doar cu E0 deschis.
     # Orice alta valoare = monitor. Vezi autostart_mode().
     'autostart': 'monitor',
+
+    # Onboard OSD window (nova/board_window.py): [width, height] of the
+    # analog video it feeds. [720, 480] = NTSC, [720, 576] = PAL. The text
+    # band stays 75 px; the camera frame is stretched over the rest.
+    'osd': {'size': [720, 480]},
 }
 
 

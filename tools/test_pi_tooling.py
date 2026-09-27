@@ -1028,6 +1028,7 @@ def test_fereastra_de_bord_chiar_primeste_cadre():
 
     class _Det:
         det = _Aruco()
+        frame_seq = 0           # cadrele citite de firul de detectie
         last_frame = np.zeros((1296, 2304), np.uint8)
         last_detection = Detection(t=0.0, angle_x=0.1, angle_y=-0.05,
                                    distance_m=2.0, marker_px=200.0,
@@ -1039,15 +1040,19 @@ def test_fereastra_de_bord_chiar_primeste_cadre():
     pv = _PV()
     # 27.09.2026: fereastra e cea din nova/board_window (OSD 720x480, fara
     # rotire pe pixeli); nova_pi o importa de acolo
-    f = nova_pi.FereastraBord(_Det(), pv)
+    det = _Det()
+    f = nova_pi.FereastraBord(det, pv, log=None)
 
-    # bucla la ~500 Hz timp de 1 s: fereastra trebuie hranita, dar LIMITAT
+    # bucla la ~500 Hz timp de 1 s, camera la 30 cadre/s: fereastra trebuie
+    # hranita la FIECARE cadru nou (punctul 4, 27.09.2026), nu la fiecare
+    # trecere prin bucla
     for i in range(500):
+        det.frame_seq = (i * 30) // 500
         assert f.poll(1000.0 + i * 0.002) == ['o detectie']
     assert pv.cadre, "fereastra nu a primit NICIUN cadru"
-    assert 8 <= len(pv.cadre) <= 12, (
-        f"{len(pv.cadre)} cadre in 1 s: limitarea la "
-        f"{nova_pi.FereastraBord.AFISARE_HZ} Hz nu tine")
+    assert len(pv.cadre) == 30, (
+        f"{len(pv.cadre)} cadre in 1 s de la o camera de 30: fereastra "
+        f"trebuie sa deseneze o data pe cadru")
     assert pv.cadre[0] == (480, 720, 3), (
         f"fereastra primeste {pv.cadre[0]} - OSD-ul e 720x480, compus din "
         f"cadrul de detectie, fara rotire")
@@ -1055,10 +1060,12 @@ def test_fereastra_de_bord_chiar_primeste_cadre():
     # Escape: fereastra se inchide, APLICATIA CONTINUA
     pv.raspuns = False
     for i in range(100):
+        det.frame_seq += 1
         assert f.poll(2000.0 + i * 0.02) == ['o detectie'], (
             "inchiderea ferestrei a oprit bucla")
     assert pv.inchis and pv.enabled is False
     n = len(pv.cadre)
+    det.frame_seq += 1
     f.poll(3000.0)
     assert len(pv.cadre) == n, "dupa inchidere se mai trimit cadre"
     return f"{n - 1} cadre/s la 500 Hz de bucla; Escape nu opreste zborul"
@@ -2065,7 +2072,7 @@ def test_fereastra_OSD_720x480_fara_rotire():
     for parte in ('GATE_SEARCH', 'h  3.5m', 'AUX SUS', 'VPE 0', 'cam 5.5fps', 'det 40%'):
         assert parte in linie, (parte, linie)
     f.poll(100.05)
-    assert len(afisate) == 1, "peste 10 Hz nu se redeseneaza"
+    assert len(afisate) == 1, "acelasi cadru nu se redeseneaza"
     # cablajul din nova_pi: fereastra noua, fara rotire, mesajele din evenimente
     src = open(os.path.join(REPO, 'tools', 'nova_pi.py')).read()
     assert 'from nova.board_window import FereastraBord, OsdMesaje' in src

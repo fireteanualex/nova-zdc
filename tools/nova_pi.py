@@ -637,19 +637,23 @@ def main():
                                     last_det=detector.last_detection, now=now)
         ecran.draw(snap)
 
-    # The OSD window (27.09.2026): composed at 720x480 by nova/board_window
-    # for the analog OSD - frame + marker outline + three status lines. No
-    # scaling here (scale 1.0) and NO mounting rotation: the 270 degrees
-    # are applied to the axes for guidance, never to the pixels shown.
+    # The OSD window (27.09.2026): composed at `osd.size` (720x480 NTSC by
+    # default, 720x576 PAL) by nova/board_window for the analog OSD - frame
+    # + marker outline + three status lines, redrawn at every camera frame,
+    # its own cost logged every 5 s. No scaling here (scale 1.0) and NO
+    # mounting rotation: the 270 degrees are applied to the axes for
+    # guidance, never to the pixels shown.
     pv = preview_mod.onboard_preview('NOVA bord',
                                      enabled=a.show_window or a.fullscreen,
                                      scale=1.0, fullscreen=a.fullscreen,
                                      rotate_deg=0)
     if pv.enabled:
-        print("[bord] fereastra OSD 720x480 pornita (stare + evenimente; "
-              "inchiderea ei NU opreste zborul)")
+        osd_size = (cfg.get('osd') or {}).get('size', [720, 480])
         detector = FereastraBord(detector, pv, sm=sm, sup=sup,
-                                 vehicle=vehicle, mesaje=osd)
+                                 vehicle=vehicle, mesaje=osd, size=osd_size)
+        print(f"[bord] fereastra OSD {detector.size[0]}x{detector.size[1]} "
+              f"pornita (stare + evenimente, la fiecare cadru; inchiderea ei "
+              f"NU opreste zborul)")
     # Start order: I/O (connect, above), detection (build_pi_detector,
     # above), supervisor, then the state machine (run_loop). The two
     # producers run before anyone consumes them; the supervisor watches

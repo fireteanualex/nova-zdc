@@ -35,5 +35,8 @@
   "camera_fresh_capture": false,
 
   "_autostart": "Ce porneste Pi-ul singur la boot. 'monitor': detector + fereastra, zero comenzi. 'zbor': proba de coborare (pi/descent_test.sh --auto) - aceleasi verificari, fara ZBOR tastat, pentru teren fara retea. 'zbor' are efect DOAR cu autonomy_enabled=true; altfel, sau daca o verificare pica la boot, cade in monitor si trimite motivul prin STATUSTEXT. Cu 'zbor' si E0 deschis, comutatorul de handover porneste coborarea autonoma la fiecare pornire a dronei. Se schimba de mana, cu commit - ca E0.",
-  "autostart": "zbor"
+  "autostart": "zbor",
+
+  "_osd": "Fereastra de bord pentru OSD-ul analogic (nova/board_window.py): marimea imaginii compuse, [latime, inaltime]. [720, 480] = NTSC, [720, 576] = PAL. Banda de text ramane 75 px; cadrul camerei e intins pe restul (720x405 NTSC, 720x501 PAL), fara benzi negre. Fereastra se redeseneaza la fiecare cadru procesat si isi scrie costul la 5 s ('[fereastra 5s]').",
+  "osd": {"size": [720, 480]}
 }
