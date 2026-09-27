@@ -731,6 +731,11 @@ CAMERA_KEY_DEFAULTS = {
     'gain_max': None,             # auto_capped only, mandatory there
     'awb': False,
     'lens_position': 1.63,
+    #: auto_capped only: the sensor's tuning file KEPT IN THE REPO (copied
+    #: from the Pi by tools/camera_tuning.py save), relative to the repo
+    #: root. Never the one in /usr/share/libcamera: an apt upgrade would
+    #: change it under us, silently.
+    'tuning_file': None,
 }
 #: Proposed limits for auto_capped, said in the refusal when they are
 #: missing: 2000 us is the blur ceiling (CAMERA_CONTROLS comment: < 1 px of
@@ -785,6 +790,12 @@ class CameraSettings:
                     f"(plafonul de blur), gain_max {AUTO_CAPPED_PROPOSAL['gain_max']:g}")
             self.exposure_max_us = int(v['exposure_max_us'])
             self.gain_max = float(v['gain_max'])
+            if not v.get('tuning_file'):
+                raise CameraModeError(
+                    "`exposure: auto_capped` cere `tuning_file`: tuning-ul "
+                    "senzorului copiat in repo (pe Pi: tools/camera_tuning.py "
+                    "save), nu cel din /usr/share/libcamera")
+        self.tuning_file = v.get('tuning_file')
         self.awb = bool(v.get('awb'))
         self.lens_position = float(v.get('lens_position'))
         if self.exposure_us <= 0 or self.analogue_gain <= 0 or self.lens_position < 0:
@@ -874,19 +885,38 @@ def cap_agc_tuning(agc, exposure_max_us, gain_max):
     return n
 
 
-def capped_tuning(Picamera2, exposure_max_us, gain_max, model=None):
-    """The camera's own tuning file with the capped 'custom' exposure mode
-    (for Picamera2(tuning=...)). The file is the sensor's (imx708_wide.json
-    for the Camera Module 3 Wide), found by picamera2 itself."""
+def resolve_repo_path(path):
+    """A path from the config, relative to the repo root."""
+    if os.path.isabs(path):
+        return path
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), path)
+
+
+def capped_tuning(Picamera2, exposure_max_us, gain_max, tuning_file,
+                  model=None):
+    """The sensor's tuning, from the copy KEPT IN THE REPO (`tuning_file`,
+    written by tools/camera_tuning.py save), with the capped 'custom'
+    exposure mode added in memory - for Picamera2(tuning=dict). The file
+    must be for the sensor that is connected (its sidecar .meta.json says
+    which); the system file in /usr/share/libcamera is never read or
+    written: an apt upgrade would change it silently."""
+    import json
+    path = resolve_repo_path(tuning_file)
+    if not os.path.exists(path):
+        raise CameraModeError(
+            f"auto_capped: {path} lipseste - pe Pi: tools/camera_tuning.py save")
+    with open(path) as f:
+        tuning = json.load(f)
+    meta_path = path + '.meta.json'
     if model is None:
         info = Picamera2.global_camera_info() or [{}]
         model = info[0].get('Model')
-    if not model:
-        raise CameraModeError("auto_capped: nu stiu modelul senzorului (tuning)")
-    try:
-        tuning = Picamera2.load_tuning_file(f"{model}.json")
-    except RuntimeError as e:
-        raise CameraModeError(f"auto_capped: tuning {model}.json negasit: {e}") from e
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            want = json.load(f).get('model')
+        if want and model and want != model:
+            raise CameraModeError(
+                f"auto_capped: tuning-ul din {path} e pentru {want}, camera e {model}")
     cap_agc_tuning(Picamera2.find_tuning_algo(tuning, 'rpi.agc'),
                    exposure_max_us, gain_max)
     return tuning
@@ -1658,7 +1688,7 @@ class PiCameraSource(FrameSource):
         tuning = None
         if settings.exposure == 'auto_capped':
             tuning = capped_tuning(Picamera2, settings.exposure_max_us,
-                                   settings.gain_max)
+                                   settings.gain_max, settings.tuning_file)
         try:
             self.picam2 = Picamera2() if tuning is None else Picamera2(tuning=tuning)
         except RuntimeError as e:

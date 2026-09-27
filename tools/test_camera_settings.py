@@ -40,6 +40,15 @@ from test_camera_geometry import (FakePicamera2, REPO_CAL,      # noqa: E402
 
 #: fx each preset must end with, from the vehicle's calibration
 #: (config/camera_pi.yaml: 2304x1296 full field, fx 1037.89)
+def tuning_in_repo(model='imx708_wide'):
+    """A tuning copy as tools/camera_tuning.py save writes it (temp dir)."""
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, f"{model}.json")
+    json.dump(FakePicamera2.TUNING, open(p, 'w'))
+    json.dump({'model': model}, open(p + '.meta.json', 'w'))
+    return p
+
+
 FX = {'crop1280': 864.9, 'crop1536': 1037.9, 'full1280': 576.6,
       'trackerv2': 864.9}
 KIND = {'crop1280': 'derivata+scalata', 'crop1536': 'derivata',
@@ -98,8 +107,11 @@ def test_validarea_configului():
     assert 'exposure_max_us 2000' in m and 'gain_max 16' in m, m
     refuz({'camera_preset': 'crop1280', 'exposure': 'auto_capped',
            'exposure_max_us': 2000}, text='gain_max')
+    refuz({'camera_preset': 'crop1280', 'exposure': 'auto_capped',
+           'exposure_max_us': 2000, 'gain_max': 16}, text='tuning_file')
     ok = camera_settings({'camera_preset': 'crop1280', 'exposure': 'auto_capped',
-                          'exposure_max_us': 1500, 'gain_max': 12})
+                          'exposure_max_us': 1500, 'gain_max': 12,
+                          'tuning_file': 'config/tuning/imx708_wide.json'})
     assert (ok.exposure_max_us, ok.gain_max) == (1500, 12.0)
     return "fara mod / mod inexistent / preset necunoscut / expunere / auto_capped fara limite"
 
@@ -162,8 +174,16 @@ def test_controalele_fiecarui_mod_de_expunere_si_focusul():
     assert pc.tuning is None
     # auto_capped: tuning cu modul 'custom' plafonat + AeExposureMode Custom
     s = camera_settings({'camera_preset': 'crop1280', 'exposure': 'auto_capped',
-                         'exposure_max_us': 2000, 'gain_max': 16})
-    src, pc = _deschide(s)
+                         'exposure_max_us': 2000, 'gain_max': 16,
+                         'tuning_file': tuning_in_repo()})
+    # the system tuning (Picamera2.load_tuning_file) must NOT be used
+    sistem = FakePicamera2.load_tuning_file
+    FakePicamera2.load_tuning_file = staticmethod(
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError('tuning de sistem citit')))
+    try:
+        src, pc = _deschide(s)
+    finally:
+        FakePicamera2.load_tuning_file = sistem
     assert pc.controls_log[0]['AeExposureMode'] == 3 and pc.controls_log[0]['AeEnable']
     assert len(pc.controls_log) == 1, "auto_capped nu se blocheaza"
     for ch in pc.tuning['algorithms'][1]['rpi.agc']['channels']:
@@ -258,7 +278,43 @@ def test_build_pi_detector_cu_preset():
     return "crop1536 derivata fx 1037.9; full1280 scalata fx 576.6"
 
 
+def test_tuning_din_repo_si_unealta():
+    """Retus 27.09: tuning-ul pentru auto_capped vine din copia din repo,
+    nu din /usr/share/libcamera (un apt upgrade l-ar schimba tacut).
+    tools/camera_tuning.py: save copiaza octet cu octet + sidecar cu sha256;
+    check prinde un fisier de sistem schimbat si o copie modificata; un
+    tuning pentru alt senzor e refuzat."""
+    import camera_tuning as ct
+    from nova.detector_pi import capped_tuning
+    sysd = tempfile.mkdtemp()
+    os.makedirs(os.path.join(sysd, 'vc4'))
+    src = os.path.join(sysd, 'vc4', 'imx708_wide.json')
+    json.dump(FakePicamera2.TUNING, open(src, 'w'))
+    repo = tempfile.mkdtemp()
+    dst = ct.save('imx708_wide', dest_dir=repo, dirs=(sysd,))
+    assert open(dst, 'rb').read() == open(src, 'rb').read()
+    ok, msg = ct.check('imx708_wide', dest_dir=repo, dirs=(sysd,))
+    assert ok, msg
+    json.dump({'version': 2.0, 'algorithms': []}, open(src, 'w'))   # "apt upgrade"
+    ok, msg = ct.check('imx708_wide', dest_dir=repo, dirs=(sysd,))
+    assert not ok and 's-a schimbat' in msg, msg
+    open(dst, 'a').write(' ')
+    ok, msg = ct.check('imx708_wide', dest_dir=repo, dirs=(sysd,))
+    assert not ok and 'modificat' in msg, msg
+    # alt senzor decat cel conectat -> refuz
+    alt = tuning_in_repo('imx219')
+    try:
+        capped_tuning(FakePicamera2, 2000, 16, alt)
+        assert False, "tuning pentru alt senzor acceptat"
+    except CameraModeError as e:
+        assert 'imx219' in str(e)
+    t = capped_tuning(FakePicamera2, 2000, 16, tuning_in_repo())
+    assert 'custom' in t['algorithms'][1]['rpi.agc']['channels'][0]['exposure_modes']
+    return "copie in repo + sha256; apt upgrade si copie modificata prinse; alt senzor refuzat"
+
+
 TESTS = [
+    ('tuning din repo si unealta', test_tuning_din_repo_si_unealta),
     ('fiecare preset: geometria si calibrarea lui',
      test_fiecare_preset_geometria_si_calibrarea_lui),
     ('presetul implicit e ce s-a zburat', test_presetul_implicit_e_ce_s_a_zburat),
