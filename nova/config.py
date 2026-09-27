@@ -91,8 +91,7 @@ DEFAULTS = {
     # Cum e montata camera pe VEHICULUL REAL: cu cate grade trebuie rotita
     # imaginea bruta SPRE STANGA (pe ecran) ca nasul dronei sa ajunga sus.
     # 0, 90, 180 sau 270. Se aplica pe maparea axelor, nu pe pixeli - vezi
-    # nova.detector_pi.axe_corp. Simularea NU o citeste: camera din Gazebo
-    # e montata drept, indiferent cum e cea de pe vehicul.
+    # nova.detector_pi.axe_corp.
     'camera_rotation_deg': 0,
 
     # Fisierul de parametri ArduPilot care corespunde FIRMWARE-ULUI de pe

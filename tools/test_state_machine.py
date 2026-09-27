@@ -191,7 +191,7 @@ class Args:
 
 
 def build_app(alt=6.0):
-    """Cablajul complet, ca in tools/fake_detector.py: un singur
+    """Cablajul complet, ca in tools/nova_pi.py: un singur
     OverrideMonitor impartit de poarta si de supervizor, supervizorul legat
     in bucla inaintea masinii de stari."""
     args = Args()
@@ -857,7 +857,6 @@ def test_nicio_comanda_in_afara_segmentului_autonom():
     taia si fazele de coborare, secventa nu ar mai functiona deloc si
     testul asta ar trebui sa spuna de ce (§5.11)."""
     from nova.state_machine import EMITTING_PHASES
-    import fake_detector as _fd
 
     v, det, sm, sup, events, args = build_app(alt=6.0)
     sm.state = State.IDLE

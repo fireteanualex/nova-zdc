@@ -252,7 +252,7 @@ def test_parametrii_din_fisiere_sunt_conformi():
     """Fisierele de parametri trebuie sa descrie un set fara GNSS. Daca
     cineva schimba o linie, asta pica - nu campania de peste doua zile."""
     radacina = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for fisier in ('nova_sitl.parm', 'nova_flight.parm'):
+    for fisier in ('nova_flight.parm', 'nova_flight_4.5.parm'):
         cale = os.path.join(radacina, 'config', fisier)
         valori = {}
         for linie in open(cale):

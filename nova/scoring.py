@@ -195,7 +195,7 @@ class ScoringRecorder:
         """De apelat din bucla, la fiecare ciclu: rezolva cererile care
         asteptau un cadru. Fara asta imaginea de contact nu se scrie
         niciodata (B6); pe bord o cheama invelisul detectorului din
-        nova_pi.py, in sim bucla din nova_sim.py."""
+        nova_pi.py."""
         for nume, (t, info) in list(self._pending.items()):
             tol = self.toleranta(nume)
             if self._nimic_dupa(t):

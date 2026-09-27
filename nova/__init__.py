@@ -10,6 +10,6 @@ diferenta - de unde vin detectiile si pe ce link se vorbeste cu FC-ul.
     vehicle.py       legatura cu ArduPilot: telemetrie + comenzi
     state_machine.py masina de stari a segmentului autonom (15.2.7)
 
-Detectorul (sintetic in tools/fake_detector.py, ArUco real in Faza 2)
+Detectorul (ArUco in nova/detector_pi.py; sintetic in teste)
 PUBLICA doar detectii. Nu comanda vehiculul si nu cunoaste starile.
 """

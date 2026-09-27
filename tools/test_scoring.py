@@ -261,7 +261,7 @@ def test_B6_asteptarea_expira_si_nu_ia_alt_cadru():
 def test_B6_recorderul_e_chemat_din_bucla_pe_bord_si_in_sim():
     """Fara update(now) din bucla, asteptarea nu se rezolva niciodata -
     piesa merge, cablajul lipseste (§5.14). run_loop e validat si comun,
-    deci pe bord carligul e invelisul detectorului; in sim, bucla proprie."""
+    deci pe bord carligul e invelisul detectorului."""
     radacina = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     pi = open(os.path.join(radacina, 'tools', 'nova_pi.py')).read()
     # faza 5 (refactor/threads): carligul per ciclu e PasPrincipal, pus pe
@@ -281,15 +281,11 @@ def test_B6_recorderul_e_chemat_din_bucla_pe_bord_si_in_sim():
     assert chemat == [3.0]
     i = pi.index('class PasPrincipal')
     assert 'self.rec.update(now)' in pi[i:i + 2000], "PasPrincipal nu cheama rec.update"
-    sim = open(os.path.join(radacina, 'tools', 'nova_sim.py')).read()
-    i = sim.index('self.sm.update(now)')
-    assert 'self.rec.update(now)' in sim[i:i + 200], (
-        "nova_sim.py nu cheama rec.update dupa sm.update")
-    return "bord: on_poll=rec.update; sim: rec.update dupa sm.update"
+    return "bord: PasPrincipal cheama rec.update"
 
 
 def test_ringul_e_acelasi_cod_peste_tot():
-    """§8: acelasi cod in sim si pe Pi. Doua copii ale ringului ar fi
+    """§8: acelasi cod in serviciu si pe bord. Doua copii ale ringului ar fi
     divergat la prima modificare (§5.14)."""
     radacina = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     serv = open(os.path.join(radacina, 'tools', 'nova_service.py')).read()
@@ -299,10 +295,10 @@ def test_ringul_e_acelasi_cod_peste_tot():
     det = open(os.path.join(radacina, 'nova', 'detector_pi.py')).read()
     assert 'self.ring.push(gray, t_cap)' in det, (
         "detectorul nu alimenteaza ringul cu timestamp-ul de captura")
-    for app in ('nova_pi.py', 'nova_sim.py'):
+    for app in ('nova_pi.py',):
         text = open(os.path.join(radacina, 'tools', app)).read()
         assert 'ScoringRecorder(' in text, f"{app} nu preda imaginea"
-    return "un singur FrameRing, folosit de serviciu, bord si sim"
+    return "un singur FrameRing, folosit de serviciu si bord"
 
 
 def test_ringul_primeste_cadrul_chiar_daca_detectia_pica():

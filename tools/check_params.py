@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 NOVA - ZDC 2026
-Verifica prin CITIRE INAPOI ca fiecare parametru din config/nova_sitl.parm
+Verifica prin CITIRE INAPOI ca fiecare parametru din config/nova_flight_4.5.parm
 exista si are valoarea ceruta.
 
 De ce exista unealta asta (vezi 5.10 din CLAUDE.md): ArduPilot accepta tacut
@@ -45,7 +45,7 @@ from pymavlink import mavutil
 
 DEFAULT_PARM = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    'config', 'nova_sitl.parm')
+    'config', 'nova_flight_4.5.parm')
 
 # Parametrii intregi se compara exact; cei reali au toleranta, pentru ca
 # float32 nu reprezinta exact 0.0745.

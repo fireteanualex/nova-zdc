@@ -1164,7 +1164,30 @@ def test_luminozitatea_ajunge_in_statistici():
     return f"lum {lum} pe cadrul sintetic; 254 pe cadrul ars; in status_line"
 
 
+def test_detectorul_din_productie_expune_contorul_de_cadre():
+    """Rata de detectie se calculeaza prin `getattr(detector, 'n_frames',
+    None)`. Cat timp PiDetector tinea contorul ascuns in `self.det`, getattr
+    intorcea None, numararea ratarilor se oprea si rata raporta 1.000 in
+    orice conditii - inclusiv cu detectorul mort (§5.40). Mutat aici din
+    testul buclei de simulare, sters odata cu simularea."""
+    assert hasattr(PiDetector, 'n_frames'), (
+        "PiDetector nu expune n_frames: rata de detectie iese 100% orice "
+        "s-ar intampla")
+    d = PiDetector.__new__(PiDetector)
+
+    class _Aruco:
+        n_frames = 0
+    d.det = _Aruco()
+    assert d.n_frames == 0, d.n_frames
+    d.det.n_frames = 7
+    assert getattr(d, 'n_frames', None) == 7, (
+        f"n_frames nu urmareste detectorul interior: {d.n_frames}")
+    return "PiDetector.n_frames deleaga la ArucoMarkerDetector"
+
+
 TESTS = [
+    ('PiDetector expune contorul de cadre',
+     test_detectorul_din_productie_expune_contorul_de_cadre),
     ('F4: heartbeat-ul bate si cu detectia inactiva',
      test_F4_heartbeat_bate_si_cu_detectia_inactiva),
     ('expunerea se masoara apoi se blocheaza',

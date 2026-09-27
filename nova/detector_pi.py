@@ -194,7 +194,7 @@ SEARCH_TARGET_PX = 110
 #: dropped and the search returns to acquisition.
 FORGET_SIZE_AFTER_MISSES = 10
 #: Peste cat din cadru consideram ca markerul nu mai incape (§5.2, pe cutie).
-#: Masurat in Gazebo, detectia tine pana la fill ~0.91 la rotatie zero si
+#: Masurat in simulare, detectia tine pana la fill ~0.91 la rotatie zero si
 #: ~0.83 la 41 grade, deci pragul asta nu e cel care leaga - `detectMarkers`
 #: pica primul. Ramane ca garda explicita: o detectie cu markerul pe jumatate
 #: afara nu e o detectie, e o extrapolare a lui solvePnP.
@@ -1070,10 +1070,10 @@ class ArucoMarkerDetector:
         #: Doua intregi actualizate separat nu se pot citi consistent: intre
         #: `n_frames += 1` la intrarea in `detect()` si `n_detected += 1` la
         #: iesire trece tot calculul, ~4 ms, si orice citire cazuta acolo
-        #: vede un cadru fara detectie care de fapt are una. Bucla din
-        #: `nova_sim` citeste de sute de ori pe secunda, deci cade acolo
-        #: des - si asa fiecare detectie primea o ratare fantoma, cu rata
-        #: raportata la 50% pe un detector care vedea markerul mereu.
+        #: vede un cadru fara detectie care de fapt are una. O bucla care
+        #: citeste de sute de ori pe secunda cade acolo des - si asa fiecare
+        #: detectie primea o ratare fantoma, cu rata raportata la 50% pe un
+        #: detector care vedea markerul mereu.
         #:
         #: Perechea se inlocuieste printr-o singura atribuire, dupa ce
         #: rezultatul e cunoscut. Cititorul vede ori vechea valoare, ori pe
@@ -1453,193 +1453,6 @@ class ImageDirSource(FrameSource):
         return img, t
 
 
-class GazeboFrameSource(FrameSource):
-    """Cadre din Gazebo, prin gz-transport (I3).
-
-        src = GazeboFrameSource('/down_cam/image')
-        gray, t = src.read()
-
-    **Calea 1 din doua, si a mers.** Alternativa era GstCameraPlugin cu flux
-    UDP citit prin cv2.VideoCapture; H.264 introduce artefacte de compresie
-    care degradeaza exact localizarea colturilor pe care vrem sa o masuram.
-    Aici cadrele vin NECOMPRIMATE, iar timestamp-ul e cel din simulare.
-
-    CEASUL
-
-    `clock='sim'` (implicit) intoarce timpul de SIMULARE, din antetul
-    mesajului. Cu el, o rulare accelerata sau incetinita nu strica nici
-    masuratorile de latenta, nici varsta detectiei - dar bucla care consuma
-    sursa trebuie sa foloseasca ACELASI ceas, altfel `now - det.t` compara
-    doua lumi. `clock='wall'` exista pentru cand se amesteca cu cod care
-    foloseste `time.monotonic()`; atunci masuratorile de latenta masoara
-    altceva.
-
-    DE UNDE VIN DEPENDENTELE
-
-    `gz.transport13` si `gz.msgs10` vin din apt (python3 de sistem), iar
-    OpenCV >= 4.7 din venv. Nu coexista intr-un venv obisnuit: vezi
-    tools/setup_sim_venv.sh si §5.36.
-
-    ATENTIE: un senzor de camera din Gazebo **nu randeaza fara abonat**
-    (§5.33). Clasa asta E abonatul, deci randarea porneste cand o
-    instantiezi - si se opreste cand o inchizi.
-    """
-
-    #: Cate cadre tinem in coada. 1 = mereu cel mai nou. Detectia care nu
-    #: tine pasul trebuie sa piarda cadre vechi, nu sa ramana in urma.
-    QUEUE = 1
-
-    def __init__(self, topic='/down_cam/image', clock='sim',
-                 timeout_s=5.0, verbose=True):
-        if clock not in ('sim', 'wall'):
-            raise ValueError(f"clock necunoscut: {clock}")
-        self.topic = topic
-        self.clock = clock
-        self.timeout_s = timeout_s
-        self.verbose = verbose
-        self.nominal_fps = None          # o aflam din cadrele primite
-        self.n_received = 0
-        self.n_dropped = 0
-        self.last_sim_t = None
-
-        self._lock = threading.Lock()
-        self._cond = threading.Condition(self._lock)
-        self._latest = None              # (gray, t)
-        self._seq = 0
-        self._seen = 0
-        self._closed = False
-        self._t_prev = None
-
-        Node, self._Image = _gz_imports()
-        self._node = Node()
-        if not self._node.subscribe(self._Image, topic, self._on_msg):
-            raise RuntimeError(
-                f"nu ma pot abona la {topic}.\n"
-                f"  Ruleaza `gz topic -l | grep {topic}`; daca topicul nu "
-                f"apare, serverul nu e pornit sau senzorul nu e in lume.")
-        if verbose:
-            print(f"[gazebo] abonat la {topic} (ceas: {clock})")
-
-    # -- receptie ----------------------------------------------------------
-    def _on_msg(self, msg):
-        try:
-            gray = _image_to_gray(msg)
-        except Exception as e:                              # noqa: BLE001
-            if self.verbose:
-                print(f"[gazebo] cadru ignorat: {type(e).__name__}: {e}")
-            return
-        t_sim = msg.header.stamp.sec + msg.header.stamp.nsec * 1e-9
-        t = t_sim if self.clock == 'sim' else time.monotonic()
-        with self._cond:
-            if self._latest is not None and self._seq > self._seen:
-                # cadrul anterior nu a fost consumat: il pierdem DELIBERAT,
-                # ca detectia sa lucreze pe cel mai nou (vezi QUEUE)
-                self.n_dropped += 1
-            self._latest = (gray, t)
-            self._seq += 1
-            self.n_received += 1
-            if self._t_prev is not None and t_sim > self._t_prev:
-                dt = t_sim - self._t_prev
-                self.nominal_fps = 1.0 / dt if dt > 0 else self.nominal_fps
-            self._t_prev = t_sim
-            self.last_sim_t = t_sim
-            self._cond.notify_all()
-
-    # -- interfata FrameSource ---------------------------------------------
-    def read(self):
-        """Urmatorul cadru NOU, sau None dupa `timeout_s` fara niciunul.
-
-        Blocheaza pana soseste un cadru pe care nu l-am mai dat. None
-        inseamna "sursa s-a terminat" pentru PiDetector, deci timeout-ul
-        trebuie sa fie mai lung decat orice pauza normala intre cadre."""
-        with self._cond:
-            if self._closed:
-                return None
-            if self._seq <= self._seen:
-                self._cond.wait(timeout=self.timeout_s)
-            if self._closed or self._seq <= self._seen or self._latest is None:
-                return None
-            self._seen = self._seq
-            return self._latest
-
-    def sim_time(self):
-        """Timpul de simulare al ultimului cadru, sau None.
-
-        Bucla care consuma sursa cu `clock='sim'` are nevoie de el ca sa
-        foloseasca acelasi ceas."""
-        with self._lock:
-            return self.last_sim_t
-
-    def close(self):
-        with self._cond:
-            self._closed = True
-            self._cond.notify_all()
-        # gz.transport nu expune dezabonare; nodul se elibereaza cand e
-        # colectat. Il scoatem din calea noastra explicit.
-        self._node = None
-
-    def stats(self):
-        with self._lock:
-            return {'received': self.n_received, 'dropped': self.n_dropped,
-                    'fps': self.nominal_fps, 'sim_t': self.last_sim_t}
-
-
-def _gz_imports():
-    """(Node, Image) din gz-transport. Mesaj util cand lipsesc.
-
-    Versiunea pachetelor urmeaza versiunea de Gazebo: Harmonic = transport13
-    + msgs10. Incercam in ordine descrescatoare, ca sa mearga si pe altceva."""
-    perechi = ((13, 10), (12, 9), (11, 8))
-    erori = []
-    for tv, mv in perechi:
-        try:
-            transport = __import__(f'gz.transport{tv}', fromlist=['Node'])
-            msgs = __import__(f'gz.msgs{mv}.image_pb2', fromlist=['Image'])
-            return transport.Node, msgs.Image
-        except ImportError as e:                            # noqa: PERF203
-            erori.append(f"transport{tv}/msgs{mv}: {e}")
-    raise ImportError(
-        "gz-transport pentru Python nu e disponibil.\n"
-        "  Vine din apt (python3-gz-*), deci NU se vede dintr-un venv "
-        "obisnuit.\n"
-        "  Creeaza mediul de simulare:  tools/setup_sim_venv.sh\n"
-        "  Incercat: " + '; '.join(erori))
-
-
-#: Formatele pe care le stim converti. L_INT8 e ce cere senzorul nostru;
-#: restul exista pentru cand cineva schimba <format> in SDF si se intreaba
-#: de ce nu mai merge.
-_GZ_L8 = 1
-_GZ_RGB8 = 3
-_GZ_BGR8 = 9
-
-
-def _image_to_gray(msg):
-    """gz.msgs.Image -> numpy gri (H, W), fara copie inutila."""
-    w, h = int(msg.width), int(msg.height)
-    if w <= 0 or h <= 0:
-        raise ValueError(f"dimensiuni invalide {w}x{h}")
-    buf = np.frombuffer(msg.data, dtype=np.uint8)
-    fmt = int(msg.pixel_format_type)
-    if fmt == _GZ_L8:
-        canale = 1
-    elif fmt in (_GZ_RGB8, _GZ_BGR8):
-        canale = 3
-    else:
-        raise ValueError(
-            f"format {fmt} neacceptat; senzorul nostru cere L8 "
-            f"(tools/make_camera_model.py: IMAGE_FORMAT)")
-    asteptat = w * h * canale
-    if buf.size < asteptat:
-        raise ValueError(f"{buf.size} octeti, asteptati {asteptat}")
-    img = buf[:asteptat].reshape(h, w, canale)
-    if canale == 1:
-        # copie: buf-ul protobuf poate fi reciclat de sub noi
-        return np.ascontiguousarray(img[:, :, 0])
-    cod = cv2.COLOR_RGB2GRAY if fmt == _GZ_RGB8 else cv2.COLOR_BGR2GRAY
-    return cv2.cvtColor(img, cod)
-
-
 class PiCameraSource(FrameSource):
     """Camera Module 3 Wide prin picamera2 (E1.1). Importul e lenes, ca
     modulul sa se poata incarca si pe desktop.
@@ -2012,14 +1825,7 @@ class PiDetector:
         """`clock` e ceasul in care se masoara LATENTA captura->publicare.
 
         Trebuie sa fie ACELASI cu cel in care sursa stampileaza cadrele. Pe
-        Pi ambele sunt `time.monotonic()`, deci implicitul e corect. Cu
-        `GazeboFrameSource`, cadrele poarta timp de SIMULARE, iar
-        `time.monotonic()` e timpul de la pornirea masinii: diferenta lor nu
-        e o latenta, e uptime-ul.
-
-        Masurat in prima campanie: `lat p50 3385850 ms`, adica 3386 s -
-        exact cat rula masina. A treia oara aceeasi forma ca §5.39, acum in
-        instrumentare. Aditiv: nimic nu se schimba pe vehicul."""
+        Pi ambele sunt `time.monotonic()`, deci implicitul e corect."""
         self.source = source
         self.det = detector
         self.clock = clock or time.monotonic
@@ -2155,17 +1961,11 @@ class PiDetector:
     def n_frames(self):
         """Cate cadre au fost PROCESATE, cu sau fara detectie.
 
-        Contorul creste in ArucoMarkerDetector, care vede fiecare cadru.
-        Aici e doar delegat, si asta nu e cosmetic: `nova_sim._note_frames`
-        il cauta prin `getattr(detector, 'n_frames', None)`, iar detectorul
-        pe care il primeste e un PiDetector. Cat timp proprietatea a lipsit,
-        `getattr` intorcea None, numararea ratarilor se oprea din prima
-        instructiune si `rata_detectie` raporta **1.000 in orice conditii**.
-
-        A patra oara aceeasi forma ca §5.39: metrica moarta care raporteaza
-        sanatate. De data asta testul care ar fi trebuit sa o prinda isi
-        injecta un obiect fals cu `n_frames`, deci verifica aritmetica lui
-        `_note_frames` pe o clasa care nu e cea din productie (§5.40)."""
+        Contorul creste in ArucoMarkerDetector, care vede fiecare cadru;
+        aici e doar delegat, ca rata de detectie sa se poata calcula prin
+        `getattr(detector, 'n_frames', None)` si pe un PiDetector. Fara
+        proprietate, `getattr` intoarce None si rata raporta 1.000 in orice
+        conditii (§5.40)."""
         return self.det.n_frames
 
     @property

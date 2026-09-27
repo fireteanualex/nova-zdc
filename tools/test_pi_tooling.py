@@ -877,24 +877,16 @@ def test_G4_NEGATIV_controale_neaplicate():
 
 
 def test_G4_parametrii_de_zbor():
-    """nova_flight.parm se parseaza si difera de SITL doar unde trebuie."""
+    """nova_flight.parm se parseaza si are valorile de vehicul real."""
     flight = os.path.join(REPO, 'config', 'nova_flight.parm')
-    sitl = os.path.join(REPO, 'config', 'nova_sitl.parm')
     f = {n: v for n, v, _ in parse_parm(flight)}
-    s = {n: v for n, v, _ in parse_parm(sitl)}
     assert f.get('FS_THR_ENABLE') == 1.0, (
         "FS_THR_ENABLE trebuie 1 pe vehiculul real: acolo pierderea "
         "emitatorului e exact evenimentul pentru care exista failsafe-ul")
-    assert s.get('FS_THR_ENABLE') == 0.0
-
-    comune = set(f) & set(s)
-    diferite = {n for n in comune if f[n] != s[n]}
     # EK3_SRC2_POSXY: 6 (ExtNav) pe vehicul din 27.09.2026 - camera e sursa
-    # de pozitie a EKF3 in segment; simulatorul nu e pe ExtNav, ramane 0.
-    assert diferite == {'FS_THR_ENABLE', 'EK3_SRC2_POSXY'}, (
-        f"diferente neasteptate fata de SITL: {sorted(diferite)}")
+    # de pozitie a EKF3 in segment.
     assert f['EK3_SRC2_POSXY'] == 6.0 and f.get('VISO_TYPE') == 1.0
-    assert f.get('EK3_SRC_OPTIONS') == 0.0 and s.get('EK3_SRC_OPTIONS') == 0.0
+    assert f.get('EK3_SRC_OPTIONS') == 0.0
 
     # Numele care ne-au costat deja o data (§5.4/§5.10).
     assert 'WP_RFND_USE' in f and 'WPNAV_RFND_USE' not in f
@@ -905,8 +897,8 @@ def test_G4_parametrii_de_zbor():
         "FLTMODE_* nu se inventeaza; depinde de emitatorul de concurs")
     txt = open(flight).read()
     assert 'DECIZII DESCHISE' in txt and 'NEVERIFICAT PE HARDWARE' in txt
-    return (f"{len(f)} parametri; diferente fata de SITL: FS_THR_ENABLE "
-            f"0 -> 1, EK3_SRC2_POSXY 0 -> 6 (ExtNav)")
+    return (f"{len(f)} parametri; FS_THR_ENABLE 1, EK3_SRC2_POSXY 6 "
+            f"(ExtNav), VISO_TYPE 1")
 
 
 def test_preflight_numeste_parametrul_nepotrivit():
@@ -1072,16 +1064,13 @@ def test_fereastra_de_bord_chiar_primeste_cadre():
 
 
 def test_rotatia_de_montaj_ajunge_doar_pe_vehicul():
-    """Camera din Gazebo e montata DREPT. Daca simularea ar prelua rotatia
-    vehiculului din config/nova.json, ar roti axele unei camere deja drepte
-    - si vehiculul simulat ar orbita, exact semnatura din §5.1.
-
-    Invers, un loc de pe vehicul care uita sa o dea ar zbura cu axele
-    rotite. Deci fiecare loc care construieste detectorul e clasificat."""
+    """Un loc de pe vehicul care uita sa dea rotatia de montaj din
+    config/nova.json ar zbura cu axele rotite - semnatura din §5.1. Deci
+    fiecare loc care construieste detectorul e verificat; compararea
+    offline a detectoarelor lucreaza pe imagini deja drepte si nu o ia."""
     pe_vehicul = ('nova/detector_pi.py', 'tools/nova_pi.py',
                   'tools/nova_service.py', 'tools/run_e2.py')
-    in_simulare = ('tools/nova_sim.py', 'tools/gz_frames.py',
-                   'tools/check_handover_fov.py', 'tools/compare_detectors.py')
+    in_simulare = ('tools/compare_detectors.py',)
     for nume in pe_vehicul:
         src = open(os.path.join(REPO, nume)).read()
         n_det = src.count('ArucoMarkerDetector(')
@@ -1092,12 +1081,12 @@ def test_rotatia_de_montaj_ajunge_doar_pe_vehicul():
     for nume in in_simulare:
         src = open(os.path.join(REPO, nume)).read()
         assert 'camera_rotation_deg' not in src, (
-            f"{nume} preia rotatia vehiculului: camera din Gazebo e dreapta, "
-            f"iar rotita inca o data vehiculul simulat ar orbita")
+            f"{nume} preia rotatia vehiculului, dar lucreaza pe imagini "
+            f"deja drepte")
 
     from nova import config as nova_config
     assert nova_config.DEFAULTS['camera_rotation_deg'] == 0
-    return f"{len(pe_vehicul)} locuri pe vehicul, {len(in_simulare)} in sim"
+    return f"{len(pe_vehicul)} locuri pe vehicul, {len(in_simulare)} offline"
 
 
 def test_parametrii_pentru_4_5_sunt_traducerea_corecta():
@@ -1611,8 +1600,8 @@ def test_uneltele_din_ghiduri_se_pot_rula_direct():
         f"unelte fara bit de executie in git (ghidurile le ruleaza direct): "
         f"{', '.join(fara)}. Repara: git update-index --chmod=+x tools/<f>")
 
-    # si ce ruleaza ghidul de test, concret, e printre ele
-    ghid = open(os.path.join(REPO, 'docs', 'ZBOR_TEST_ATERIZARE.md')).read()
+    # si ce ruleaza ghidul de pe Pi, concret, e printre ele
+    ghid = open(os.path.join(REPO, 'pi', 'README.md')).read()
     import re
     for unealta in set(re.findall(r"(?m)^\s*(tools/[a-z_0-9]+\.py)", ghid)):
         assert os.access(os.path.join(REPO, unealta), os.X_OK), (

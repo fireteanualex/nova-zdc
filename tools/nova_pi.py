@@ -9,13 +9,9 @@ Safety Supervisor + masina de stari, in bucla din nova/state_machine.run_loop.
     python3 tools/nova_pi.py --camera-check        # doar camera + calibrare, 10 s
     python3 tools/nova_pi.py --stop-service        # opreste nova-monitor intai
 
-Acelasi cablaj ca tools/fake_detector.py, cu doua diferente deliberate:
-
-  1. Sursa de Detection e nova/detector_pi.py (picamera2 + ArUco + solvePnP),
-     nu geometria sintetica. Masina de stari si supervizorul sunt identice.
-  2. NU exista ocolirea gardei E0. Poarta citeste config/nova.json si refuza
-     handover-ul cat timp autonomy_enabled e false. Simularea are voie sa o
-     ocoleasca (nu are ce distruge); bordul nu.
+Sursa de Detection e nova/detector_pi.py (picamera2 + ArUco + solvePnP).
+Poarta citeste config/nova.json si refuza handover-ul cat timp
+autonomy_enabled e false; pe bord garda E0 nu se ocoleste.
 
 Refuza sa porneasca fara calibrare reala a camerei (E1.2).
 

@@ -449,13 +449,19 @@ def test_WP_ACC_lasa_marja_pentru_tranzitoriu():
     la cazul masurat era 14.0 - marja zero. Valoarea din fisierul de
     parametri trebuie sa lase loc tranzitoriului."""
     import math as _m
-    for fisier in ('nova_sitl.parm', 'nova_flight.parm'):
+    for fisier in ('nova_flight.parm', 'nova_flight_4.5.parm'):
         radacina = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         text = open(os.path.join(radacina, 'config', fisier)).read()
+        # 4.7+ names it WP_ACC (m/s2); 4.5 names it WPNAV_ACCEL (cm/s2).
         linii = [l for l in text.splitlines()
                  if l.strip().startswith('WP_ACC,')]
-        assert linii, f"WP_ACC lipseste din {fisier}"
-        val = float(linii[-1].split(',')[1])
+        scala = 1.0
+        if not linii:
+            linii = [l for l in text.splitlines()
+                     if l.strip().startswith('WPNAV_ACCEL,')]
+            scala = 0.01
+        assert linii, f"WP_ACC / WPNAV_ACCEL lipseste din {fisier}"
+        val = float(linii[-1].split(',')[1]) * scala
         unghi = _m.degrees(_m.atan(val / 9.81))
         assert unghi <= 10.0, (
             f"{fisier}: WP_ACC {val} -> {unghi:.1f} deg in regim, prea "
@@ -848,10 +854,7 @@ def test_IO_niciun_apel_pe_mav_in_afara_firului():
     assert unde == {'_request_streams', '_probe_distance_api', '_write',
                     '_recv_batch', '_try_reopen'}, sorted(unde)
     # 2. in restul codului de zbor, nimeni nu atinge mav / recv_match.
-    #    fence.py: necablat in zbor, foloseste protocolul de misiune direct
-    #    - de rutat prin Vehicle INAINTE de a fi cablat (raport, in afara
-    #    perimetrului). nova_sim.py e simulatorul, sincron, un singur fir.
-    exceptii = {'vehicle.py', 'fence.py'}
+    exceptii = {'vehicle.py'}
     rele = []
     for d, fisiere in (('nova', os.listdir(os.path.join(radacina, 'nova'))),
                        ('tools', ['nova_pi.py'])):
