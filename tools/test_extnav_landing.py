@@ -534,6 +534,36 @@ def test_centrarea_cere_detectie_proaspata_nu_EKF():
     return "deriva de 1.5 m prinsa de detectia proaspata: inapoi in MOVE"
 
 
+def test_a_doua_incercare_din_acelasi_zbor_se_angajeaza():
+    """Defect 27.09.2026: dupa un EXIT, EkfSourceManager ramanea RESTAURAT
+    si a doua incercare expira in ENGAGE (8 s, pas src2) - dupa orice EXIT,
+    pilotul nu mai putea reporni segmentul in acelasi zbor. Doua incercari
+    consecutive: EXIT cerut de pilot in DESCEND (SRC1, LOITER, ABORT), apoi
+    AUX jos si sus -> ENGAGE reusit: setul recitit, sursa comutata a doua
+    oara, primul VPE trimis din nou, coborare pana la DESCEND."""
+    app = App(rate=0.2)
+    app.handover()
+    assert app.run(60.0, stop=(Phase.DESCEND, Phase.ABORT)) == Phase.DESCEND, app.states
+    app.v.set_aux(1000)
+    assert app.run(5.0, stop=(Phase.ABORT,)) == Phase.ABORT, app.states
+    assert app.v.src_cmds == [2, 1], app.v.src_cmds
+    assert app.ekf.state == app.ekf.RESTAURAT and app.v.bias is None
+    n_vpe, n_sent = len(app.v.vpe), app.sm.n_vpe_sent
+    app.run(0.3)                          # AUX jos: referinta pentru front
+    app.v.set_aux(2000)
+    st = app.run(60.0, stop=(Phase.DESCEND, Phase.ABORT, Phase.GATE_FAIL))
+    assert st == Phase.DESCEND, (st, app.states, app.sm.exit_reason)
+    assert app.v.src_cmds == [2, 1, 2], app.v.src_cmds
+    assert app.ekf.state == app.ekf.ACTIV and app.ekf.conform
+    # primul VPE al incercarii a doua a plecat DUPA a doua comutare: FC-ul
+    # de mucava reancoreaza cadrul (bias) doar cand primeste VPE pe setul 2
+    assert len(app.v.vpe) > n_vpe and app.sm.n_vpe_sent > n_sent
+    assert app.v.bias is not None
+    assert app.states.count(Phase.ENGAGE) == 2 and app.states.count(Phase.DESCEND) == 2
+    return (f"EXIT apoi ENGAGE reusit: surse {app.v.src_cmds}, "
+            f"VPE {n_vpe} -> {len(app.v.vpe)}")
+
+
 TESTS = [
     ('secventa completa cu detectii la 5%', test_secventa_completa_cu_detectii_rare),
     ('poarta: fara detectii -> retry -> GATE_FAIL, 0 comenzi',
@@ -550,6 +580,8 @@ TESTS = [
     ('ENGAGE fara EKF valid -> EXIT', test_ENGAGE_fara_EKF_valid_expira_si_iese),
     ('set EKF cu GNSS: nu se comuta', test_setul_EKF_cu_GNSS_nu_se_comuta_si_se_iese),
     ('centrarea cere detectie proaspata', test_centrarea_cere_detectie_proaspata_nu_EKF),
+    ('a doua incercare din acelasi zbor se angajeaza',
+     test_a_doua_incercare_din_acelasi_zbor_se_angajeaza),
 ]
 
 

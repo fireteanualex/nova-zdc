@@ -180,7 +180,12 @@ class EkfSourceManager:
                 self.release(now, f"faza {phase}")
             return self.state
 
-        if self.state == self.IDLE:
+        # RESTAURAT is "released after a switch" - the set is back to normal
+        # and the next segment starts from scratch, exactly like IDLE. Found
+        # 27.09.2026 offline: after an EXIT the manager stayed RESTAURAT and
+        # the second attempt of the same flight never read the set, so
+        # ENGAGE timed out (8 s, step src2) every time.
+        if self.state in (self.IDLE, self.RESTAURAT):
             self.state = self.CITESTE
             self.valori = {}
             self._cere_parametrii(now)

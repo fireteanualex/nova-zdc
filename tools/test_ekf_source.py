@@ -189,6 +189,27 @@ def test_restaureaza_si_pe_calea_de_abort():
     return "abort si faza necunoscuta duc amandoua la restaurare"
 
 
+def test_a_doua_incercare_dupa_restaurare_comuta_din_nou():
+    """Defect 27.09.2026: dupa release() managerul ramanea RESTAURAT, iar
+    un segment nou nu mai citea setul - ENGAGE expira de fiecare data.
+    Doua segmente in acelasi zbor: set 2, set 1, apoi din nou citire si
+    set 2. Si al treilea, ca sa nu fie o coincidenta a starii initiale."""
+    v = FakeVehicle()
+    s = ek.EkfSourceManager(v, verbose=False)
+    ruleaza(s, v, ['DESCEND_TRACK'] * 3)
+    s.update(1.0, 'IDLE')
+    assert s.state == s.RESTAURAT and v.comenzi == [ek.SET_AUTONOM, ek.SET_NORMAL]
+    n_cerute = len(v.cerute)
+    ruleaza(s, v, ['DESCEND_TRACK'] * 3, t0=2.0)
+    assert s.state == s.ACTIV and s.conform, s.state
+    assert v.comenzi == [ek.SET_AUTONOM, ek.SET_NORMAL, ek.SET_AUTONOM], v.comenzi
+    assert len(v.cerute) > n_cerute, "setul nu a fost recitit inainte de comutare"
+    s.update(3.0, 'IDLE')
+    ruleaza(s, v, ['DESCEND_TRACK'] * 3, t0=4.0)
+    assert v.comenzi == [ek.SET_AUTONOM, ek.SET_NORMAL] * 2 + [ek.SET_AUTONOM], v.comenzi
+    return "RESTAURAT -> citire -> ACTIV la fiecare segment nou; comenzi 2,1,2,1,2"
+
+
 def test_fara_raspuns_de_la_FC_nu_comuta():
     v = FakeVehicle(raspunde=False)
     s = ek.EkfSourceManager(v, verbose=False)
@@ -262,6 +283,8 @@ TESTS = [
     ('restaureaza la handback', test_restaureaza_la_handback),
     ('restaureaza si pe calea de abort',
      test_restaureaza_si_pe_calea_de_abort),
+    ('a doua incercare dupa restaurare comuta din nou',
+     test_a_doua_incercare_dupa_restaurare_comuta_din_nou),
     ('fara raspuns de la FC nu comuta', test_fara_raspuns_de_la_FC_nu_comuta),
     ('legatura cazuta nu pierde comutarea',
      test_legatura_cazuta_nu_pierde_comutarea),
