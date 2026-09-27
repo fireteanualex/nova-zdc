@@ -1018,7 +1018,9 @@ def test_fereastra_de_bord_chiar_primeste_cadre():
             return ['o detectie']
 
     pv = _PV()
-    f = nova_pi.FereastraBord(_Det(), pv, rotatie_deg=90)
+    # 27.09.2026: fereastra e cea din nova/board_window (OSD 720x480, fara
+    # rotire pe pixeli); nova_pi o importa de acolo
+    f = nova_pi.FereastraBord(_Det(), pv)
 
     # bucla la ~500 Hz timp de 1 s: fereastra trebuie hranita, dar LIMITAT
     for i in range(500):
@@ -1027,12 +1029,9 @@ def test_fereastra_de_bord_chiar_primeste_cadre():
     assert 8 <= len(pv.cadre) <= 12, (
         f"{len(pv.cadre)} cadre in 1 s: limitarea la "
         f"{nova_pi.FereastraBord.AFISARE_HZ} Hz nu tine")
-    assert pv.cadre[0] == (1296, 2304, 3), (
-        f"fereastra primeste {pv.cadre[0]} - rotirea e treaba lui Preview, "
-        f"pe copia de afisare, nu a cadrului")
-    assert any('in fata' in t for t in pv.texte[-1]), pv.texte[-1]
-    assert any('90' in t for t in pv.texte[-1]), (
-        "rotatia de montaj nu apare pe ecran")
+    assert pv.cadre[0] == (480, 720, 3), (
+        f"fereastra primeste {pv.cadre[0]} - OSD-ul e 720x480, compus din "
+        f"cadrul de detectie, fara rotire")
 
     # Escape: fereastra se inchide, APLICATIA CONTINUA
     pv.raspuns = False
@@ -1936,6 +1935,69 @@ def test_ExtNav_cablajul_de_bord():
     return "extnav din config; fara authority/LT/PLND; EKF manager; poarta 1-12 m fara raza"
 
 
+def test_fereastra_OSD_720x480_fara_rotire():
+    """Fereastra de bord (27.09.2026): 720x480 pentru OSD-ul analog - cadrul
+    scalat la 720x405 cu conturul markerului, banda de 75 px cu starea si
+    ultimele doua evenimente (motivul unui EXIT/refuz, confirmarea
+    pasilor). FARA rotirea de montaj pe pixeli, fara text despre nas.
+    Verificat pe imaginea compusa, fara GUI, si pe cablajul din nova_pi."""
+    import types
+    from nova import board_window as bw
+    gray = np.full((720, 1280), 60, np.uint8)
+    corners = np.array([[600, 300], [680, 300], [680, 380], [600, 380]], np.float32)
+    img = bw.compune(gray, corners, ['stare', 'EXIT: AUX jos', 'GATE'],
+                     [bw.ALB, bw.ROSU, bw.ALB])
+    assert img.shape == (480, 720, 3), img.shape
+    # conturul e la coordonatele SCALATE (x 0.5625): marginea de sus a
+    # patratului trece prin (360, 169)
+    assert tuple(img[169, 360]) == bw.VERDE, tuple(img[169, 360])
+    # banda e sub cadru, si contine text (pixeli nenuli)
+    assert img[405:, :, :].max() > 0 and img[406, 0:5].max() == 0
+    assert bw.compune(None, None, ['x']).shape == (480, 720, 3)
+    # mesajele: motivele ajung in text, cu varsta
+    m = bw.OsdMesaje()
+    m.note('handover_reject', {'reason': 'altitudine in afara ferestrei: 0.6 m'}, 100.0)
+    m.note('engage', {'n': 1, 'lateral_m': 0.83}, 101.0)
+    m.note('exit', {'reason': 'AUX jos: iesire ceruta de pilot', 'passive': False}, 104.0)
+    linii = m.linii(106.0)
+    assert linii[0][0].startswith('EXIT: AUX jos') and linii[0][0].endswith('(2s)')
+    assert linii[0][1] == bw.ROSU and linii[1][0].startswith('ENGAGE: o detectie, lateral 0.83 m')
+    assert len(linii) == 2, "se pastreaza doar ultimele doua"
+    assert bw.OsdMesaje.format('exit_done', {'mode': 5, 'passive': True})[0] == 'EXIT gata: FC in LOITER'
+    assert bw.OsdMesaje.format('gate_fail', {})[1] == bw.ROSU
+    assert bw.OsdMesaje.format('touchdown', {}) == ('CONTACT', bw.VERDE)
+    assert bw.OsdMesaje.format('link_up', {}) == (None, None)
+    # invelisul: compune din starea masinii, fara sa opreasca aplicatia
+    afisate = []
+    pv = types.SimpleNamespace(enabled=True, show=lambda im: afisate.append(im) or True,
+                               close=lambda: None)
+    class Det:
+        last_frame = gray
+        det = types.SimpleNamespace(last_corners=corners)
+        last_detection = types.SimpleNamespace(t=99.5, angle_x=0.1, angle_y=0.0, range_m=3.0)
+        def poll(self, now):
+            return []
+        def stats(self):
+            return {'fps': 5.5, 'detection_rate': 0.4}
+    sm = types.SimpleNamespace(state='GATE_SEARCH', h_now=lambda: 3.5,
+                               last_est=None, aux_high=lambda: True, n_vpe_sent=0)
+    f = bw.FereastraBord(Det(), pv, sm=sm, mesaje=m)
+    f.poll(100.0)
+    assert len(afisate) == 1 and afisate[0].shape == (480, 720, 3)
+    linie = f.linia_de_stare(100.0)
+    for parte in ('GATE_SEARCH', 'h  3.5m', 'AUX SUS', 'VPE 0', 'cam 5.5fps', 'det 40%'):
+        assert parte in linie, (parte, linie)
+    f.poll(100.05)
+    assert len(afisate) == 1, "peste 10 Hz nu se redeseneaza"
+    # cablajul din nova_pi: fereastra noua, fara rotire, mesajele din evenimente
+    src = open(os.path.join(REPO, 'tools', 'nova_pi.py')).read()
+    assert 'from nova.board_window import FereastraBord, OsdMesaje' in src
+    assert 'class FereastraBord' not in src, "clasa veche a ramas in nova_pi"
+    assert 'rotate_deg=0)' in src and 'NASUL' not in src
+    assert 'osd.note(name, info' in src and 'mesaje=osd' in src
+    return "720x480, contur scalat, banda cu motive si varsta; nova_pi fara rotire"
+
+
 def test_monitor_motiv_ajunge_in_poarta():
     src = open(os.path.join(REPO, 'tools', 'nova_pi.py')).read()
     assert "'--monitor-motiv'" in src
@@ -2102,6 +2164,7 @@ TESTS = [
      test_pornirea_automata_de_zbor_e_proba_de_coborare),
     ('--monitor-motiv ajunge in poarta', test_monitor_motiv_ajunge_in_poarta),
     ('ExtNav: cablajul de bord', test_ExtNav_cablajul_de_bord),
+    ('fereastra OSD 720x480 fara rotire', test_fereastra_OSD_720x480_fara_rotire),
     ('logurile poarta numarul de boot', test_logurile_poarta_numarul_de_boot),
     ('poza de verificare e cablata corect',
      test_poza_de_verificare_e_cablata_corect),
