@@ -7,6 +7,8 @@
   "marker_id": 26,
   "marker_size_m": 0.48,
   "camera_calibration": "config/camera_pi.yaml",
+  "_track_size": "Rezolutia pe care ruleaza detectia (decizia echipei, 27.09.2026): 1280x720. Senzorul ramane in modul 2304x1296, ISP-ul scaleaza fluxul, calibrarea din camera_pi.yaml se scaleaza automat (acelasi raport 16:9). detectMarkers pe 0.9 MP in loc de 3 MP. Sterge cheia pentru 2304x1296.",
+  "track_size": [1280, 720],
   "_search_downscale": "1 = achizitia cauta markerul pe CADRUL INTREG la fiecare cadru, cu parametri impliciti - exact ce face scriptul simplu al echipei, care detecteaza constant la 5-10 m. Cu 2 (valoarea veche) markerul de 336 mm avea la 10 m ~17 px pe imaginea redusa (nedecodabil), iar rezolutia plina se incerca doar la al 4-lea cadru ratat (zborul b29, 27.09.2026: 4 cereri la 3.5 m, 0 detectii).",
   "roi_below_m": 15.0,
   "search_downscale": 1,

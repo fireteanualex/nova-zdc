@@ -198,6 +198,23 @@ def check_stack(os_release_path='/etc/os-release'):
     return Result('stiva', OK, detail, {'linii': linii, 'codename': codename})
 
 
+def rezolutie_asteptata(cfg, cal):
+    """(latime, inaltime, nota) pe care trebuie sa o dea camera.
+
+    Implicit rezolutia calibrarii. Cu `track_size` in config (detectie pe
+    1280x720 din 27.09.2026), rezolutia ceruta, cu calibrarea scalata -
+    valabil DOAR la acelasi raport de aspect; altfel ValueError, ca in
+    CameraCalibration.scaled_to."""
+    ts = cfg.get('track_size')
+    if not ts:
+        return cal.width, cal.height, ''
+    w, h = int(ts[0]), int(ts[1])
+    if (w, h) == (cal.width, cal.height):
+        return w, h, ''
+    cal.scaled_to(w, h)                     # ridica ValueError daca nu se poate
+    return w, h, f" (calibrare {cal.width}x{cal.height} scalata)"
+
+
 def check_calib(cfg):
     """(Result, calibrare_sau_None). Calibrarea se intoarce pentru ca
     verificarea de rezolutie de mai jos are nevoie de ea."""
@@ -389,8 +406,9 @@ def run_checks(args, source_factory=None):
             if source_factory is not None:
                 source = source_factory()
             else:
-                from nova.detector_pi import PiCameraSource
-                source = PiCameraSource(verbose=False)
+                from nova.detector_pi import PiCameraSource, TRACK_SIZE
+                marime = tuple(int(x) for x in (cfg.get('track_size') or TRACK_SIZE))
+                source = PiCameraSource(size=marime, verbose=False)
         except Exception as e:                               # noqa: BLE001
             msg = f"{type(e).__name__}: {e}"
             if isinstance(e, ModuleNotFoundError):
@@ -404,14 +422,21 @@ def run_checks(args, source_factory=None):
                 # da distante gresite fara niciun simptom vizibil.
                 if cal is not None and getattr(source, 'size', None):
                     w, h = source.size
-                    if (w, h) != (cal.width, cal.height):
-                        results.append(Result(
-                            'rezolutie', ESEC,
-                            f"camera {w}x{h}, calibrare "
-                            f"{cal.width}x{cal.height}. Recalibreaza la "
-                            f"rezolutia de tracking."))
+                    try:
+                        ew, eh, nota = rezolutie_asteptata(cfg, cal)
+                    except ValueError as e:
+                        results.append(Result('rezolutie', ESEC, str(e)))
                     else:
-                        results.append(Result('rezolutie', OK, f"{w}x{h}"))
+                        if (w, h) != (ew, eh):
+                            results.append(Result(
+                                'rezolutie', ESEC,
+                                f"camera {w}x{h}, asteptat {ew}x{eh} "
+                                f"(calibrare {cal.width}x{cal.height}"
+                                f"{', track_size din config' if nota else ''}). "
+                                f"Recalibreaza la rezolutia de tracking."))
+                        else:
+                            results.append(Result('rezolutie', OK,
+                                                  f"{w}x{h}{nota}"))
                 results.extend(check_camera(source, args.frames))
                 results.append(check_controls(source))
             finally:

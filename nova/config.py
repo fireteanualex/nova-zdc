@@ -47,6 +47,15 @@ DEFAULTS = {
     'search_downscale': 2,
     'roi_size_px': [640, 480],
 
+    # Detection resolution [w, h]. None = the calibration's (2304x1296).
+    # Team decision 27.09.2026: 1280x720 - the sensor keeps its binned
+    # 2304x1296 mode, the ISP scales the stream, the calibration is scaled
+    # to match (CameraCalibration.scaled_to; same aspect ratio required).
+    # detectMarkers on 0.9 MP instead of 3 MP: ~3x cheaper per frame; the
+    # marker keeps its angular size, so at 10 m it has ~19 px instead of
+    # ~35 - still decodable (the 4x4 marker needs ~5 px per module).
+    'track_size': None,
+
     # Cum e montata camera pe VEHICULUL REAL: cu cate grade trebuie rotita
     # imaginea bruta SPRE STANGA (pe ecran) ca nasul dronei sa ajunga sus.
     # 0, 90, 180 sau 270. Se aplica pe maparea axelor, nu pe pixeli - vezi

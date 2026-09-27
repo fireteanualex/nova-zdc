@@ -370,6 +370,39 @@ class CameraCalibration:
     def is_real(self):
         return self.rms is not None and self.n_images > 0
 
+    def scaled_to(self, width, height, tol=0.005):
+        """The same calibration for a frame of another size, SAME aspect.
+
+        Detection on 1280x720 (team decision 27.09.2026): the sensor still
+        runs its 2304x1296 binned mode, the ISP scales the stream down.
+        Intrinsics scale with the image (fx, cx by width, fy, cy by
+        height); the distortion coefficients act on normalised coordinates
+        and stay. A different aspect ratio would mean a crop, not a scale
+        - refused, because it would silently move the principal point."""
+        width, height = int(width), int(height)
+        if (width, height) == (self.width, self.height):
+            return self
+        sx = width / float(self.width)
+        sy = height / float(self.height)
+        if abs(sx / sy - 1.0) > tol:
+            raise ValueError(
+                f"{width}x{height} nu are raportul calibrarii "
+                f"{self.width}x{self.height} ({sx:.4f} vs {sy:.4f}): ar fi "
+                f"un decupaj, nu o scalare. Recalibreaza la rezolutia asta.")
+        K = self.K.copy()
+        K[0, 0] *= sx
+        K[0, 2] *= sx
+        K[1, 1] *= sy
+        K[1, 2] *= sy
+        meta = dict(self.meta)
+        meta['scalata_din'] = f"{self.width}x{self.height}"
+        return CameraCalibration(
+            K, self.dist, width, height,
+            rms=None if self.rms is None else self.rms * sx,
+            n_images=self.n_images,
+            source=f"{self.source} (scalata {self.width}x{self.height} -> "
+                   f"{width}x{height})", meta=meta)
+
     @classmethod
     def geometric(cls, width, height, hfov_deg=102.0):
         """Punct de plecare din fisa tehnica: f = W/2 / tan(HFOV/2), fara
@@ -1587,7 +1620,18 @@ def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None,
     if verbose and aruco.camera_rotation_deg:
         print(f"[detector] camera montata rotit: imaginea se roteste cu "
               f"{aruco.camera_rotation_deg} grade la stanga (axe, nu pixeli)")
-    source = PiCameraSource(verbose=verbose,
+    # Detection resolution (config `track_size`, default the calibration's).
+    # Smaller than the calibration = the same lens, scaled: fewer pixels
+    # for detectMarkers, the marker keeps its angular size.
+    size = tuple(int(x) for x in (cfg.get('track_size') or TRACK_SIZE))
+    if size != (calib.width, calib.height):
+        calib = calib.scaled_to(*size)
+        aruco.calib = calib
+        aruco.cam = calib.camera_model(aruco.marker_size_m)
+        if verbose:
+            print(f"[detector] detectie pe {size[0]}x{size[1]}: calibrare "
+                  f"scalata, fx={calib.fx:.1f} fy={calib.fy:.1f}")
+    source = PiCameraSource(size=size, verbose=verbose,
                             auto_expose=cfg.get('camera_auto_expose', True),
                             fresh=cfg.get('camera_fresh_capture', True))
     if (source.size[0], source.size[1]) != (calib.width, calib.height):

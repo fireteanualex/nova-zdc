@@ -359,6 +359,48 @@ def test_pidetector_fir_separat():
     return "5/5 detectii adunate din firul separat"
 
 
+def test_calibrarea_scalata_la_1280x720():
+    """Decizia echipei (27.09.2026): detectia pe 1280x720. Aceeasi lentila,
+    cadrul scalat de ISP: intrinsecii se scaleaza cu imaginea, distorsiunea
+    ramane. Verificat pe adevar: markerul randat la 2304x1296, cadrul redus
+    la 1280x720, detectat cu calibrarea scalata -> aceleasi unghiuri si
+    distanta. Alt raport de aspect = decupaj, refuzat."""
+    cal = synthetic_calibration()
+    cs = cal.scaled_to(1280, 720)
+    sx = 1280 / 2304.0
+    assert abs(cs.fx - cal.fx * sx) < 1e-9 and abs(cs.cx - cal.cx * sx) < 1e-9
+    assert abs(cs.fy - cal.fy * sx) < 1e-6 and abs(cs.cy - cal.cy * sx) < 1e-6
+    assert np.allclose(cs.dist, cal.dist) and cs.is_real()
+    assert (cs.width, cs.height) == (1280, 720) and 'scalata' in cs.source
+    assert cal.scaled_to(2304, 1296) is cal
+    # Ce conteaza pentru ExtNav: UNGHIURILE (pozitia vine din ele + baro)
+    # si distanta 3D (log, prag ROI). `range_m` - proiectia pe normala
+    # planului - e zgomotoasa la ~19 px (11% la 10 m): normala din IPPE e
+    # prost determinata pe un marker mic. Nu intra in ghidarea ExtNav;
+    # ar conta doar pe calea PLND (DISTANCE_SENSOR), care nu zboara.
+    for t in ((0.0, 0.0, 6.0), (1.2, -0.6, 8.0), (-2.0, 0.9, 10.0)):
+        frame, corners = render(cal, R_FLAT, t)
+        small = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_AREA)
+        det = ArucoMarkerDetector(cs, roi_below_m=0.0).detect(small, 1.0)
+        assert det is not None, t
+        tr = truth(t)
+        assert abs(det.distance_m / tr['distance'] - 1) < 0.03, (det.distance_m, tr)
+        assert abs(math.degrees(det.angle_x - tr['angle_x'])) < 0.4, t
+        assert abs(math.degrees(det.angle_y - tr['angle_y'])) < 0.4, t
+        assert abs(det.range_m / tr['range_m'] - 1) < 0.15, (det.range_m, tr)
+        assert abs(det.marker_px - ArucoMarkerDetector.side_px(corners) * sx) \
+            < 0.05 * det.marker_px, (det.marker_px, tr)
+    # FOV-ul si incadrarea raman ale lentilei, in noul cadru
+    assert abs(cs.hfov_deg() - cal.hfov_deg()) < 0.01
+    assert cs.camera_model().width_px == 1280.0
+    try:
+        cal.scaled_to(1024, 600)
+        assert False, "alt raport de aspect acceptat"
+    except ValueError as e:
+        assert 'decupaj' in str(e)
+    return "unghiuri/distanta identice pe 1280x720 la 6-10 m; alt raport refuzat"
+
+
 def test_calibrare_salvare_incarcare_refuz():
     cal = synthetic_calibration()
     tmp = os.path.join(tempfile.mkdtemp(), 'cam.yaml')
@@ -1029,6 +1071,7 @@ TESTS = [
      test_verificarea_asteapta_aplicarea_controlului),
     ('ratarile consecutive pe clasa din productie',
      test_ratarile_consecutive_pe_clasa_din_productie),
+    ('calibrarea scalata la 1280x720', test_calibrarea_scalata_la_1280x720),
     ('B9: firul mort nu arata sanatos', test_B9_firul_mort_nu_arata_sanatos),
     ('ExtNav: orientarea markerului in corp', test_ExtNav_orientarea_markerului_in_corp),
     ('B8: etapele se citesc cat firul adauga chei',

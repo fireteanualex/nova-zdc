@@ -764,6 +764,52 @@ def test_rata_camerei_nu_include_costul_analizei():
     return f"{r_fps.data['fps']:.1f} fps masurat de la o camera de 30"
 
 
+def test_rezolutia_din_config_cu_calibrare_scalata():
+    """track_size 1280x720 in config (27.09.2026): camera la 1280x720 e OK
+    cu calibrarea de 2304x1296 scalata; fara cheie ramane ESEC (testul de
+    mai jos); un raport de aspect diferit e ESEC cu motiv."""
+    import json as _json
+    tmp = tempfile.mkdtemp()
+    cfg_path, _ = make_cfg(tmp)
+
+    class Sursa:
+        nominal_fps = 30.0
+        control_problems = []
+        def __init__(self, size):
+            self.size = size
+            self.i = 0
+        def read(self):
+            import time as _t
+            if self.i >= 4:
+                return None
+            self.i += 1
+            return np.full((self.size[1], self.size[0]), 128, np.uint8), _t.monotonic()
+        def close(self):
+            pass
+
+    def ruleaza(track, size):
+        c = _json.load(open(cfg_path))
+        c['track_size'] = track
+        _json.dump(c, open(cfg_path, 'w'))
+        args = argparse.Namespace(config=cfg_path, conn='/dev/null', baud=1,
+                                  parm='x', frames=4, mavlink_timeout=0.1,
+                                  no_camera=False, no_mavlink=True, json=False,
+                                  os_release='/etc/os-release')
+        res = {r.name: r for r in pf.run_checks(args, source_factory=lambda: Sursa(size))}
+        return res['rezolutie']
+
+    r = ruleaza([1280, 720], (1280, 720))
+    assert r.status == pf.OK and 'scalata' in r.detail, (r.status, r.detail)
+    r = ruleaza([1280, 720], (2304, 1296))
+    assert r.status == pf.ESEC and 'asteptat 1280x720' in r.detail, r.detail
+    r = ruleaza([1024, 600], (1024, 600))
+    assert r.status == pf.ESEC and 'decupaj' in r.detail, r.detail
+    # si fisierul din repo cere chiar 1280x720
+    from nova import config as nova_config
+    assert list(nova_config.load()['track_size']) == [1280, 720]
+    return "1280x720 OK (scalata); 2304 cu track_size -> ESEC; 1024x600 -> ESEC (decupaj)"
+
+
 def test_G4_NEGATIV_rezolutie_nepotrivita():
     """Calibrare pentru alta rezolutie: eroare tacuta de distanta."""
     tmp = tempfile.mkdtemp()
@@ -2037,6 +2083,7 @@ TESTS = [
      test_G4_NEGATIV_fps_mic_si_capac_pe_obiectiv),
     ('rata camerei nu include costul analizei',
      test_rata_camerei_nu_include_costul_analizei),
+    ('rezolutia din config, calibrare scalata', test_rezolutia_din_config_cu_calibrare_scalata),
     ('G4 NEGATIV: rezolutie nepotrivita',
      test_G4_NEGATIV_rezolutie_nepotrivita),
     ('G4 NEGATIV: controale neaplicate',
