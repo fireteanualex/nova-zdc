@@ -46,9 +46,15 @@ class Detection:
     t           time.monotonic() la capturarea cadrului (nu la publicare)
     angle_x     offset unghiular pe axa INAINTE, rad
     angle_y     offset unghiular pe axa DREAPTA, rad
-    distance_m  distanta 3D pana la marker (din solvePnP / dimensiune)
+    distance_m  distanta 3D pana la marker (din solvePnP / dimensiune).
+                DEPINDE DE marker_size_m (scara solvePnP): un marker de
+                336 mm declarat 480 da 1.43x. Pe ExtNav nu intra in nicio
+                decizie (27.09.2026): acolo pozitia = inaltime baro x
+                unghiuri. Folosita doar pe calea PLND, in loguri si unelte.
     marker_px   latura markerului in imagine, px - criteriul de scoring (8.3.3)
     range_m     citirea echivalenta de telemetru, NEcorectata de inclinare.
+                DEPINDE DE marker_size_m, ca distance_m (PLND: DISTANCE_SENSOR,
+                marker_offset_m; ExtNav: nimic din decizii).
                 ArduPilot inmulteste singur cu cos(tilt), deci aici se pune
                 alt / cos(tilt), nu alt (5.3 din CLAUDE.md).
     fill        cat din cadru ocupa CUTIA DE INCADRARE a markerului, pe axa

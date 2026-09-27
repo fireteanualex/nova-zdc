@@ -263,7 +263,42 @@ def test_camera_se_inchide_la_orice_eroare_dupa_deschidere():
     return "KeyError dupa deschidere -> camera inchisa; stop() picat -> close() tot se face"
 
 
+def test_distanta_solvepnp_nu_decide_nimic_pe_extnav():
+    """Retus 27.09: cu roi_below_m null (nova.json), ROI-ul nu mai depinde
+    de distanta solvePnP (care scaleaza cu marker_size_m): acelasi cadru,
+    acelasi marker, declarat 0.48 sau 0.336 -> exact aceleasi decizii de
+    ROI si aceleasi unghiuri; doar distanta difera, de 1.43x. roi_below_m
+    numeric pastreaza comportamentul vechi (0 = ROI oprit)."""
+    from nova import config as nova_config
+    cal = tdp.synthetic_calibration()
+    assert nova_config.load()['roi_below_m'] is None
+    frames = [tdp.render(cal, tdp.R_FLAT, (0.3 * k, -0.2, 12.0))[0] for k in range(5)]
+
+    def ruleaza(size_m, roi):
+        d = ArucoMarkerDetector(cal, marker_size_m=size_m, roi_below_m=roi)
+        rez = []
+        for i, f in enumerate(frames):
+            roi_box = d._roi(f.shape)
+            det = d.detect(f, float(i))
+            rez.append((roi_box, None if det is None else (det.angle_x, det.angle_y,
+                                                            det.distance_m)))
+        return rez
+
+    a, b = ruleaza(0.48, None), ruleaza(0.336, None)
+    assert [x[0] for x in a] == [x[0] for x in b], "ROI diferit dupa marimea declarata"
+    assert a[1][0] is not None, "fara ROI la 12 m cu roi_below_m null"
+    for (_, da), (_, db) in zip(a, b):
+        assert abs(da[0] - db[0]) < 1e-9 and abs(da[1] - db[1]) < 1e-9
+        assert abs(da[2] / db[2] - 0.48 / 0.336) < 1e-6
+    # pragul numeric: comportamentul vechi (la 12 m, sub 15 -> ROI; 0 -> niciodata)
+    assert ruleaza(0.48, 15.0)[1][0] is not None
+    assert all(x[0] is None for x in ruleaza(0.48, 0.0))
+    return "ROI si unghiuri identice la 0.48 / 0.336 m; doar distanta x1.43"
+
+
 TESTS = [
+    ('distanta solvePnP nu decide nimic pe ExtNav',
+     test_distanta_solvepnp_nu_decide_nimic_pe_extnav),
     ('diagnosticul nu pierde detectii si nu blocheaza pornirea',
      test_diagnosticul_nu_pierde_detectii_si_nu_blocheaza_pornirea),
     ('last_view are cadrul si conturul lui', test_last_view_are_cadrul_si_conturul_lui),

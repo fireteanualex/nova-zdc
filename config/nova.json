@@ -10,7 +10,8 @@
   "_camera_preset": "Camera (27.09.2026): o singura cheie alege modul senzorului, fluxul, expunerea, AWB si focusul (nova/detector_pi.py CAMERA_PRESETS). crop1280 = ce s-a zburat cu succes: modul 1536x864 (decupajul central 3072x1728, binned 2x2) -> flux 1280x720, expunere masurata la pornire apoi blocata (plafon 2 ms), fara AWB, LensPosition 1.63; calibrarea din camera_pi.yaml (2304x1296 camp intreg) se DERIVEAZA pentru modul decupat si se scaleaza: fx ~865 px (nu 577, cum se scala gresit inainte). Alte preseturi: crop1536 (1536x864 fara scalare, fx ~1038), full1280 (2304x1296 camp intreg -> 1280x720, fx ~577), trackerv2 (ca trackerV2.py: AE continuu, AWB, LensPosition 1.0). Cheile individuale (sensor_mode, output_size, exposure, exposure_us, analogue_gain, exposure_max_us, gain_max, awb, lens_position), puse aici, rafineaza presetul; --preset / --camera-preset din linia de comanda il inlocuieste cu totul. Camera citeste modul inapoi si refuza altul.",
   "camera_preset": "crop1280",
   "_search_downscale": "1 = achizitia cauta markerul pe CADRUL INTREG la fiecare cadru, cu parametri impliciti - exact ce face scriptul simplu al echipei, care detecteaza constant la 5-10 m. Cu 2 (valoarea veche) markerul de 336 mm avea la 10 m ~17 px pe imaginea redusa (nedecodabil), iar rezolutia plina se incerca doar la al 4-lea cadru ratat (zborul b29, 27.09.2026: 4 cereri la 3.5 m, 0 detectii).",
-  "roi_below_m": 15.0,
+  "_roi_below_m": "null = ROI la orice distanta (27.09.2026): decizia nu mai depinde de distanta solvePnP, care scaleaza cu marker_size_m (un marker de 336 mm declarat 480 da distante de 1.43x prea mari). Intentia valorii vechi, 15 m, era deja 'ROI in toata fereastra de handover'; ratarea ROI cade pe cadrul intreg in acelasi apel, iar un marker mare in cadru opreste ROI dupa pixeli (BIG_MARKER_PX).",
+  "roi_below_m": null,
   "search_downscale": 1,
   "roi_size_px": [640, 480],
 

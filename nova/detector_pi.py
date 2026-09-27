@@ -1018,7 +1018,11 @@ class ArucoMarkerDetector:
         self.camera_rotation_deg = int(camera_rotation_deg) % 360
         self.marker_id = int(marker_id)
         self.marker_size_m = float(marker_size_m)
-        self.roi_below_m = float(roi_below_m)
+        #: None = no distance limit (config/nova.json since 27.09.2026): the
+        #: ROI decision must not depend on the solvePnP distance, which
+        #: scales with marker_size_m - a marker declared 480 mm but really
+        #: 336 mm reads 1.43x too far. 0 = ROI off (E2, simulator).
+        self.roi_below_m = None if roi_below_m is None else float(roi_below_m)
         self.search_downscale = int(search_downscale)
         self._search_tick = 0
         #: StageTimer, attached by PiDetector; None = no timing overhead.
@@ -1087,8 +1091,10 @@ class ArucoMarkerDetector:
     # -- ROI ---------------------------------------------------------------
     def _roi(self, shape):
         """(x0, y0, x1, y1) daca merita ROI, altfel None."""
-        if (self.last_center is None or self.last_range_m is None
-                or self.last_range_m >= self.roi_below_m
+        if (self.last_center is None
+                or (self.roi_below_m is not None
+                    and (self.last_range_m is None
+                         or self.last_range_m >= self.roi_below_m))
                 or (self.last_side_px is not None
                     and self.last_side_px >= BIG_MARKER_PX)):
             return None
@@ -1314,6 +1320,9 @@ class ArucoMarkerDetector:
         inainte, dreapta = axe_corp(t[0], t[1], self.camera_rotation_deg)
         angle_x = math.atan2(inainte, t[2])
         angle_y = math.atan2(dreapta, t[2])
+        # distance / range_m scale with marker_size_m (the solvePnP object
+        # points); the angles above do not. On the ExtNav path nothing
+        # decides on them (27.09.2026: the ROI switch no longer does either).
         distance = float(np.linalg.norm(t))
 
         # range_m = ce ar citi un telemetru pe axa optica pana la PLANUL

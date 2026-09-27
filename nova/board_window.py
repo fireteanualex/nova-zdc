@@ -351,9 +351,14 @@ class FereastraBord:
             if e is not None and now - e.t < 2.0:
                 parti.append(f"lat {e.lateral_m:.2f}m")
             else:
+                # Fallback outside the ExtNav estimate: the barometric
+                # height times the angles, like the estimator (level
+                # vehicle assumed) - NOT the solvePnP range, which depends
+                # on marker_size_m (27.09.2026).
                 d = getattr(self._inner, 'last_detection', None)
-                if d is not None and now - d.t < 2.0 and getattr(d, 'range_m', None):
-                    lat = d.range_m * math.hypot(math.tan(d.angle_x), math.tan(d.angle_y))
+                h_baro = getattr(v, 'alt', None) if v is not None else None
+                if d is not None and now - d.t < 2.0 and h_baro and h_baro > 0.3:
+                    lat = h_baro * math.hypot(math.tan(d.angle_x), math.tan(d.angle_y))
                     parti.append(f"lat {lat:.2f}m")
             if hasattr(sm, 'aux_high'):
                 parti.append(f"AUX {'SUS' if sm.aux_high() else 'jos'}")
