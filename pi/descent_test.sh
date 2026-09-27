@@ -368,6 +368,8 @@ BOOT_N="$( idf="$LOG_DIR/.boot"; bid="$(cat /proc/sys/kernel/random/boot_id 2>/d
   echo "$n" )"
 STAMP="b${BOOT_N}-$(date +%Y%m%d-%H%M%S)"
 LOG="$LOG_DIR/coborare-$STAMP.log"
+# The detector's per-frame log (camera metadata + detection), same stamp.
+ARGS+=(--frame-log "$LOG_DIR/cadre-$STAMP.csv")
 say "pornesc. log: $LOG"
 cd "$REPO"
 "$PY" -u tools/nova_pi.py "${ARGS[@]}" 2>&1 | tee "$LOG"
@@ -375,6 +377,7 @@ COD="${PIPESTATUS[0]}"
 
 say "gata. evidenta:"
 printf '  log:     %s\n' "$LOG"
+printf '  cadre:   %s\n' "$LOG_DIR/cadre-$STAMP.csv"
 printf '  imagini: %s\n' "$REPO/data/scoring/"
 printf '  .bin de pe FC: descarca-l si tine-l langa log (6.2.1.30)\n'
 printf '  tools/collect_session.py aduna tot intr-un manifest\n\n'

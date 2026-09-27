@@ -147,6 +147,16 @@ class LastDetection:
         return getattr(self._inner, name)
 
 
+def frame_log_path(arg, now=None):
+    """The per-frame detector log (27.09.2026): the given path, None for
+    "none", else a timestamped file next to the other run logs."""
+    if arg is not None:
+        return None if arg.lower() == 'none' else arg
+    d = os.environ.get('NOVA_LOG_DIR') or os.path.expanduser('~/nova-logs')
+    stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime(now))
+    return os.path.join(d, f"cadre-{stamp}.csv")
+
+
 def vedere(vehicle):
     """The supervisor's view of the vehicle (phase 3): snapshots, commands
     through the queues. A vehicle without one (tests, stubs) is used as is."""
@@ -402,6 +412,12 @@ def main():
     p.add_argument('--etape', type=float, default=10.0, metavar='S',
                    help='tipareste timpii pe etape ai detectorului la '
                         'fiecare S secunde (0 = oprit). Doar masurare')
+    p.add_argument('--frame-log', default=None, metavar='CALE',
+                   help='jurnalul per cadru al detectorului (CSV: metadatele '
+                   'camerei - ExposureTime, AnalogueGain, LensPosition, '
+                   'SensorTimestamp - si ce a facut detectia). Implicit '
+                   '$NOVA_LOG_DIR sau ~/nova-logs/cadre-<data>.csv; "none" '
+                   '= fara')
     p.add_argument('--camera-preset', default=None,
                    metavar='NUME', help='presetul camerei pentru rularea asta '
                    '(crop1280, crop1536, full1280, trackerv2): inlocuieste '
@@ -467,7 +483,8 @@ def main():
                                      max_rms=a.max_rms,
                                      keep_last_frame=(a.show_window or
                                                       a.fullscreen),
-                                     preset=a.camera_preset)
+                                     preset=a.camera_preset,
+                                     frame_log=frame_log_path(a.frame_log))
     except (FileNotFoundError, ValueError) as e:
         # Refuz DELIBERAT (E1.2), nu crash: mesaj scurt, cod de iesire
         # distinct, ca serviciul/preflight-ul sa il poata deosebi de o

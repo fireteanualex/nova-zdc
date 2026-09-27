@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""
+NOVA - ZDC 2026
+Metadatele camerei si timpul capturii (27.09.2026, punctul 3).
+
+    python3 tools/test_camera_metadata.py
+
+Ce conteaza: t_capture e SensorTimestamp convertit in ceasul buclei, nu
+momentul in care read() s-a intors (cu camera_fresh_capture false cadrul
+poate fi deja la coada); jurnalul detectorului are, per cadru, ExposureTime,
+AnalogueGain, LensPosition, SensorTimestamp; fereastra de 5 s spune cat din
+planul de gri e saturat (255) si cat e aproape negru (< 10).
+"""
+
+import contextlib
+import csv
+import io
+import os
+import sys
+import tempfile
+import time
+
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+sys.path.insert(0, REPO)
+sys.path.insert(0, HERE)
+
+from nova.detector_pi import (ArraySource, ArucoMarkerDetector,  # noqa: E402
+                              DARK_LEVEL, FRAME_LOG_FIELDS, PiDetector,
+                              camera_settings)
+from test_camera_geometry import FakePicamera2, fake_camera, quiet  # noqa: E402
+import test_detector_pi as tdp                                  # noqa: E402
+
+
+def test_t_capture_e_SensorTimestamp_nu_momentul_citirii():
+    """Cadrul capturat cu 40 ms inainte de read() (la coada): t_capture e cu
+    ~40 ms in urma ceasului, nu 'acum'. Fara SensorTimestamp, read() cade pe
+    momentul intoarcerii - iar detectorul numara si spune asta."""
+    from nova.detector_pi import PiCameraSource
+    with fake_camera() as cam, quiet():
+        cam.ts_lag_s = 0.040
+        src = PiCameraSource(settings=camera_settings({}, 'crop1280'))
+        lags = []
+        for _ in range(5):
+            _gray, t = src.read()
+            lags.append(time.monotonic() - t)
+        src.close()
+    assert all(0.035 < x < 0.2 for x in lags), lags
+    with fake_camera() as cam, quiet():
+        src = PiCameraSource(settings=camera_settings({}, 'crop1280'))
+        cam.no_timestamp = True
+        pd = PiDetector(src, ArucoMarkerDetector(tdp.synthetic_calibration()),
+                        threaded=False)
+        pd.window_log = False
+        for _ in range(3):
+            pd.poll(0.0)
+        src.close()
+    assert pd.n_no_timestamp == 3, pd.n_no_timestamp
+    return f"varsta cadrului {1000 * min(lags):.0f}-{1000 * max(lags):.0f} ms (lag 40 ms); fara timestamp -> numarat"
+
+
+def test_jurnalul_per_cadru_are_metadatele_camerei():
+    """Detectorul real, camera stub: fiecare cadru o linie in CSV cu
+    metadatele lui si ce a facut detectia."""
+    from nova.detector_pi import PiCameraSource
+    tmp = tempfile.mkdtemp()
+    path = os.path.join(tmp, 'sub', 'cadre.csv')
+    with fake_camera(), quiet():
+        src = PiCameraSource(settings=camera_settings({}, 'crop1280'))
+        pd = PiDetector(src, ArucoMarkerDetector(tdp.synthetic_calibration()),
+                        threaded=False, frame_log=path)
+        pd.window_log = False
+        for _ in range(4):
+            pd.poll(0.0)
+        pd.stop()
+    rows = list(csv.DictReader(open(path)))
+    assert tuple(rows[0].keys()) == FRAME_LOG_FIELDS, rows[0].keys()
+    assert [int(r['seq']) for r in rows] == [1, 2, 3, 4]
+    for r in rows:
+        for k in ('ExposureTime', 'AnalogueGain', 'LensPosition', 'SensorTimestamp',
+                  't_capture', 'proc_ms'):
+            assert r[k] != '', (k, r)
+        assert r['detected'] == '0' and r['marker_px'] == ''
+    assert abs(float(rows[0]['LensPosition']) - 1.63) < 1e-6
+    assert float(rows[0]['ExposureTime']) <= 2000        # auto_lock, plafonat
+    return f"{len(rows)} linii, campuri: {', '.join(FRAME_LOG_FIELDS)}"
+
+
+def test_fereastra_spune_saturatia_si_expunerea():
+    """Cadre cu 25% alb saturat si 10% negru: fereastra le raporteaza (pe
+    esantion, deci aproximativ); expunerea mediana si maxima, gain-ul,
+    focusul vin din metadate; linia de log le contine."""
+    h, w = 720, 1280
+    frame = np.full((h, w), 120, np.uint8)
+    frame[:, :w // 4] = 255
+    frame[:h // 10, w // 4:] = 3            # 10% din rest -> 7.5% din cadru
+    frames = [frame] * 6
+
+    class Sursa(ArraySource):
+        def __init__(self):
+            super().__init__(frames)
+            self.n = 0
+
+        def read(self):
+            item = super().read()
+            if item is not None:
+                self.n += 1
+                self.last_metadata = {'ExposureTime': 1000 + 100 * self.n,
+                                      'AnalogueGain': 2.0, 'LensPosition': 1.63,
+                                      'SensorTimestamp': 123}
+            return item
+
+    t = [0.0]
+    pd = PiDetector(Sursa(), ArucoMarkerDetector(tdp.synthetic_calibration()),
+                    threaded=False)
+    pd.window_log_s = 1.0
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        for i in range(6):
+            pd._window_log(t[0])     # ancora ferestrei inainte de cadre
+            pd.poll(0.0)
+            t[0] += 0.3
+        pd._window_log(t[0])
+    lw = pd.last_window
+    assert lw is not None and abs(lw['sat_pct'] - 25.0) < 1.0, lw
+    assert abs(lw['dark_pct'] - 7.5) < 1.0, lw
+    assert lw['exposure_max_us'] >= lw['exposure_us'] > 1000 and lw['gain'] == 2.0
+    assert lw['lens'] == 1.63 and lw['no_timestamp'] == 0
+    line = [x for x in out.getvalue().splitlines() if x.startswith('[detectie')][-1]
+    assert f"<{DARK_LEVEL}" in line and 'sat ' in line and 'exp ' in line and 'lens 1.63' in line, line
+    return f"sat {lw['sat_pct']:.1f}% negru {lw['dark_pct']:.1f}%; {line.split('|', 5)[-1].strip()}"
+
+
+def test_frame_seq_numara_fiecare_cadru():
+    """Contorul pe care il urmareste fereastra OSD: fiecare cadru citit,
+    si cu detectia inactiva."""
+    frame, _ = tdp.render(tdp.synthetic_calibration(), tdp.R_FLAT, (0.0, 0.0, 6.0))
+    pd = PiDetector(ArraySource([frame] * 5),
+                    ArucoMarkerDetector(tdp.synthetic_calibration()), threaded=False)
+    pd.window_log = False
+    pd.poll(0.0)
+    pd.poll(0.0)
+    pd.active.clear()
+    pd.poll(0.0)
+    assert pd.frame_seq == 3, pd.frame_seq
+    return "3 cadre -> frame_seq 3 (unul cu detectia inactiva)"
+
+
+def test_calea_jurnalului_in_aplicatie_si_in_proba():
+    import nova_pi
+    assert nova_pi.frame_log_path('none') is None
+    assert nova_pi.frame_log_path('/x/y.csv') == '/x/y.csv'
+    vechi = os.environ.get('NOVA_LOG_DIR')
+    os.environ['NOVA_LOG_DIR'] = '/tmp/loguri'
+    try:
+        p = nova_pi.frame_log_path(None, now=0)
+    finally:
+        if vechi is None:
+            os.environ.pop('NOVA_LOG_DIR')
+        else:
+            os.environ['NOVA_LOG_DIR'] = vechi
+    assert p.startswith('/tmp/loguri/cadre-') and p.endswith('.csv'), p
+    src = open(os.path.join(HERE, 'nova_pi.py')).read()
+    assert 'frame_log=frame_log_path(a.frame_log)' in src
+    dt = open(os.path.join(REPO, 'pi', 'descent_test.sh')).read()
+    assert 'ARGS+=(--frame-log "$LOG_DIR/cadre-$STAMP.csv")' in dt
+    return "none / cale / implicit in NOVA_LOG_DIR; proba: acelasi stamp ca logul"
+
+
+TESTS = [
+    ('t_capture = SensorTimestamp, nu momentul citirii',
+     test_t_capture_e_SensorTimestamp_nu_momentul_citirii),
+    ('jurnalul per cadru are metadatele camerei',
+     test_jurnalul_per_cadru_are_metadatele_camerei),
+    ('fereastra spune saturatia si expunerea',
+     test_fereastra_spune_saturatia_si_expunerea),
+    ('frame_seq numara fiecare cadru', test_frame_seq_numara_fiecare_cadru),
+    ('calea jurnalului in aplicatie si in proba',
+     test_calea_jurnalului_in_aplicatie_si_in_proba),
+]
+
+
+def main():
+    fails = 0
+    for name, fn in TESTS:
+        try:
+            note = fn()
+            print(f"  OK    {name}" + (f"   ({note})" if note else ""))
+        except AssertionError as e:
+            fails += 1
+            print(f"  ESEC  {name}\n        {e}")
+        except Exception as e:                      # noqa: BLE001
+            fails += 1
+            import traceback
+            traceback.print_exc()
+            print(f"  EROARE {name}\n        {type(e).__name__}: {e}")
+    print(f"\n  {len(TESTS) - fails}/{len(TESTS)} teste trecute")
+    return 1 if fails else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

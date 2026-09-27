@@ -256,6 +256,17 @@ DETECT_FAIL_MAX = 5
 DETECT_FAIL_BACKOFF_S = 0.05
 #: Log per fereastra: cadre capturate, procesate, detectii, timp mediu.
 DETECT_LOG_WINDOW_S = 5.0
+#: Exposure statistics per window (27.09.2026): every frame's gray plane is
+#: sampled 1 pixel in SAT_SAMPLE x SAT_SAMPLE (57 600 of 921 600 at
+#: 1280x720): the share of saturated (255) and near-black (< DARK_LEVEL)
+#: pixels. An estimate, deliberately: counting the whole frame costs
+#: detection time on a Pi 4 (the preflight lesson of §5.40).
+SAT_SAMPLE = 4
+DARK_LEVEL = 10
+#: The per-frame detector log (CSV): camera metadata + what detection did.
+FRAME_LOG_FIELDS = ('seq', 't_capture', 'SensorTimestamp', 'ExposureTime',
+                    'AnalogueGain', 'LensPosition', 'detected', 'marker_px',
+                    'proc_ms')
 
 
 # --- Calibrare ---------------------------------------------------------------
@@ -1932,7 +1943,8 @@ class PiDetector:
     """
 
     def __init__(self, source, detector, threaded=True, max_queue=8,
-                 clock=None, keep_last_frame=False, ring_frames=0):
+                 clock=None, keep_last_frame=False, ring_frames=0,
+                 frame_log=None):
         """`clock` e ceasul in care se masoara LATENTA captura->publicare.
 
         Trebuie sa fie ACELASI cu cel in care sursa stampileaza cadrele. Pe
@@ -2002,6 +2014,30 @@ class PiDetector:
         self._win_processed = 0
         self._win_dets = 0
         self._win_time = 0.0
+        #: 27.09.2026 (point 3): frames read by the detection thread, ever -
+        #: the OSD window redraws when it changes. The camera's metadata per
+        #: frame (ExposureTime, AnalogueGain, LensPosition, SensorTimestamp)
+        #: goes to `frame_log` (a CSV path or an open text file; None = off),
+        #: and per window: exposure / gain seen, saturated and near-black
+        #: share of the gray plane.
+        self.frame_seq = 0
+        self.n_no_timestamp = 0
+        self._win_sat = self._win_dark = self._win_px = 0
+        self._win_exp = []
+        self._win_gain = []
+        self._win_lens = None
+        self._frame_log = None
+        self._frame_log_own = False
+        if frame_log is not None:
+            if isinstance(frame_log, str):
+                d = os.path.dirname(os.path.abspath(frame_log))
+                os.makedirs(d, exist_ok=True)
+                self._frame_log = open(frame_log, 'w', buffering=1 << 16)
+                self._frame_log_own = True
+            else:
+                self._frame_log = frame_log
+            self._frame_log.write(','.join(FRAME_LOG_FIELDS) + '\n')
+        self.frame_log_path = frame_log if isinstance(frame_log, str) else None
 
         self.latencies = collections.deque(maxlen=STATS_WINDOW)
         self.frame_times = collections.deque(maxlen=STATS_WINDOW)
@@ -2077,6 +2113,13 @@ class PiDetector:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
         self.source.close()
+        if self._frame_log is not None:
+            try:
+                self._frame_log.flush()
+                if self._frame_log_own:
+                    self._frame_log.close()
+            except (OSError, ValueError):
+                pass
 
     # -- procesare ---------------------------------------------------------
     def _process_one(self):
@@ -2088,6 +2131,8 @@ class PiDetector:
             self.exhausted = True
             return False
         gray, t_cap = item
+        self.frame_seq += 1
+        md = self._frame_stats(gray)
         if self.keep_last_frame:
             self.last_frame = gray
         if self.ring is not None:
@@ -2100,11 +2145,13 @@ class PiDetector:
         self._win_frames += 1
         if not self.active.is_set():
             # detectie inactiva: cadrul a fost citit (ring, expunere), atat
+            self._log_frame(t_cap, md, None, None)
             self._window_log(time.monotonic())
             return True
         det = self.det.detect(gray, t_cap)
         t_pub = time.monotonic()
         dt = time.perf_counter() - t_start
+        self._log_frame(t_cap, md, det, dt)
         self.timer.add('total', dt)
         self._win_processed += 1
         self._win_time += dt
@@ -2124,6 +2171,51 @@ class PiDetector:
         self._window_log(t_pub)
         return True
 
+    def _frame_stats(self, gray):
+        """Per frame: the camera's metadata (from the source, when it has
+        any) into the window, and the sampled saturation of the gray plane.
+        Returns the metadata dict (or None) for the per-frame log."""
+        md = getattr(self.source, 'last_metadata', None)
+        if md:
+            e, g = md.get('ExposureTime'), md.get('AnalogueGain')
+            if e is not None:
+                self._win_exp.append(float(e))
+            if g is not None:
+                self._win_gain.append(float(g))
+            if md.get('LensPosition') is not None:
+                self._win_lens = float(md['LensPosition'])
+            if md.get('SensorTimestamp') is None:
+                # t_capture fell back to the time read() returned: count
+                # it, a capture time that is not one must be visible
+                self.n_no_timestamp += 1
+        if getattr(gray, 'ndim', 0) < 2:
+            return md                    # sources without pixels (tests, sim)
+        s = gray[::SAT_SAMPLE, ::SAT_SAMPLE]
+        self._win_sat += int(np.count_nonzero(s >= 255))
+        self._win_dark += int(np.count_nonzero(s < DARK_LEVEL))
+        self._win_px += int(s.size)
+        return md
+
+    def _log_frame(self, t_cap, md, det, dt):
+        f = self._frame_log
+        if f is None:
+            return
+        md = md or {}
+
+        def v(x, fmt='{}'):
+            return '' if x is None else fmt.format(x)
+        row = (self.frame_seq, f"{t_cap:.6f}", v(md.get('SensorTimestamp')),
+               v(md.get('ExposureTime')), v(md.get('AnalogueGain'), '{:.3f}'),
+               v(md.get('LensPosition'), '{:.3f}'),
+               '' if dt is None else int(det is not None),
+               '' if getattr(det, 'marker_px', None) is None else f"{det.marker_px:.1f}",
+               '' if dt is None else f"{1000.0 * dt:.1f}")
+        try:
+            f.write(','.join(str(x) for x in row) + '\n')
+        except (OSError, ValueError):
+            # a full disk must not take the detection down with it
+            self._frame_log = None
+
     def _window_log(self, now):
         """Faza 4: la fiecare `window_log_s`, o linie cu cadrele capturate,
         procesate, detectiile si timpul mediu per cadru procesat."""
@@ -2135,19 +2227,46 @@ class PiDetector:
         span = now - self._win_t0
         medie = (1000.0 * self._win_time / self._win_processed
                  if self._win_processed else None)
+        px = self._win_px
+        sat = 100.0 * self._win_sat / px if px else None
+        dark = 100.0 * self._win_dark / px if px else None
+        exp = self._percentile(self._win_exp, 0.5)
+        gain = self._percentile(self._win_gain, 0.5)
         self.last_window = {'s': span, 'captured': self._win_frames,
                             'processed': self._win_processed,
-                            'detections': self._win_dets, 'mean_ms': medie}
+                            'detections': self._win_dets, 'mean_ms': medie,
+                            'sat_pct': sat, 'dark_pct': dark,
+                            'exposure_us': exp,
+                            'exposure_max_us': max(self._win_exp) if self._win_exp else None,
+                            'gain': gain, 'lens': self._win_lens,
+                            'no_timestamp': self.n_no_timestamp}
         if self.window_log:
             m = '-' if medie is None else f"{medie:.0f}"
+            cam = ''
+            if sat is not None:
+                cam += f" | sat {sat:.1f}% <{DARK_LEVEL} {dark:.1f}%"
+            if exp is not None:
+                cam += (f" | exp {exp:.0f}us (max {max(self._win_exp):.0f})"
+                        f" gain {'-' if gain is None else f'{gain:.2f}'}"
+                        f" lens {'-' if self._win_lens is None else f'{self._win_lens:.2f}'}")
+            if self.n_no_timestamp:
+                cam += f" | FARA SensorTimestamp: {self.n_no_timestamp} cadre"
             print(f"[detectie {span:.0f}s] cadre {self._win_frames} "
                   f"({self._win_frames / span:.1f}/s) | procesate "
                   f"{self._win_processed} | detectii {self._win_dets} | "
-                  f"{m} ms/cadru" + ('' if self.active.is_set()
-                                     else ' | INACTIVA'), flush=True)
+                  f"{m} ms/cadru" + cam + ('' if self.active.is_set()
+                                           else ' | INACTIVA'), flush=True)
+            if self._frame_log is not None:
+                try:
+                    self._frame_log.flush()
+                except (OSError, ValueError):
+                    self._frame_log = None
         self._win_t0 = now
         self._win_frames = self._win_processed = self._win_dets = 0
         self._win_time = 0.0
+        self._win_sat = self._win_dark = self._win_px = 0
+        self._win_exp = []
+        self._win_gain = []
 
     def _worker(self):
         """Bucla firului de detectie (faza 4). Fiecare pas e in try/except
@@ -2251,7 +2370,7 @@ class PiDetector:
 # --- Constructor de bord -------------------------------------------------------------
 
 def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None,
-                      keep_last_frame=False, preset=None):
+                      keep_last_frame=False, preset=None, frame_log=None):
     """Detectorul complet pentru aplicatia de bord, din config/nova.json.
     Refuza sa porneasca fara calibrare reala (E1.2).
 
@@ -2303,5 +2422,9 @@ def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None,
     if verbose and aruco.camera_rotation_deg:
         print(f"[detector] camera montata rotit: imaginea se roteste cu "
               f"{aruco.camera_rotation_deg} grade la stanga (axe, nu pixeli)")
+    if verbose and frame_log:
+        print(f"[detector] jurnal per cadru (metadate camera + detectie): "
+              f"{frame_log}")
     return PiDetector(source, aruco, ring_frames=ring_frames, threaded=True,
-                      keep_last_frame=keep_last_frame).start()
+                      keep_last_frame=keep_last_frame,
+                      frame_log=frame_log).start()

@@ -106,6 +106,8 @@ class FakePicamera2:
     #: knobs, per test
     force_mode = None          # libcamera "picks" this whatever is asked
     missing = ()               # modes this "sensor" does not have
+    ts_lag_s = 0.0             # frame captured this long before it is read
+    no_timestamp = False       # metadata without SensorTimestamp
     force_crop = None          # ScalerCrop reported instead of the mode's
     no_crop = False            # metadata without ScalerCrop
     instances = []
@@ -197,7 +199,10 @@ class FakePicamera2:
                                else self._ctrl.get('ExposureTime', 2000)),
               'AnalogueGain': 1.5 if ae else self._ctrl.get('AnalogueGain', 8.0),
               'LensPosition': self._ctrl.get('LensPosition', 0.0),
-              'SensorTimestamp': time.clock_gettime_ns(time.CLOCK_BOOTTIME)}
+              'SensorTimestamp': (time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+                                  - int(self.ts_lag_s * 1e9))}
+        if self.no_timestamp:
+            del md['SensorTimestamp']
         if not self.no_crop:
             md['ScalerCrop'] = self.force_crop or self._crop
         return md
@@ -237,6 +242,8 @@ def fake_camera(force_mode=None, force_crop=None, no_crop=False):
         FakePicamera2.no_crop = False
         FakePicamera2.auto_exposure_us = 1200
         FakePicamera2.missing = ()
+        FakePicamera2.ts_lag_s = 0.0
+        FakePicamera2.no_timestamp = False
 
 
 def quiet():
