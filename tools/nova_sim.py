@@ -184,9 +184,13 @@ class SimApp:
                 print(f"[sim] fara adevar din simulare: {e}")
 
         baud = args.baud if not args.conn.startswith(('udp', 'tcp')) else None
-        self.v = SimVehicle(args.conn, baud=baud, clock=self.now).connect()
+        # Faza 5 (refactor/threads), decizia utilizatorului 27.09: SITL-ul zboara
+        # cu firul I/O, ca bordul - portul e al firului, comenzile prin cozi.
+        self.v = SimVehicle(args.conn, baud=baud, clock=self.now,
+                            threaded=True).connect()
         self.override = OverrideMonitor(self.v)
         self.sup = SafetySupervisor(self.v, override=self.override)
+        self.v.set_abort_event(self.sup.abort)      # 2a: TX aruncat cu abort aprins
         # E0 in simulare: ocolita EXPLICIT, ca in fake_detector.py. Vehiculul
         # e Gazebo; config/nova.json ramane sursa de adevar pentru zbor.
         print("[sim] E0: garda de autonomie OCOLITA in simulare "
@@ -228,6 +232,7 @@ class SimApp:
                                        vehicle=self.v)
         self.sm = LandingStateMachine(self.v, seq, gate=self.gate,
                                       on_event=self._on_event)
+        self.sm.attach_supervisor(self.sup)     # faza 5: abort citit din bucla
 
         # Modularea de autoritate e OPRITA implicit: o campanie de validare
         # a perceptiei nu are voie sa schimbe si parametrii de control in
@@ -277,10 +282,8 @@ class SimApp:
     def _on_reject(self, reason):
         print(f"\n!! HANDOVER REFUZAT: {reason}\n")
         try:
-            self.v.m.mav.statustext_send(
-                mavutil.mavlink.MAV_SEVERITY_WARNING,
-                f"NOVA handover refuzat: {reason}"[:50].encode('ascii',
-                                                               'replace'))
+            self.v.send_statustext(mavutil.mavlink.MAV_SEVERITY_WARNING,
+                                   f"NOVA handover refuzat: {reason}")
         except Exception:                                    # noqa: BLE001
             pass
 
@@ -585,6 +588,10 @@ class SimApp:
     def close(self):
         try:
             self.detector.stop()
+        except Exception:                                    # noqa: BLE001
+            pass
+        try:
+            self.v.close()                  # firul I/O, apoi portul
         except Exception:                                    # noqa: BLE001
             pass
         if self.truth is not None:
