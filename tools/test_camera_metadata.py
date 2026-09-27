@@ -169,7 +169,106 @@ def test_calea_jurnalului_in_aplicatie_si_in_proba():
     return "none / cale / implicit in NOVA_LOG_DIR; proba: acelasi stamp ca logul"
 
 
+def test_diagnosticul_nu_pierde_detectii_si_nu_blocheaza_pornirea():
+    """Review 27.09: jurnalul si statisticile ruleaza DUPA publicarea
+    detectiei; o eroare in ele opreste diagnosticul, nu detectia; un disc
+    plin inchide jurnalul, spus o data; o cale nescriibila nu opreste
+    pornirea; doua porniri cu acelasi nume nu se suprascriu."""
+    cal = tdp.synthetic_calibration()
+    frame, _ = tdp.render(cal, tdp.R_FLAT, (0.0, 0.0, 6.0))
+
+    class Plin(io.StringIO):
+        def write(self, s):
+            if 'seq' in s:
+                return super().write(s)
+            raise OSError(28, 'No space left on device')
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        pd = PiDetector(ArraySource([frame] * 3), ArucoMarkerDetector(cal),
+                        threaded=False, frame_log=Plin())
+        pd.window_log = False
+        got = pd.poll(0.0) + pd.poll(0.0)
+    assert len(got) == 2 and pd._frame_log is None, (len(got), pd._frame_log)
+    assert out.getvalue().count('jurnalul per cadru oprit') == 1, out.getvalue()
+    # o eroare in statistici: detectia se publica, diagnosticul se opreste
+    pd2 = PiDetector(ArraySource([frame] * 3), ArucoMarkerDetector(cal), threaded=False)
+    pd2.window_log = False
+
+    def rau(*a):
+        raise ValueError('metadate ciudate')
+    pd2._frame_stats = rau
+    with contextlib.redirect_stdout(io.StringIO()) as o2:
+        got2 = pd2.poll(0.0) + pd2.poll(0.0)
+    assert len(got2) == 2 and pd2._diag_off and pd2.fail_streak == 0
+    assert 'diagnosticul a picat' in o2.getvalue()
+    # cale nescriibila: porneste fara jurnal
+    with contextlib.redirect_stdout(io.StringIO()) as o3:
+        pd3 = PiDetector(ArraySource([frame]), ArucoMarkerDetector(cal),
+                         threaded=False, frame_log='/proc/nu/se/poate/cadre.csv')
+    assert pd3._frame_log is None and 'nu se poate deschide' in o3.getvalue()
+    # acelasi nume de doua ori: al doilea primeste sufix, primul ramane
+    tmp = tempfile.mkdtemp()
+    p = os.path.join(tmp, 'cadre-x.csv')
+    a = PiDetector(ArraySource([frame]), ArucoMarkerDetector(cal), threaded=False, frame_log=p)
+    b = PiDetector(ArraySource([frame]), ArucoMarkerDetector(cal), threaded=False, frame_log=p)
+    assert a.frame_log_path == p and b.frame_log_path == os.path.join(tmp, 'cadre-x-1.csv')
+    a.stop()
+    b.stop()
+    return "disc plin -> jurnal oprit, detectii publicate; statistica rea -> oprita; cale rea -> pornire; fara suprascriere"
+
+
+def test_last_view_are_cadrul_si_conturul_lui():
+    """Instantaneul pentru OSD: (seq, cadru, colturi) publicat la sfarsitul
+    cadrului, colturile ale ACELUI cadru; frame_seq se misca odata cu el."""
+    cal = tdp.synthetic_calibration()
+    frame, corners = tdp.render(cal, tdp.R_FLAT, (0.3, -0.2, 6.0))
+    gol = np.full_like(frame, 110)
+    pd = PiDetector(ArraySource([frame, gol]), ArucoMarkerDetector(cal),
+                    threaded=False, keep_last_frame=True)
+    pd.window_log = False
+    pd.poll(0.0)
+    seq, img, col = pd.last_view
+    assert seq == pd.frame_seq == 1 and img is frame and col is not None
+    assert float(np.max(np.abs(col.reshape(-1, 2) - corners))) < 1.0
+    pd.poll(0.0)
+    seq, img, col = pd.last_view
+    assert seq == 2 and img is gol and col is None, "colturile cadrului vechi pe cel nou"
+    return "cadru cu marker -> colturile lui; cadru gol -> fara contur"
+
+
+def test_camera_se_inchide_la_orice_eroare_dupa_deschidere():
+    """build_pi_detector: o cheie lipsa din config (dupa ce camera s-a
+    deschis) elibereaza senzorul. close(): stop() care pica nu sare close()."""
+    from nova import config as nova_config
+    from nova.detector_pi import PiCameraSource, build_pi_detector
+    cfg = dict(nova_config.load())
+    cfg.pop('roi_size_px')
+    with fake_camera() as cam, quiet():
+        try:
+            build_pi_detector(cfg, verbose=False)
+            assert False, "config stricat acceptat"
+        except KeyError:
+            pass
+        assert cam.instances[-1].closed, "camera ramasa deschisa"
+    with fake_camera() as cam, quiet():
+        src = PiCameraSource(settings=camera_settings({}, 'crop1280'))
+        pc = cam.instances[-1]
+
+        def stop_rau():
+            raise RuntimeError('camera in eroare')
+        pc.stop = stop_rau
+        src.close()
+        assert pc.closed, "close() sarit dupa un stop() picat"
+    return "KeyError dupa deschidere -> camera inchisa; stop() picat -> close() tot se face"
+
+
 TESTS = [
+    ('diagnosticul nu pierde detectii si nu blocheaza pornirea',
+     test_diagnosticul_nu_pierde_detectii_si_nu_blocheaza_pornirea),
+    ('last_view are cadrul si conturul lui', test_last_view_are_cadrul_si_conturul_lui),
+    ('camera se inchide la orice eroare dupa deschidere',
+     test_camera_se_inchide_la_orice_eroare_dupa_deschidere),
     ('t_capture = SensorTimestamp, nu momentul citirii',
      test_t_capture_e_SensorTimestamp_nu_momentul_citirii),
     ('jurnalul per cadru are metadatele camerei',

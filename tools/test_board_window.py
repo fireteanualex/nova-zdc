@@ -12,6 +12,8 @@ last_frame cand frame_seq lipseste) fara dubluri, costul ferestrei masurat
 si scris o data la 5 s, presetul camerei si tipul calibrarii in banda.
 """
 
+import contextlib
+import io
 import os
 import sys
 import types
@@ -299,7 +301,53 @@ def test_banda_ramane_vie_fara_cadre_noi():
     return f"3.5 s fara cadre -> 3 reimprospatari (1/s); cu cadre -> 0; spuse in log"
 
 
+def test_deseneaza_din_last_view_amana_dupa_detectie_si_nu_pica():
+    """Review 27.09: conturul vine din instantaneul detectorului (cadrul si
+    colturile LUI), nu din det.last_corners, pe care detectia il sterge cat
+    lucreaza; cand tocmai a venit o detectie, desenul asteapta urmatorul
+    apel (masina de stari o primeste prima); un desen care pica nu iese
+    din bucla."""
+    class Det:
+        def __init__(self):
+            self.last_view = None
+            self.dets = []
+            self.det = type('A', (), {'last_corners': None})()
+            self.last_detection = None
+
+        def poll(self, now):
+            d, self.dets = self.dets, []
+            return d
+
+    det = Det()
+    pv = PV()
+    f = bw.FereastraBord(det, pv, log=None)
+    cadru = np.full((72, 128), 90, np.uint8)
+    colt = np.array([[10, 10], [40, 10], [40, 40], [10, 40]], np.float32)
+    det.last_view = (1, cadru, colt)
+    det.dets = ['o detectie']
+    f.poll(0.0)
+    assert len(pv.cadre) == 0, "a desenat inaintea predarii detectiei"
+    f.poll(0.002)
+    assert len(pv.cadre) == 1 and f._view[2] is colt
+    # amanarea tine un singur apel: detectii la fiecare apel nu blocheaza
+    # fereastra
+    for k in range(3, 9):
+        det.last_view = (k, cadru, None)
+        det.dets = ['alta']
+        f.poll(0.001 * k)
+    assert len(pv.cadre) >= 3, len(pv.cadre)
+    # un desen care pica: spus, numarat, bucla merge mai departe
+    f.linia_de_stare = lambda now: 1 / 0
+    det.last_view = (2, cadru, None)
+    with contextlib.redirect_stdout(io.StringIO()) as o:
+        f.poll(0.004)
+    assert f.n_erori == 1 and 'desenul a picat' in o.getvalue()
+    return "contur din last_view; desen amanat dupa detectie; eroare de desen izolata"
+
+
 TESTS = [
+    ('deseneaza din last_view, amana dupa detectie, nu pica',
+     test_deseneaza_din_last_view_amana_dupa_detectie_si_nu_pica),
     ('banda ramane vie fara cadre noi', test_banda_ramane_vie_fara_cadre_noi),
     ('marimi OSD: NTSC, PAL, refuz', test_marimi_ntsc_pal_si_refuz),
     ('config osd.size: implicit, fisier, nova_pi', test_config_osd_implicit_si_in_fisier),

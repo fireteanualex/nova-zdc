@@ -399,9 +399,18 @@ def build_monitor_detector(cfg, cal, ring, source=None):
             raise StartupRefusal(str(e)) from e
         try:
             cal = calibration_for(cal, source.geometry)
+            return _monitor_detector(cfg, cal, ring, source)
         except ValueError as e:
             source.close()
             raise StartupRefusal(str(e)) from e
+        except BaseException:
+            source.close()          # the sensor must be free for the next try
+            raise
+    return _monitor_detector(cfg, cal, ring, source)
+
+
+def _monitor_detector(cfg, cal, ring, source):
+    from nova.detector_pi import ArucoMarkerDetector, PiDetector
     aruco = ArucoMarkerDetector(cal, marker_id=cfg['marker_id'],
                                 marker_size_m=cfg['marker_size_m'],
                                 roi_below_m=cfg['roi_below_m'],

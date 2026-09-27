@@ -649,11 +649,19 @@ def main():
                                      rotate_deg=0)
     if pv.enabled:
         osd_size = (cfg.get('osd') or {}).get('size', [720, 480])
-        detector = FereastraBord(detector, pv, sm=sm, sup=sup,
-                                 vehicle=vehicle, mesaje=osd, size=osd_size)
-        print(f"[bord] fereastra OSD {detector.size[0]}x{detector.size[1]} "
-              f"pornita (stare + evenimente, la fiecare cadru; inchiderea ei "
-              f"NU opreste zborul)")
+        try:
+            detector = FereastraBord(detector, pv, sm=sm, sup=sup,
+                                     vehicle=vehicle, mesaje=osd, size=osd_size)
+            print(f"[bord] fereastra OSD {detector.size[0]}x{detector.size[1]} "
+                  f"pornita (stare + evenimente, la fiecare cadru; inchiderea "
+                  f"ei NU opreste zborul)")
+        except ValueError as e:
+            # here the vehicle is connected and the detector runs: a bad
+            # display setting costs the window, never the app
+            print(f"[bord] ATENTIE: fereastra OSD NU porneste ({e}); zborul "
+                  f"merge fara ea")
+            pv.close()
+            pv.enabled = False
     # Start order: I/O (connect, above), detection (build_pi_detector,
     # above), supervisor, then the state machine (run_loop). The two
     # producers run before anyone consumes them; the supervisor watches

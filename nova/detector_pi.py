@@ -1920,11 +1920,13 @@ class PiCameraSource(FrameSource):
         return np.ascontiguousarray(arr[:h, :SCORING_SIZE[0]])
 
     def close(self):
-        try:
-            self.picam2.stop()
-            self.picam2.close()
-        except Exception:                                   # noqa: BLE001
-            pass
+        # separately: a stop() failing on a camera in an error state must
+        # not skip the close() that releases the sensor
+        for fn in ('stop', 'close'):
+            try:
+                getattr(self.picam2, fn)()
+            except Exception:                               # noqa: BLE001
+                pass
 
 
 # --- Detectorul de bord ----------------------------------------------------------
@@ -2028,16 +2030,41 @@ class PiDetector:
         self._win_lens = None
         self._frame_log = None
         self._frame_log_own = False
-        if frame_log is not None:
-            if isinstance(frame_log, str):
-                d = os.path.dirname(os.path.abspath(frame_log))
-                os.makedirs(d, exist_ok=True)
-                self._frame_log = open(frame_log, 'w', buffering=1 << 16)
-                self._frame_log_own = True
-            else:
-                self._frame_log = frame_log
-            self._frame_log.write(','.join(FRAME_LOG_FIELDS) + '\n')
-        self.frame_log_path = frame_log if isinstance(frame_log, str) else None
+        self.frame_log_path = None
+        if isinstance(frame_log, str):
+            # A diagnostic file must never stop the detector from starting
+            # (read-only disk, permissions), and never truncate an earlier
+            # flight's file: on a Pi without RTC two boots can share a
+            # timestamp. Exclusive create, a suffix on collision.
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(frame_log)), exist_ok=True)
+                base, ext = os.path.splitext(frame_log)
+                for i in range(100):
+                    cand = frame_log if i == 0 else f"{base}-{i}{ext}"
+                    try:
+                        self._frame_log = open(cand, 'x', buffering=1 << 16)
+                        self.frame_log_path = cand
+                        self._frame_log_own = True
+                        break
+                    except FileExistsError:
+                        continue
+            except OSError as e:
+                print(f"[detector] ATENTIE: jurnalul per cadru nu se poate "
+                      f"deschide ({e}); detectia merge fara el", flush=True)
+                self._frame_log = None
+        elif frame_log is not None:
+            self._frame_log = frame_log
+        if self._frame_log is not None:
+            try:
+                self._frame_log.write(','.join(FRAME_LOG_FIELDS) + '\n')
+            except OSError:
+                self._drop_frame_log('scrierea antetului')
+        #: The last frame with ITS detection outcome, published together at
+        #: the end of the frame (review 27.09.2026): the OSD draws from this,
+        #: never from `last_frame` + `det.last_corners`, which the detection
+        #: clears and refills while it runs.
+        self.last_view = None
+        self._diag_off = False
 
         self.latencies = collections.deque(maxlen=STATS_WINDOW)
         self.frame_times = collections.deque(maxlen=STATS_WINDOW)
@@ -2113,13 +2140,42 @@ class PiDetector:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
         self.source.close()
-        if self._frame_log is not None:
+        f, self._frame_log = self._frame_log, None
+        if f is not None:
             try:
-                self._frame_log.flush()
+                f.flush()
                 if self._frame_log_own:
-                    self._frame_log.close()
+                    # a battery pull right after landing must not lose the
+                    # descent's rows; here, not in the detection thread
+                    os.fsync(f.fileno())
+                    f.close()
+            except (OSError, ValueError, AttributeError):
+                pass
+
+    def _drop_frame_log(self, why):
+        """Disk full / I/O error: close, say it once, detection goes on."""
+        f, self._frame_log = self._frame_log, None
+        if f is not None and self._frame_log_own:
+            try:
+                f.close()
             except (OSError, ValueError):
                 pass
+        print(f"[detector] ATENTIE: jurnalul per cadru oprit ({why}); "
+              f"detectia continua", flush=True)
+
+    def _diag(self, fn, *args):
+        """Run a diagnostic step (stats, frame log, window line). A failure
+        in it must not drop a detection or count toward DETECT_FAIL_MAX:
+        the first one switches diagnostics off, with one line."""
+        if self._diag_off:
+            return None
+        try:
+            return fn(*args)
+        except Exception as e:                              # noqa: BLE001
+            self._diag_off = True
+            print(f"[detector] ATENTIE: diagnosticul a picat ({type(e).__name__}: "
+                  f"{e}); oprit, detectia continua", flush=True)
+            return None
 
     # -- procesare ---------------------------------------------------------
     def _process_one(self):
@@ -2131,8 +2187,7 @@ class PiDetector:
             self.exhausted = True
             return False
         gray, t_cap = item
-        self.frame_seq += 1
-        md = self._frame_stats(gray)
+        md = self._diag(self._frame_stats, gray)
         if self.keep_last_frame:
             self.last_frame = gray
         if self.ring is not None:
@@ -2145,13 +2200,13 @@ class PiDetector:
         self._win_frames += 1
         if not self.active.is_set():
             # detectie inactiva: cadrul a fost citit (ring, expunere), atat
-            self._log_frame(t_cap, md, None, None)
-            self._window_log(time.monotonic())
+            self._publish_view(gray, None)
+            self._diag(self._log_frame, t_cap, md, None, None)
+            self._diag(self._window_log, time.monotonic())
             return True
         det = self.det.detect(gray, t_cap)
         t_pub = time.monotonic()
         dt = time.perf_counter() - t_start
-        self._log_frame(t_cap, md, det, dt)
         self.timer.add('total', dt)
         self._win_processed += 1
         self._win_time += dt
@@ -2168,8 +2223,25 @@ class PiDetector:
         if det is not None:
             self._win_dets += 1
             self.latest.set(det, t_cap)
-        self._window_log(t_pub)
+        self._publish_view(gray, det)
+        # diagnostics AFTER the detection is published: a slow disk or a
+        # bad value delays / loses a log row, never a detection
+        self._diag(self._log_frame, t_cap, md, det, dt)
+        self._diag(self._window_log, t_pub)
         return True
+
+    def _publish_view(self, gray, det):
+        """The frame and its outcome, one tuple, one assignment (atomic for
+        the reader): (seq, gray or None, corners or None). `frame_seq` moves
+        here, at the END of the frame, so the OSD draws in the camera-wait
+        gap, not while detection runs."""
+        corners = None
+        if det is not None:
+            c = getattr(self.det, 'last_corners', None)
+            corners = None if c is None else np.array(c, copy=True)
+        seq = self.frame_seq + 1
+        self.last_view = (seq, gray if self.keep_last_frame else None, corners)
+        self.frame_seq = seq
 
     def _frame_stats(self, gray):
         """Per frame: the camera's metadata (from the source, when it has
@@ -2212,9 +2284,9 @@ class PiDetector:
                '' if dt is None else f"{1000.0 * dt:.1f}")
         try:
             f.write(','.join(str(x) for x in row) + '\n')
-        except (OSError, ValueError):
+        except (OSError, ValueError) as e:
             # a full disk must not take the detection down with it
-            self._frame_log = None
+            self._drop_frame_log(f"{type(e).__name__}: {e}")
 
     def _window_log(self, now):
         """Faza 4: la fiecare `window_log_s`, o linie cu cadrele capturate,
@@ -2259,8 +2331,8 @@ class PiDetector:
             if self._frame_log is not None:
                 try:
                     self._frame_log.flush()
-                except (OSError, ValueError):
-                    self._frame_log = None
+                except (OSError, ValueError) as e:
+                    self._drop_frame_log(f"{type(e).__name__}: {e}")
         self._win_t0 = now
         self._win_frames = self._win_processed = self._win_dets = 0
         self._win_time = 0.0
@@ -2405,10 +2477,19 @@ def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None,
     source = PiCameraSource(settings=settings, verbose=verbose,
                             fresh=cfg.get('camera_fresh_capture', True))
     try:
-        calib = calibration_for(calib, source.geometry)
-    except CalibrationMismatch:
+        return _detector_on(source, calib, cfg, verbose, ring_frames,
+                            keep_last_frame, frame_log)
+    except BaseException:
+        # whatever fails after the camera opened (calibration, a config
+        # key, the frame log) releases the sensor: the next attempt -
+        # preflight, the app restarted by systemd - must find it free
         source.close()
         raise
+
+
+def _detector_on(source, calib, cfg, verbose, ring_frames, keep_last_frame,
+                 frame_log):
+    calib = calibration_for(calib, source.geometry)
     if verbose:
         print(f"[detector] {source.geometry.describe()} | calibrare "
               f"{calib.kind}: fx={calib.fx:.1f} fy={calib.fy:.1f} "

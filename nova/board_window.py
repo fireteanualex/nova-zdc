@@ -246,6 +246,9 @@ class FereastraBord:
         self.window_s = float(window_s)
         self._log = log                 # None = no cost line (tests)
         self._seq = self._NIMIC         # frame_seq of the last frame drawn
+        self._view = None               # the detector's last_view drawn
+        self._amanat = False            # the previous call deferred its draw
+        self.n_erori = 0                # draws that failed (said, not raised)
         self._t_desen = self._clock()   # last draw of any kind
         self.n_reimprospatari = 0       # draws without a new frame
         self._win_stale = 0
@@ -259,7 +262,14 @@ class FereastraBord:
 
     def poll(self, now):
         dets = self._inner.poll(now)
-        if self._pv.enabled:
+        # A detection just came in: the state machine gets it FIRST (run_loop
+        # hands `dets` over right after this returns); the draw waits for the
+        # next call, ~2 ms later (review 27.09.2026). One call at most: a
+        # detector that returned something on every call would otherwise
+        # never let the window draw.
+        amana = bool(dets) and not self._amanat
+        self._amanat = amana
+        if self._pv.enabled and not amana:
             if self._cadru_nou():
                 self._afiseaza(now)
             elif self._clock() - self._t_desen >= self.REIMPROSPATARE_S:
@@ -269,7 +279,20 @@ class FereastraBord:
         return dets
 
     def _cadru_nou(self):
-        """True once per frame the detection thread read."""
+        """True once per frame the detection thread read.
+
+        Preferred: `last_view` = (seq, frame, corners) published by the
+        detector at the END of a frame, in one assignment - the frame and
+        ITS outline. Reading `last_frame` + `det.last_corners` apart races
+        the detection, which clears the corners while it works: the outline
+        would mostly be missing or one frame late."""
+        view = getattr(self._inner, 'last_view', None)
+        if isinstance(view, tuple) and len(view) == 3:
+            if view[0] == self._seq:
+                return False
+            self._seq = view[0]
+            self._view = view
+            return True
         seq = getattr(self._inner, 'frame_seq', None)
         if seq is not None:
             if seq == self._seq:
@@ -363,9 +386,24 @@ class FereastraBord:
 
     def _afiseaza(self, now, reimprospatare=False):
         self._t_desen = self._clock()   # also on failure: no retry storm
-        cadru = getattr(self._inner, 'last_frame', None)
-        aruco = getattr(self._inner, 'det', None)
-        colturi = getattr(aruco, 'last_corners', None)
+        # Guarded whole, like status() in nova_pi (B8): the display runs in
+        # the main thread, per frame; nothing in it may leave run_loop.
+        try:
+            self._deseneaza(now, reimprospatare)
+        except Exception as e:                               # noqa: BLE001
+            self.n_erori += 1
+            if self.n_erori == 1 or self.n_erori % 100 == 0:
+                print(f"[bord] fereastra: desenul a picat ({type(e).__name__}: "
+                      f"{e}; {self.n_erori} ori); zborul continua", flush=True)
+
+    def _deseneaza(self, now, reimprospatare):
+        if self._view is not None:
+            _seq, cadru, colturi = self._view
+            if cadru is None:
+                cadru = getattr(self._inner, 'last_frame', None)
+        else:
+            cadru = getattr(self._inner, 'last_frame', None)
+            colturi = getattr(getattr(self._inner, 'det', None), 'last_corners', None)
         d = getattr(self._inner, 'last_detection', None)
         proaspat = d is not None and (now - d.t) < PROASPAT_S
         linii = [self.linia_de_stare(now)]
