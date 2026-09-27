@@ -818,8 +818,9 @@ def test_rezolutia_din_config_cu_calibrare_scalata():
     assert r.status == pf.ESEC and 'decupaj' in r.detail, r.detail
     # si fisierul din repo cere modul decupat si 1280x720
     from nova import config as nova_config
-    cfg = nova_config.load()
-    assert list(cfg['sensor_mode']) == [1536, 864] and list(cfg['track_size']) == [1280, 720]
+    from nova.detector_pi import camera_settings
+    s = camera_settings(nova_config.load())
+    assert (s.sensor_mode, s.output_size) == ((1536, 864), (1280, 720)), s.describe()
     return "full1280 scalata; crop1280 derivata+scalata; 1024x600 -> ESEC (decupaj)"
 
 

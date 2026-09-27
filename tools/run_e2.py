@@ -485,14 +485,10 @@ def main(argv=None):
             return ImageDirSource(a.images)
     else:
         def source_factory():
-            from nova.detector_pi import (PiCameraSource,
-                                          output_size_from_config,
-                                          sensor_mode_from_config)
-            cfg = nova_config.load(a.config)
-            mode = sensor_mode_from_config(cfg)
-            return PiCameraSource(size=output_size_from_config(cfg, mode),
-                                  sensor_mode=mode, verbose=False,
-                                  auto_expose=cfg.get('camera_auto_expose', True))
+            from nova.detector_pi import PiCameraSource, camera_settings
+            return PiCameraSource(
+                settings=camera_settings(nova_config.load(a.config)),
+                verbose=False)
 
     try:
         return run_session(a, source_factory)

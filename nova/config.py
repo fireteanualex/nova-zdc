@@ -47,6 +47,17 @@ DEFAULTS = {
     'search_downscale': 2,
     'roi_size_px': [640, 480],
 
+    # Camera preset (27.09.2026): ONE key selects sensor mode, stream,
+    # exposure, AWB and focus - nova.detector_pi.CAMERA_PRESETS:
+    #   crop1280   1536x864 crop -> 1280x720, exposure measured then locked
+    #              (what flew on 27.09.2026), calibration derived + scaled
+    #   crop1536   1536x864 crop, no scaling, calibration derived
+    #   full1280   2304x1296 full field -> 1280x720, calibration scaled
+    #   trackerv2  like crop1280, continuous AE, AWB on, LensPosition 1.0
+    # The keys below (non-null) refine the file's preset; a preset given on
+    # the command line (--preset / --camera-preset) replaces all of them.
+    'camera_preset': None,
+
     # IMX708 sensor mode [w, h], MANDATORY - no default on purpose. Without
     # it libcamera picks the mode itself: asked for a 1280x720 stream it
     # picked the 1536x864 CROPPED mode while the calibration was scaled as
@@ -58,7 +69,24 @@ DEFAULTS = {
     # Detection stream [w, h]. None = the sensor mode's own size. The ISP
     # scales the mode down to it; the calibration follows through
     # nova.detector_pi.calibration_for (scale / derive, nothing else).
+    # `track_size` is the older name, still read when this one is unset.
+    'output_size': None,
     'track_size': None,
+
+    # Exposure: 'fixed' (exposure_us / analogue_gain), 'auto_lock'
+    # (measured on the scene, then locked, capped at 2000 us - flown since
+    # 24.09.2026), 'auto' (continuous), 'auto_capped' (continuous inside
+    # exposure_max_us / gain_max, both mandatory then). Unset = the
+    # preset's; without a preset 'fixed', 2000 us, gain 8.
+    'exposure': None,
+    'exposure_us': None,
+    'analogue_gain': None,
+    'exposure_max_us': None,
+    'gain_max': None,
+    # Auto white balance (we work on luminance) and the manual focus, in
+    # dioptres (1.63 = hyperfocal of the Wide lens). Unset = the preset's.
+    'awb': None,
+    'lens_position': None,
 
     # Cum e montata camera pe VEHICULUL REAL: cu cate grade trebuie rotita
     # imaginea bruta SPRE STANGA (pe ecran) ca nasul dronei sa ajunga sus.
@@ -102,11 +130,11 @@ DEFAULTS = {
     # 12 m ceiling is not configurable. Remove the key to get 5 m back.
     'handover_alt_min_m': None,
 
-    # Expunerea camerei: masurata pe scena la pornire (AE converge ~1 s),
-    # apoi BLOCATA, cu plafon la 2000 us (limita de blur). False = valorile
-    # fixe de banc (2000 us / gain 8) - care pe teren, la lumina zilei, s-au
-    # dovedit cu ~5-6 trepte prea luminoase (zborul din 24.09.2026).
-    'camera_auto_expose': True,
+    # OLD KEY, replaced by `exposure` (27.09.2026): true = 'auto_lock',
+    # false = 'fixed'. Read only when `exposure` is unset. None = not set:
+    # the preset decides (a default of True here would override every
+    # preset's own exposure mode).
+    'camera_auto_expose': None,
     # Step 5 (§5.65): take the NEWEST completed frame (capture_request
     # flush=True) instead of the oldest queued one. Measured before: frame
     # already 50-90 ms old when it left the camera. False = old queue.

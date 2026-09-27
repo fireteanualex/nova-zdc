@@ -105,14 +105,45 @@ class FakeRequest:
 class FakePicamera2:
     #: knobs, per test
     force_mode = None          # libcamera "picks" this whatever is asked
+    missing = ()               # modes this "sensor" does not have
     force_crop = None          # ScalerCrop reported instead of the mode's
     no_crop = False            # metadata without ScalerCrop
     instances = []
 
     camera_controls = {'AnalogueGain': (1.0, 16.0, 1.0),
-                       'ExposureTime': (9, 1000000, 20000)}
+                       'ExposureTime': (9, 1000000, 20000),
+                       'AeExposureMode': (0, 3, 0)}
+    #: the tuning file the fake "finds" (imx708_wide.json, trimmed):
+    #: newer libcamera layout, AGC in channels, 'shutter' key
+    TUNING = {'version': 2.0, 'algorithms': [
+        {'rpi.black_level': {'black_level': 4096}},
+        {'rpi.agc': {'channels': [
+            {'exposure_modes': {
+                'normal': {'shutter': [100, 10000, 30000, 60000, 66666],
+                           'gain': [1.0, 1.5, 2.0, 4.0, 8.0]},
+                'short': {'shutter': [100, 5000, 10000, 20000, 60000],
+                          'gain': [1.0, 2.0, 4.0, 6.0, 8.0]}}},
+            {'exposure_modes': {
+                'normal': {'shutter': [100, 10000, 30000, 60000, 66666],
+                           'gain': [1.0, 1.5, 2.0, 4.0, 8.0]}}}]}}]}
+    auto_exposure_us = 1200    # what continuous AE "measures"
+
+    @staticmethod
+    def global_camera_info():
+        return [{'Model': 'imx708_wide', 'Num': 0}]
+
+    @staticmethod
+    def load_tuning_file(name, dir=None):
+        if name != 'imx708_wide.json':
+            raise RuntimeError("Tuning file not found")
+        return json.loads(json.dumps(FakePicamera2.TUNING))
+
+    @staticmethod
+    def find_tuning_algo(tuning, name):
+        return next(a for a in tuning['algorithms'] if name in a)[name]
 
     def __init__(self, camera_num=0, tuning=None):
+        self.tuning = tuning
         self.closed = False
         self.started = False
         self.stopped = False
@@ -127,7 +158,7 @@ class FakePicamera2:
     @property
     def sensor_modes(self):
         self.modes_read += 1
-        return [dict(m) for m in MODES]
+        return [dict(m) for m in MODES if m['size'] not in self.missing]
 
     def create_video_configuration(self, main=None, sensor=None, controls=None,
                                    buffer_count=4, **kw):
@@ -162,7 +193,8 @@ class FakePicamera2:
 
     def capture_metadata(self):
         ae = self._ctrl.get('AeEnable', False)
-        md = {'ExposureTime': 1200 if ae else self._ctrl.get('ExposureTime', 2000),
+        md = {'ExposureTime': (self.auto_exposure_us if ae
+                               else self._ctrl.get('ExposureTime', 2000)),
               'AnalogueGain': 1.5 if ae else self._ctrl.get('AnalogueGain', 8.0),
               'LensPosition': self._ctrl.get('LensPosition', 0.0),
               'SensorTimestamp': time.clock_gettime_ns(time.CLOCK_BOOTTIME)}
@@ -189,7 +221,8 @@ def fake_camera(force_mode=None, force_crop=None, no_crop=False):
     FakePicamera2.instances = []
     mods = {'picamera2': types.SimpleNamespace(Picamera2=FakePicamera2),
             'libcamera': types.SimpleNamespace(controls=types.SimpleNamespace(
-                AfModeEnum=types.SimpleNamespace(Manual=0)))}
+                AfModeEnum=types.SimpleNamespace(Manual=0),
+                AeExposureModeEnum=types.SimpleNamespace(Custom=3)))}
     old = {k: sys.modules.get(k) for k in mods}
     sys.modules.update(mods)
     try:
@@ -202,6 +235,8 @@ def fake_camera(force_mode=None, force_crop=None, no_crop=False):
                 sys.modules[k] = v
         FakePicamera2.force_mode = FakePicamera2.force_crop = None
         FakePicamera2.no_crop = False
+        FakePicamera2.auto_exposure_us = 1200
+        FakePicamera2.missing = ()
 
 
 def quiet():
@@ -443,13 +478,23 @@ def test_camera_refuza_modul_diferit_inexistent_sau_fara_ScalerCrop():
         except CameraModeError as e:
             assert 'difera de cel cerut' in str(e), str(e)
         assert cam.instances[-1].closed, "camera ramasa deschisa dupa refuz"
-    # 2. mod care nu exista pe senzor -> eroare inainte de configure
+    # 2a. mod care nu exista pe IMX708 -> refuzat inainte sa se deschida camera
     with fake_camera() as cam, quiet():
         try:
             PiCameraSource(size=(1280, 720), sensor_mode=(1920, 1080))
             assert False, "mod inexistent acceptat"
         except CameraModeError as e:
-            assert 'nu exista pe senzor' in str(e) and '1536x864/10bit' in str(e)
+            assert 'nu exista pe IMX708' in str(e), str(e)
+        assert cam.instances == []
+    # 2b. mod din tabel, dar pe care senzorul conectat nu il are
+    #     (picam2.sensor_modes) -> eroare inainte de configure
+    with fake_camera() as cam, quiet():
+        cam.missing = ((2304, 1296),)
+        try:
+            PiCameraSource(size=(1280, 720), sensor_mode=(2304, 1296))
+            assert False, "mod lipsa de pe senzor acceptat"
+        except CameraModeError as e:
+            assert 'nu exista pe senzor' in str(e) and '1536x864/10bit' in str(e), str(e)
         assert cam.instances[-1].configured == [] and cam.instances[-1].closed
     # 3. fara ScalerCrop in metadate -> nu se poate verifica -> eroare
     with fake_camera(no_crop=True) as cam, quiet():

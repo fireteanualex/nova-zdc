@@ -198,7 +198,7 @@ def check_stack(os_release_path='/etc/os-release'):
     return Result('stiva', OK, detail, {'linii': linii, 'codename': codename})
 
 
-def check_geometry(cfg, cal, source):
+def check_geometry(cfg, cal, source, preset=None):
     """The 'rezolutie' line (27.09.2026): what the pixels the detector sees
     are, and which calibration they get.
 
@@ -210,35 +210,35 @@ def check_geometry(cfg, cal, source):
     ScalerCrop, and calibration_for() - scale or derive, nothing else. Any
     mismatch is ESEC."""
     from nova.detector_pi import (CalibrationMismatch, calibration_for,
-                                  output_size_from_config,
-                                  sensor_mode_from_config)
+                                  camera_settings)
     try:
-        mode = sensor_mode_from_config(cfg)
+        s = camera_settings(cfg, preset)
     except ValueError as e:
         return Result('rezolutie', ESEC, str(e))
-    size = output_size_from_config(cfg, mode)
+    mode, size = s.sensor_mode, s.output_size
+    pre = f"preset {s.preset or '-'} | " 
     geom = getattr(source, 'geometry', None)
     if geom is None:
-        return Result('rezolutie', ESEC,
+        return Result('rezolutie', ESEC, pre +
                       "camera nu raporteaza geometria (mod senzor, "
                       "ScalerCrop): nu se poate verifica ce vede detectorul")
     if geom.sensor_mode != mode:
-        return Result('rezolutie', ESEC,
+        return Result('rezolutie', ESEC, pre +
                       f"{geom.describe()}: modul efectiv "
                       f"{geom.sensor_mode[0]}x{geom.sensor_mode[1]} difera de "
                       f"cel cerut {mode[0]}x{mode[1]} (config sensor_mode)")
     if geom.output_size != size:
-        return Result('rezolutie', ESEC,
+        return Result('rezolutie', ESEC, pre +
                       f"{geom.describe()}: fluxul difera de cel cerut "
                       f"{size[0]}x{size[1]}")
     try:
         c = calibration_for(cal, geom)
     except CalibrationMismatch as e:
-        return Result('rezolutie', ESEC, str(e))
-    return Result('rezolutie', OK,
+        return Result('rezolutie', ESEC, pre + str(e))
+    return Result('rezolutie', OK, pre +
                   f"{geom.describe()} | calibrare {c.kind}, fx={c.fx:.1f} "
                   f"cx={c.cx:.1f} cy={c.cy:.1f}",
-                  {'sensor_mode': list(geom.sensor_mode),
+                  {'preset': s.preset, 'sensor_mode': list(geom.sensor_mode),
                    'scaler_crop': list(geom.scaler_crop),
                    'output_size': list(geom.output_size),
                    'calibrare': c.kind, 'fx': c.fx, 'fy': c.fy,
@@ -441,14 +441,10 @@ def run_checks(args, source_factory=None):
             if source_factory is not None:
                 source = source_factory()
             else:
-                from nova.detector_pi import (PiCameraSource,
-                                              output_size_from_config,
-                                              sensor_mode_from_config)
-                mod = sensor_mode_from_config(cfg)
+                from nova.detector_pi import PiCameraSource, camera_settings
                 source = PiCameraSource(
-                    size=output_size_from_config(cfg, mod), sensor_mode=mod,
-                    verbose=False,
-                    auto_expose=cfg.get('camera_auto_expose', True))
+                    settings=camera_settings(cfg, getattr(args, 'preset', None)),
+                    verbose=False)
         except Exception as e:                               # noqa: BLE001
             msg = f"{type(e).__name__}: {e}"
             if isinstance(e, ModuleNotFoundError):
@@ -462,7 +458,8 @@ def run_checks(args, source_factory=None):
                 # da unghiuri si distante gresite fara niciun simptom
                 # vizibil (27.09.2026: fx 577 in loc de ~865, 16:9 ambele).
                 if cal is not None:
-                    results.append(check_geometry(cfg, cal, source))
+                    results.append(check_geometry(
+                        cfg, cal, source, getattr(args, 'preset', None)))
                 else:
                     results.append(Result('rezolutie', ESEC,
                                           'fara calibrare utilizabila'))
@@ -501,6 +498,9 @@ def main(argv=None):
     p.add_argument('--frames', type=int, default=FPS_FRAMES)
     p.add_argument('--mavlink-timeout', type=float, default=MAVLINK_TIMEOUT_S)
     p.add_argument('--no-camera', action='store_true')
+    p.add_argument('--preset', default=None,
+                   help='presetul camerei (crop1280, crop1536, full1280, '
+                        'trackerv2); implicit cel din config/nova.json')
     p.add_argument('--no-mavlink', action='store_true',
                    help='banc fara FC; verificarile de FC se raporteaza SARIT')
     p.add_argument('--os-release', default='/etc/os-release',

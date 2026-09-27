@@ -388,16 +388,13 @@ def build_monitor_detector(cfg, cal, ring, source=None):
     rezolutie da distante gresite, tacut."""
     from nova.detector_pi import (ArucoMarkerDetector, PiCameraSource,
                                   PiDetector, calibration_for,
-                                  output_size_from_config,
-                                  sensor_mode_from_config)
+                                  camera_settings)
     if source is None:
         # 27.09.2026: sensor mode from the config (never libcamera's
         # choice), calibration chosen for the geometry read back.
         try:
-            mode = sensor_mode_from_config(cfg)
-            source = PiCameraSource(size=output_size_from_config(cfg, mode),
-                                    sensor_mode=mode, verbose=False,
-                                    auto_expose=cfg.get('camera_auto_expose', True))
+            source = PiCameraSource(settings=camera_settings(cfg),
+                                    verbose=False)
         except ValueError as e:
             raise StartupRefusal(str(e)) from e
         try:

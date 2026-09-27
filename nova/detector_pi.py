@@ -644,27 +644,31 @@ class CameraGeometry:
                 f"{c[3]}), flux {o[0]}x{o[1]}")
 
 
-def sensor_mode_from_config(cfg):
-    """The sensor mode the config asks for. Mandatory: without it libcamera
-    chooses, and that is exactly how 1536x864 flew with a 2304x1296
-    calibration. Checked against the IMX708 modes (a typo must fail here,
-    not as 'the camera would not start' on the field)."""
-    raw = cfg.get('sensor_mode')
+def _check_sensor_mode(raw, where='config'):
     if raw is None:
         raise CameraModeError(
-            "config: lipseste `sensor_mode` (modul senzorului, ex. [1536, 864]). "
+            f"{where}: lipseste `sensor_mode` (modul senzorului, ex. [1536, 864]). "
             "Fara el libcamera alege singur modul - asa a zburat 1536x864 cu "
             "calibrarea de 2304x1296 (27.09.2026).")
     try:
         mode = parse_size(raw)
     except (TypeError, ValueError) as e:
-        raise CameraModeError(f"config: `sensor_mode` invalid: {e}") from e
+        raise CameraModeError(f"{where}: `sensor_mode` invalid: {e}") from e
     if mode not in IMX708_MODES:
         disp = ', '.join(f"{w}x{h}" for w, h in IMX708_MODES)
         raise CameraModeError(
-            f"config: modul {mode[0]}x{mode[1]} nu exista pe IMX708 "
+            f"{where}: modul {mode[0]}x{mode[1]} nu exista pe IMX708 "
             f"(moduri: {disp})")
     return mode
+
+
+def sensor_mode_from_config(cfg):
+    """The sensor mode the config asks for (camera_settings: preset + keys).
+    Mandatory: without it libcamera chooses, and that is exactly how
+    1536x864 flew with a 2304x1296 calibration. Checked against the IMX708
+    modes (a typo must fail here, not as 'the camera would not start' on
+    the field)."""
+    return camera_settings(cfg).sensor_mode
 
 
 def geometric_focal_px(image_width, scaler_crop=LEGACY_CAL_CROP,
@@ -679,9 +683,202 @@ def geometric_focal_px(image_width, scaler_crop=LEGACY_CAL_CROP,
 
 
 def output_size_from_config(cfg, sensor_mode):
-    """The stream size: `track_size` if set, else the mode's own size."""
-    ts = cfg.get('track_size')
+    """The stream size of camera_settings(cfg) - `output_size` (or the old
+    `track_size`), else the mode's own size."""
+    try:
+        s = camera_settings(cfg)
+        if s.sensor_mode == tuple(sensor_mode):
+            return s.output_size
+    except CameraModeError:
+        pass
+    ts = cfg.get('output_size') or cfg.get('track_size')
     return parse_size(ts) if ts else tuple(sensor_mode)
+
+
+# --- Camera settings: config keys and presets (27.09.2026) --------------------
+
+#: Exposure modes.
+#:   fixed        ExposureTime / AnalogueGain as given (AE off)
+#:   auto_lock    AE converges ~1 s on the scene, then is LOCKED, exposure
+#:                capped at AUTOEXP_MAX_US (moving the rest into gain) - the
+#:                behaviour flown since 24.09.2026 (`camera_auto_expose`)
+#:   auto         continuous AE, libcamera's own limits (trackerV2.py)
+#:   auto_capped  continuous AE held inside [exposure_max_us, gain_max] by
+#:                a custom AGC exposure mode in the camera tuning (libcamera
+#:                has no plain "max exposure" control; see _capped_tuning)
+EXPOSURE_MODES = ('fixed', 'auto_lock', 'auto', 'auto_capped')
+
+#: The keys (config/nova.json) and their defaults when neither a preset nor
+#: the file sets them. `sensor_mode` has NO default: it is mandatory.
+CAMERA_KEY_DEFAULTS = {
+    'sensor_mode': None,
+    'output_size': None,          # None = the sensor mode's own size
+    'exposure': 'fixed',
+    'exposure_us': 2000,
+    'analogue_gain': 8.0,
+    'exposure_max_us': None,      # auto_capped only, mandatory there
+    'gain_max': None,             # auto_capped only, mandatory there
+    'awb': False,
+    'lens_position': 1.63,
+}
+#: Proposed limits for auto_capped, said in the refusal when they are
+#: missing: 2000 us is the blur ceiling (CAMERA_CONTROLS comment: < 1 px of
+#: motion over the whole descent profile), 16 the IMX708's analogue maximum.
+AUTO_CAPPED_PROPOSAL = {'exposure_max_us': 2000, 'gain_max': 16.0}
+
+#: One key (config `camera_preset`) or one option (--preset / --camera-preset)
+#: selects all of it. crop1280 is what flew on 27.09.2026 - same mode, same
+#: stream, same exposure behaviour - now with the calibration derived right.
+CAMERA_PRESETS = {
+    'crop1280': {'sensor_mode': [1536, 864], 'output_size': [1280, 720],
+                 'exposure': 'auto_lock', 'awb': False, 'lens_position': 1.63},
+    'crop1536': {'sensor_mode': [1536, 864], 'output_size': [1536, 864],
+                 'exposure': 'auto_lock', 'awb': False, 'lens_position': 1.63},
+    'full1280': {'sensor_mode': [2304, 1296], 'output_size': [1280, 720],
+                 'exposure': 'auto_lock', 'awb': False, 'lens_position': 1.63},
+    'trackerv2': {'sensor_mode': [1536, 864], 'output_size': [1280, 720],
+                  'exposure': 'auto', 'awb': True, 'lens_position': 1.0},
+}
+
+
+class CameraSettings:
+    """Everything the camera is opened with, validated, and where each value
+    came from (for the log: a value nobody chose must be visible)."""
+
+    FIELDS = tuple(CAMERA_KEY_DEFAULTS)
+
+    def __init__(self, values, preset=None, origin=None):
+        self.preset = preset
+        self.origin = dict(origin or {})
+        v = dict(values)
+        self.sensor_mode = _check_sensor_mode(v.get('sensor_mode'),
+                                              f"preset {preset}" if preset else 'config')
+        out = v.get('output_size')
+        self.output_size = parse_size(out) if out else self.sensor_mode
+        self.exposure = v.get('exposure')
+        if self.exposure not in EXPOSURE_MODES:
+            raise CameraModeError(
+                f"`exposure` = {self.exposure!r}; valori: {', '.join(EXPOSURE_MODES)}")
+        self.exposure_us = int(v.get('exposure_us'))
+        self.analogue_gain = float(v.get('analogue_gain'))
+        self.exposure_max_us = v.get('exposure_max_us')
+        self.gain_max = v.get('gain_max')
+        if self.exposure == 'auto_capped':
+            lipsa = [k for k in ('exposure_max_us', 'gain_max')
+                     if not v.get(k) or float(v.get(k)) <= 0]
+            if lipsa:
+                raise CameraModeError(
+                    f"`exposure: auto_capped` fara limite ({', '.join(lipsa)}): "
+                    f"fara ele e doar `auto`. Propunere: "
+                    f"exposure_max_us {AUTO_CAPPED_PROPOSAL['exposure_max_us']} "
+                    f"(plafonul de blur), gain_max {AUTO_CAPPED_PROPOSAL['gain_max']:g}")
+            self.exposure_max_us = int(v['exposure_max_us'])
+            self.gain_max = float(v['gain_max'])
+        self.awb = bool(v.get('awb'))
+        self.lens_position = float(v.get('lens_position'))
+        if self.exposure_us <= 0 or self.analogue_gain <= 0 or self.lens_position < 0:
+            raise CameraModeError("expunere / gain / focus invalide")
+
+    def describe(self):
+        m, o = self.sensor_mode, self.output_size
+        if self.exposure == 'fixed':
+            exp = f"fixa {self.exposure_us} us gain {self.analogue_gain:g}"
+        elif self.exposure == 'auto_lock':
+            exp = f"masurata apoi blocata (plafon {AUTOEXP_MAX_US} us)"
+        elif self.exposure == 'auto':
+            exp = 'automata continua'
+        else:
+            exp = (f"automata <= {self.exposure_max_us} us, gain <= "
+                   f"{self.gain_max:g}")
+        return (f"preset {self.preset or '-'}: mod {m[0]}x{m[1]} -> flux "
+                f"{o[0]}x{o[1]}, expunere {exp}, AWB {'da' if self.awb else 'nu'}, "
+                f"LensPosition {self.lens_position:g}")
+
+
+def camera_settings(cfg, preset=None):
+    """The camera settings for this run.
+
+    `preset` (command line) selects a preset EXACTLY: the file's camera
+    keys do not apply - what was asked for on the command line is what
+    runs. Otherwise: key defaults <- the file's `camera_preset` <- the
+    file's own keys (non-null). The old keys still work: `track_size` for
+    `output_size`, `camera_auto_expose` true/false for auto_lock/fixed."""
+    values = dict(CAMERA_KEY_DEFAULTS)
+    origin = {k: 'implicit' for k in values}
+
+    def apply(d, who):
+        for k, val in d.items():
+            if k in values and val is not None:
+                values[k] = val
+                origin[k] = who
+
+    if preset is not None:
+        if preset not in CAMERA_PRESETS:
+            raise CameraModeError(
+                f"presetul {preset!r} nu exista ({', '.join(CAMERA_PRESETS)})")
+        apply(CAMERA_PRESETS[preset], f"preset {preset}")
+        return CameraSettings(values, preset=preset, origin=origin)
+
+    name = cfg.get('camera_preset')
+    if name is not None:
+        if name not in CAMERA_PRESETS:
+            raise CameraModeError(
+                f"config: presetul {name!r} nu exista ({', '.join(CAMERA_PRESETS)})")
+        apply(CAMERA_PRESETS[name], f"preset {name}")
+    legacy = {}
+    if cfg.get('output_size') is None and cfg.get('track_size'):
+        legacy['output_size'] = cfg['track_size']
+    if cfg.get('exposure') is None and cfg.get('camera_auto_expose') is not None:
+        legacy['exposure'] = 'auto_lock' if cfg['camera_auto_expose'] else 'fixed'
+    apply(legacy, 'config (cheie veche)')
+    apply({k: cfg.get(k) for k in CAMERA_KEY_DEFAULTS}, 'config')
+    return CameraSettings(values, preset=name, origin=origin)
+
+
+def cap_agc_tuning(agc, exposure_max_us, gain_max):
+    """Add a 'custom' AGC exposure mode to the rpi.agc parameters of a
+    camera tuning: exposure up to `exposure_max_us` at gain 1, then gain up
+    to `gain_max`. The Raspberry Pi AGC never goes beyond the last entries
+    of the mode it runs, so with AeExposureMode = Custom continuous AE stays
+    inside the caps. Handles both tuning layouts (one AGC, or 'channels' in
+    the newer libcamera) and both key names ('shutter' / 'exposure').
+    Returns how many channels were changed."""
+    chans = agc['channels'] if 'channels' in agc else [agc]
+    n = 0
+    for ch in chans:
+        modes = ch.get('exposure_modes')
+        if not modes:
+            continue
+        ref = modes.get('normal') or next(iter(modes.values()))
+        key = next((k for k in ('shutter', 'exposure') if k in ref), None)
+        if key is None:
+            raise CameraModeError(
+                f"tuning: modul de expunere nu are 'shutter'/'exposure' ({sorted(ref)})")
+        lo = min(float(ref[key][0]), float(exposure_max_us))
+        modes['custom'] = {key: [lo, float(exposure_max_us), float(exposure_max_us)],
+                           'gain': [1.0, 1.0, float(gain_max)]}
+        n += 1
+    if n == 0:
+        raise CameraModeError("tuning: rpi.agc fara exposure_modes")
+    return n
+
+
+def capped_tuning(Picamera2, exposure_max_us, gain_max, model=None):
+    """The camera's own tuning file with the capped 'custom' exposure mode
+    (for Picamera2(tuning=...)). The file is the sensor's (imx708_wide.json
+    for the Camera Module 3 Wide), found by picamera2 itself."""
+    if model is None:
+        info = Picamera2.global_camera_info() or [{}]
+        model = info[0].get('Model')
+    if not model:
+        raise CameraModeError("auto_capped: nu stiu modelul senzorului (tuning)")
+    try:
+        tuning = Picamera2.load_tuning_file(f"{model}.json")
+    except RuntimeError as e:
+        raise CameraModeError(f"auto_capped: tuning {model}.json negasit: {e}") from e
+    cap_agc_tuning(Picamera2.find_tuning_algo(tuning, 'rpi.agc'),
+                   exposure_max_us, gain_max)
+    return tuning
 
 
 def calibration_for(cal, geom):
@@ -1411,22 +1608,32 @@ class PiCameraSource(FrameSource):
     nominal_fps = TRACK_FPS
 
     def __init__(self, size=None, sensor_mode=None, fps=TRACK_FPS,
-                 controls=None, verbose=True, auto_expose=True, fresh=True):
-        """`sensor_mode` is MANDATORY (27.09.2026): the camera never lets
-        libcamera choose. `size` is the stream (default: the mode's size).
-        After start, `geometry` says what the pixels are - the mode read
-        back from the configuration and the ScalerCrop of the first frame;
-        a mode other than the one asked for is a CameraModeError."""
-        if sensor_mode is None:
-            raise CameraModeError(
-                "PiCameraSource: modul senzorului e obligatoriu (config "
-                "`sensor_mode`). Fara el libcamera il alege singur.")
+                 controls=None, verbose=True, auto_expose=True, fresh=True,
+                 settings=None):
+        """`settings` (CameraSettings, from camera_settings(cfg, preset))
+        says everything: sensor mode, stream, exposure mode, AWB, focus.
+        Without it, `sensor_mode` + `size` + `auto_expose` (auto_lock or
+        fixed) - the older call. Either way the sensor mode is MANDATORY
+        (27.09.2026): the camera never lets libcamera choose. After start,
+        `geometry` says what the pixels are - the mode read back from the
+        configuration and the ScalerCrop of the first frame; a mode other
+        than the one asked for is a CameraModeError."""
+        if settings is None:
+            if sensor_mode is None:
+                raise CameraModeError(
+                    "PiCameraSource: modul senzorului e obligatoriu (config "
+                    "`sensor_mode`). Fara el libcamera il alege singur.")
+            settings = CameraSettings(
+                dict(CAMERA_KEY_DEFAULTS, sensor_mode=sensor_mode,
+                     output_size=size,
+                     exposure='auto_lock' if auto_expose else 'fixed'))
         from picamera2 import Picamera2               # noqa: import lenes
         from libcamera import controls as lc
 
         self.verbose = verbose
-        self.sensor_mode = parse_size(sensor_mode)
-        self.size = parse_size(size) if size is not None else self.sensor_mode
+        self.settings = settings
+        self.sensor_mode = settings.sensor_mode
+        self.size = settings.output_size
         self.geometry = None
         self.mode_info = None
         # Step 5 (§5.65): `capture_request()` returns the OLDEST completed
@@ -1437,8 +1644,12 @@ class PiCameraSource(FrameSource):
         # old behaviour stays and the log says so.
         self.fresh = bool(fresh)
         self._flush_ok = None
+        tuning = None
+        if settings.exposure == 'auto_capped':
+            tuning = capped_tuning(Picamera2, settings.exposure_max_us,
+                                   settings.gain_max)
         try:
-            self.picam2 = Picamera2()
+            self.picam2 = Picamera2() if tuning is None else Picamera2(tuning=tuning)
         except RuntimeError as e:
             # libcamera spune CE ("Camera __init__ sequence did not
             # complete"), nu CINE. Pe vehicul: a doua instanta a aplicatiei,
@@ -1471,19 +1682,11 @@ class PiCameraSource(FrameSource):
         self.picam2.configure(self.video_cfg)
         self._check_configured_mode()
 
-        ctrl = dict(CAMERA_CONTROLS)
+        ctrl = self._controls_for(self.settings, lc)
         ctrl.update(controls or {})
-        ctrl['AfMode'] = lc.AfModeEnum.Manual
-        if auto_expose:
-            # Focusul si AWB raman fixate; DOAR expunerea converge pe scena
-            # reala, apoi se blocheaza (mai jos). Valorile fixe de banc erau
-            # o presupunere despre lumina - vezi expunere_blocata().
-            ctrl.pop('ExposureTime', None)
-            ctrl.pop('AnalogueGain', None)
-            ctrl['AeEnable'] = True
         self.picam2.set_controls(ctrl)
         self.picam2.start()
-        if auto_expose:
+        if self.settings.exposure == 'auto_lock':
             ctrl = self._lock_exposure(ctrl)
 
         # Ceasul senzorului e CLOCK_BOOTTIME (ns); time.monotonic() e
@@ -1494,6 +1697,27 @@ class PiCameraSource(FrameSource):
                              - time.clock_gettime(time.CLOCK_BOOTTIME))
         self._verify_controls(ctrl)
         self._read_geometry()
+
+    def _controls_for(self, s, lc):
+        """The libcamera controls for the settings. Focus is always manual
+        (PDAF hunting during the descent is exactly when the marker's
+        contrast changes fastest). For auto_lock and fixed this is, key for
+        key, what the camera got before the presets existed."""
+        ctrl = {'LensPosition': s.lens_position, 'AwbEnable': s.awb,
+                'AfMode': lc.AfModeEnum.Manual}
+        if s.exposure == 'fixed':
+            ctrl.update(ExposureTime=s.exposure_us,
+                        AnalogueGain=s.analogue_gain, AeEnable=False)
+        else:
+            # auto_lock: converges on the scene, then locked (_lock_exposure)
+            ctrl['AeEnable'] = True
+        if s.exposure == 'auto_capped':
+            if 'AeExposureMode' not in (self.picam2.camera_controls or {}):
+                raise CameraModeError(
+                    "auto_capped: libcamera nu anunta AeExposureMode pe "
+                    "aceasta camera; plafonul nu se poate aplica")
+            ctrl['AeExposureMode'] = lc.AeExposureModeEnum.Custom
+        return ctrl
 
     # -- the sensor mode: asked, validated, read back (27.09.2026) ---------
     def _check_mode_exists(self):
@@ -1612,6 +1836,16 @@ class PiCameraSource(FrameSource):
                 problems.append(f"{key}: neraportat")
             elif want is not None and abs(float(got) - float(want)) > 0.05 * abs(float(want)) + 1e-6:
                 problems.append(f"{key}: cerut {want}, aplicat {got}")
+        s = getattr(self, 'settings', None)
+        if s is not None and s.exposure == 'auto_capped':
+            # the cap lives in the tuning, not in a control: read it back
+            exp, gain = md.get('ExposureTime'), md.get('AnalogueGain')
+            if exp is not None and float(exp) > 1.05 * s.exposure_max_us:
+                problems.append(f"ExposureTime {exp} us peste plafonul "
+                                f"{s.exposure_max_us} us (auto_capped)")
+            if gain is not None and float(gain) > 1.05 * s.gain_max:
+                problems.append(f"AnalogueGain {gain} peste plafonul "
+                                f"{s.gain_max:g} (auto_capped)")
         if self.verbose:
             print(f"[camera] {self.size[0]}x{self.size[1]} @ {TRACK_FPS} fps, "
                   f"LensPosition={md.get('LensPosition')} "
@@ -2017,7 +2251,7 @@ class PiDetector:
 # --- Constructor de bord -------------------------------------------------------------
 
 def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None,
-                      keep_last_frame=False):
+                      keep_last_frame=False, preset=None):
     """Detectorul complet pentru aplicatia de bord, din config/nova.json.
     Refuza sa porneasca fara calibrare reala (E1.2).
 
@@ -2042,13 +2276,14 @@ def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None,
         print(f"[detector]           acceptata doar pentru rularea asta "
               f"(--max-rms {prag}). De refacut inainte de zbor.")
     # 27.09.2026: the sensor mode comes from the config (mandatory, checked
-    # before the camera opens), the stream from `track_size`. The camera is
+    # before the camera opens), the stream from `camera_settings`. The camera is
     # opened FIRST: the calibration can only be chosen once the geometry
     # actually running is known (mode read back + ScalerCrop).
-    mode = sensor_mode_from_config(cfg)
-    size = output_size_from_config(cfg, mode)
-    source = PiCameraSource(size=size, sensor_mode=mode, verbose=verbose,
-                            auto_expose=cfg.get('camera_auto_expose', True),
+    # `preset` (command line) overrides the config's camera keys entirely.
+    settings = camera_settings(cfg, preset)
+    if verbose:
+        print(f"[detector] camera: {settings.describe()}")
+    source = PiCameraSource(settings=settings, verbose=verbose,
                             fresh=cfg.get('camera_fresh_capture', True))
     try:
         calib = calibration_for(calib, source.geometry)

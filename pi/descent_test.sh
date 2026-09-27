@@ -3,6 +3,7 @@
 # Proba de coborare autonoma pe vehiculul de test.
 #
 #   pi/descent_test.sh --check        # doar preconditiile, nu zboara nimic
+#   pi/descent_test.sh --check --preset=full1280   # alt preset de camera
 #   pi/descent_test.sh                # briefing + confirmare + rulare
 #   pi/descent_test.sh --full-sequence  # cu urcarea la 5 m (15.2.7)
 #   pi/descent_test.sh --auto   # din pornirea automata (config: autostart=zbor)
@@ -65,6 +66,10 @@ FEREASTRA=0
 # Canalul pe care pilotul CERE segmentul autonom, pe frontul crescator.
 # Modul LAND nu declanseaza nimic: intrarea e doar prin canalul asta (§8).
 AUX_CH="${NOVA_AUX_CH:-}"       # gol = cel din config/nova.json
+# Camera preset for this run (crop1280, crop1536, full1280, trackerv2).
+# Empty = `camera_preset` from config/nova.json. Passed to the preflight
+# AND to the app, so what was checked is what flies.
+PRESET="${NOVA_CAMERA_PRESET:-}"
 
 say()  { printf '\n\033[1m[coborare]\033[0m %s\n' "$*"; }
 ok()   { printf '  \033[32mOK\033[0m    %s\n' "$*"; }
@@ -78,6 +83,7 @@ for arg in "$@"; do
     --aux-channel=*) AUX_CH="${arg#*=}" ;;
     --full-sequence) FULL_SEQ=1 ;;
     --fereastra)     FEREASTRA=1 ;;
+    --preset=*)      PRESET="${arg#*=}" ;;
     --yes)           ASSUME_YES=1 ;;
     --auto)          AUTO=1; ASSUME_YES=1 ;;
     -h|--help)       sed -n '2,8p' "$0"; exit 0 ;;
@@ -278,7 +284,7 @@ NOTA
 say "preflight"
 set +e
 "$PY" "$REPO/tools/preflight_check.py" \
-  --conn "$CONN" --baud "$BAUD"
+  --conn "$CONN" --baud "$BAUD" ${PRESET:+--preset "$PRESET"}
 [[ $? -eq 0 ]] || nu_e_gata "preflight-ul nu a trecut integral"
 set -e
 
@@ -300,6 +306,7 @@ fi
 # --- briefing si confirmare ------------------------------------------------
 ARGS=(--conn "$CONN" --baud "$BAUD" --stop-service --yes
       --no-authority --aux-channel "$AUX_CH")
+[[ -n "$PRESET" ]] && ARGS+=(--camera-preset "$PRESET")
 if [[ $FEREASTRA -eq 1 ]]; then
   if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
     ARGS+=(--fullscreen)

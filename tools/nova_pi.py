@@ -82,7 +82,7 @@ def banner(cfg):
 
 
 def camera_check(cfg, seconds, show_window=False, preview_scale=0.5,
-                 max_rms=None):
+                 max_rms=None, preset=None):
     """Camera + calibrare, fara MAVLink. Pentru banc si preflight.
 
     Asta e singurul loc din aplicatia de bord unde fereastra are sens
@@ -91,7 +91,7 @@ def camera_check(cfg, seconds, show_window=False, preview_scale=0.5,
     # The same construction as the flight (27.09.2026): sensor mode from the
     # config, geometry read back, calibration derived / scaled for it. Its
     # own copy used to open the camera without a mode and scale blindly.
-    det = build_pi_detector(cfg, verbose=True, max_rms=max_rms)
+    det = build_pi_detector(cfg, verbose=True, max_rms=max_rms, preset=preset)
     src = det.source
     if src.control_problems:
         print("[camera-check] ATENTIE: controale neaplicate, vezi mai sus")
@@ -402,6 +402,11 @@ def main():
     p.add_argument('--etape', type=float, default=10.0, metavar='S',
                    help='tipareste timpii pe etape ai detectorului la '
                         'fiecare S secunde (0 = oprit). Doar masurare')
+    p.add_argument('--camera-preset', default=None,
+                   metavar='NUME', help='presetul camerei pentru rularea asta '
+                   '(crop1280, crop1536, full1280, trackerv2): inlocuieste '
+                   'cheile camerei din config/nova.json. Implicit '
+                   '`camera_preset` din config')
     p.add_argument('--max-rms', type=float, default=None,
                    help='ridica pragul de reproiectie al calibrarii DOAR '
                         'pentru rularea asta. Pentru bring-up la banc cu o '
@@ -453,14 +458,16 @@ def main():
     try:
         if a.camera_check:
             return camera_check(cfg, a.seconds, a.show_window,
-                                a.preview_scale, max_rms=a.max_rms)
+                                a.preview_scale, max_rms=a.max_rms,
+                                preset=a.camera_preset)
         # Detectorul intai: daca lipseste calibrarea, ne oprim inainte sa
         # deschidem legatura cu FC-ul.
         detector = build_pi_detector(cfg, verbose=True,
                                      ring_frames=a.ring_frames,
                                      max_rms=a.max_rms,
                                      keep_last_frame=(a.show_window or
-                                                      a.fullscreen))
+                                                      a.fullscreen),
+                                     preset=a.camera_preset)
     except (FileNotFoundError, ValueError) as e:
         # Refuz DELIBERAT (E1.2), nu crash: mesaj scurt, cod de iesire
         # distinct, ca serviciul/preflight-ul sa il poata deosebi de o

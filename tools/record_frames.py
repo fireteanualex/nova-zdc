@@ -32,9 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from nova import config as nova_config                          # noqa: E402
 from nova import serial_guard                                   # noqa: E402
-from nova.detector_pi import (PiCameraSource,                  # noqa: E402
-                              output_size_from_config,
-                              sensor_mode_from_config)
+from nova.detector_pi import PiCameraSource, camera_settings    # noqa: E402
 
 META_KEYS = ('ExposureTime', 'AnalogueGain', 'LensPosition', 'SensorTimestamp',
              'FrameDuration', 'Lux', 'ColourTemperature')
@@ -84,10 +82,7 @@ def main():
 
     # 27.09.2026: the flight's sensor mode and stream (config), never the
     # camera's own choice - the frames must be what the detector sees.
-    mode = sensor_mode_from_config(cfg)
-    src = PiCameraSource(size=output_size_from_config(cfg, mode),
-                         sensor_mode=mode, verbose=True,
-                         auto_expose=cfg.get('camera_auto_expose', True))
+    src = PiCameraSource(settings=camera_settings(cfg), verbose=True)
     budget = int(mem_available_bytes() * a.mem_frac)
     print(f"[record] {a.seconds:.0f} s into RAM (budget {budget / 1e6:.0f} MB), "
           f"then PNG into {out}")
@@ -133,7 +128,7 @@ def main():
                        'sensor_mode': list(g.sensor_mode),
                        'scaler_crop': list(g.scaler_crop),
                        'config': {k: cfg.get(k) for k in
-                                  ('camera_rotation_deg', 'camera_auto_expose',
+                                  ('camera_rotation_deg', 'camera_preset',
                                    'marker_size_m')}}, f, indent=1)
     write_meta(0)
     print(f"[record] writing {len(frames)} {a.format} files "

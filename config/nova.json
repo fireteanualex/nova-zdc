@@ -7,10 +7,8 @@
   "marker_id": 26,
   "marker_size_m": 0.48,
   "camera_calibration": "config/camera_pi.yaml",
-  "_sensor_mode": "Modul senzorului IMX708, OBLIGATORIU (27.09.2026). 1536x864 = decupajul central 3072x1728, binned 2x2 - modul in care s-a zburat cu succes (libcamera il alegea singur pentru 1280x720). Calibrarea din camera_pi.yaml (2304x1296, camp intreg) se DERIVEAZA pentru el: aceeasi focala in pixeli binned, centrul optic mutat cu decupajul citit din ScalerCrop, apoi scalata la track_size. Alte moduri: [2304, 1296] (camp intreg), [4608, 2592]. Camera citeste modul inapoi si refuza altul.",
-  "sensor_mode": [1536, 864],
-  "_track_size": "Rezolutia pe care ruleaza detectia (decizia echipei, 27.09.2026): 1280x720, scalata de ISP din modul senzorului. Cu sensor_mode 1536x864: fx ~865 px (nu 577, cum se scala gresit inainte). Sterge cheia pentru dimensiunea modului.",
-  "track_size": [1280, 720],
+  "_camera_preset": "Camera (27.09.2026): o singura cheie alege modul senzorului, fluxul, expunerea, AWB si focusul (nova/detector_pi.py CAMERA_PRESETS). crop1280 = ce s-a zburat cu succes: modul 1536x864 (decupajul central 3072x1728, binned 2x2) -> flux 1280x720, expunere masurata la pornire apoi blocata (plafon 2 ms), fara AWB, LensPosition 1.63; calibrarea din camera_pi.yaml (2304x1296 camp intreg) se DERIVEAZA pentru modul decupat si se scaleaza: fx ~865 px (nu 577, cum se scala gresit inainte). Alte preseturi: crop1536 (1536x864 fara scalare, fx ~1038), full1280 (2304x1296 camp intreg -> 1280x720, fx ~577), trackerv2 (ca trackerV2.py: AE continuu, AWB, LensPosition 1.0). Cheile individuale (sensor_mode, output_size, exposure, exposure_us, analogue_gain, exposure_max_us, gain_max, awb, lens_position), puse aici, rafineaza presetul; --preset / --camera-preset din linia de comanda il inlocuieste cu totul. Camera citeste modul inapoi si refuza altul.",
+  "camera_preset": "crop1280",
   "_search_downscale": "1 = achizitia cauta markerul pe CADRUL INTREG la fiecare cadru, cu parametri impliciti - exact ce face scriptul simplu al echipei, care detecteaza constant la 5-10 m. Cu 2 (valoarea veche) markerul de 336 mm avea la 10 m ~17 px pe imaginea redusa (nedecodabil), iar rezolutia plina se incerca doar la al 4-lea cadru ratat (zborul b29, 27.09.2026: 4 cereri la 3.5 m, 0 detectii).",
   "roi_below_m": 15.0,
   "search_downscale": 1,
@@ -33,8 +31,6 @@
   "_handover_alt_min_m": "Altitudinea minima la care poarta accepta handover-ul, m (decizia echipei, 27.09.2026: 1 m, brief D6). Fara cheie: 5 m pe calea plnd, 1 m pe extnav. Plafonul de 12 m ramane. Pe extnav estimatorul refuza oricum sub 0.3 m.",
   "handover_alt_min_m": 1.0,
 
-  "_camera_auto_expose": "Expunerea se masoara pe scena la pornire si apoi se blocheaza (plafon 2 ms, limita de blur). Valorile fixe de banc erau cu ~5-6 trepte prea luminoase afara - detectia intermitenta din zborul de pe 24.09.2026.",
-  "camera_auto_expose": true,
   "_camera_fresh_capture": "false (27.09.2026): capture_request(flush=True) astepta un cadru capturat DUPA apel, ~62 ms in serie cu detectia la fiecare cadru (etapa 'achizitie' in b29). Cadrul din coada e cu 50-90 ms mai vechi, dar ExtNav foloseste timpul capturii, nu al publicarii, deci varsta nu conteaza pentru pozitie.",
   "camera_fresh_capture": false,
 
