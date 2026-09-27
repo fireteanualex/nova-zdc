@@ -35,6 +35,7 @@ mecanica - verificarea e in procedura de receptie.
 import collections
 import math
 import os
+import logging
 import threading
 import time
 import traceback
@@ -42,9 +43,12 @@ import traceback
 import cv2
 import numpy as np
 
+from .concurrency import Heartbeat, Latest
 from .detection import (Detection, CameraModel, MARKER_SIZE_M,
                         fill_from_corners)
 from .frame_ring import FrameRing
+
+log = logging.getLogger('nova')
 
 # --- Camera: rezolutii si controale (E1.1) ---------------------------------
 
@@ -244,6 +248,14 @@ ROI_SIZE_PX = (640, 480)
 
 #: Instrumentare (E1.4): fereastra pe care se calculeaza percentilele.
 STATS_WINDOW = 300
+#: Faza 4 (refactor/threads): o exceptie in pasul firului de detectie e
+#: logata si pasul se reia (dupa o pauza scurta); dupa atatea ESECURI
+#: CONSECUTIVE firul se declara mort (B9) si se opreste - o camera care
+#: arunca la fiecare cadru nu e "vie" doar pentru ca bucla mai ruleaza.
+DETECT_FAIL_MAX = 5
+DETECT_FAIL_BACKOFF_S = 0.05
+#: Log per fereastra: cadre capturate, procesate, detectii, timp mediu.
+DETECT_LOG_WINDOW_S = 5.0
 
 
 # --- Calibrare ---------------------------------------------------------------
@@ -1277,6 +1289,9 @@ class PiCameraSource(FrameSource):
         req = self._capture()
         t1 = time.perf_counter()
         try:
+            # make_array() copiaza; request-ul se ELIBEREAZA imediat dupa,
+            # altfel bufferele camerei (buffer_count=4) se epuizeaza si
+            # captura se blocheaza (faza 4, regula 6).
             arr = req.make_array('main')
             md = req.get_metadata()
         finally:
@@ -1389,6 +1404,27 @@ class PiDetector:
         self.died = None
         self.died_t = None
         self._dead_polls = 0
+        #: Faza 4: ce citesc celelalte fire. `latest` = ultima Detection cu
+        #: timpul CAPTURII (supervizorul masoara varsta fata de el);
+        #: `heartbeat` bate DOAR dupa un cadru procesat, deci o camera
+        #: blocata in captura apare ca heartbeat stagnat, nu ca "viu";
+        #: `active` e citit de fir: stins, cadrele se citesc (ringul si
+        #: expunerea continua), dar nu se detecteaza. Aprins implicit -
+        #: comportamentul de azi.
+        self.latest = Latest()
+        self.heartbeat = Heartbeat('detectie')
+        self.active = threading.Event()
+        self.active.set()
+        self.fail_streak = 0
+        self.n_fail = 0
+        self.window_log_s = DETECT_LOG_WINDOW_S
+        self.window_log = True
+        self.last_window = None
+        self._win_t0 = None
+        self._win_frames = 0
+        self._win_processed = 0
+        self._win_dets = 0
+        self._win_time = 0.0
 
         self.latencies = collections.deque(maxlen=STATS_WINDOW)
         self.frame_times = collections.deque(maxlen=STATS_WINDOW)
@@ -1484,9 +1520,17 @@ class PiDetector:
             t0 = time.perf_counter()
             self.ring.push(gray, t_cap)
             self.timer.add('ring', time.perf_counter() - t0)
+        self._win_frames += 1
+        if not self.active.is_set():
+            # detectie inactiva: cadrul a fost citit (ring, expunere), atat
+            self._window_log(time.monotonic())
+            return True
         det = self.det.detect(gray, t_cap)
         t_pub = time.monotonic()
-        self.timer.add('total', time.perf_counter() - t_start)
+        dt = time.perf_counter() - t_start
+        self.timer.add('total', dt)
+        self._win_processed += 1
+        self._win_time += dt
         with self.lock:
             self.frame_times.append(t_pub)
             self.frame_detected.append(det is not None)
@@ -1497,23 +1541,66 @@ class PiDetector:
                     self.n_dropped += 1
                 self.queue.append(det)
                 self.n_published += 1
+        if det is not None:
+            self._win_dets += 1
+            self.latest.set(det, t_cap)
+        self._window_log(t_pub)
         return True
 
+    def _window_log(self, now):
+        """Faza 4: la fiecare `window_log_s`, o linie cu cadrele capturate,
+        procesate, detectiile si timpul mediu per cadru procesat."""
+        if self._win_t0 is None:
+            self._win_t0 = now
+            return
+        if now - self._win_t0 < self.window_log_s:
+            return
+        span = now - self._win_t0
+        medie = (1000.0 * self._win_time / self._win_processed
+                 if self._win_processed else None)
+        self.last_window = {'s': span, 'captured': self._win_frames,
+                            'processed': self._win_processed,
+                            'detections': self._win_dets, 'mean_ms': medie}
+        if self.window_log:
+            m = '-' if medie is None else f"{medie:.0f}"
+            print(f"[detectie {span:.0f}s] cadre {self._win_frames} "
+                  f"({self._win_frames / span:.1f}/s) | procesate "
+                  f"{self._win_processed} | detectii {self._win_dets} | "
+                  f"{m} ms/cadru" + ('' if self.active.is_set()
+                                     else ' | INACTIVA'), flush=True)
+        self._win_t0 = now
+        self._win_frames = self._win_processed = self._win_dets = 0
+        self._win_time = 0.0
+
     def _worker(self):
-        try:
-            while not self._stop.is_set():
-                if not self._process_one():
-                    break
-        except Exception as e:                              # noqa: BLE001
-            # B9: say it, mark it, and let miss_streak / stats show it.
-            # The thread ends either way; what changes is that the loop
-            # can no longer mistake a dead detector for a healthy one.
-            self.died = f"{type(e).__name__}: {e}"
-            self.died_t = self.clock()
-            traceback.print_exc()
-            print(f"[detector] MORT: firul de detectie a picat cu "
-                  f"{self.died}. Fara cadre de acum; supervizorul vede "
-                  f"ratari.", flush=True)
+        """Bucla firului de detectie (faza 4). Fiecare pas e in try/except
+        cu logare; un esec trecator se reia dupa o pauza scurta, iar
+        DETECT_FAIL_MAX esecuri consecutive inseamna firul mort (B9): se
+        spune, se marcheaza, si miss_streak / stats o arata. Heartbeat-ul
+        bate doar dupa un cadru procesat."""
+        while not self._stop.is_set():
+            try:
+                ok = self._process_one()
+            except Exception as e:                          # noqa: BLE001
+                self.n_fail += 1
+                self.fail_streak += 1
+                log.error("[detectie] pasul a picat (%d/%d): %s: %s\n%s",
+                          self.fail_streak, DETECT_FAIL_MAX,
+                          type(e).__name__, e, traceback.format_exc())
+                if self.fail_streak >= DETECT_FAIL_MAX:
+                    self.died = f"{type(e).__name__}: {e}"
+                    self.died_t = self.clock()
+                    print(f"[detector] MORT: firul de detectie a picat de "
+                          f"{self.fail_streak} ori la rand, ultima cu "
+                          f"{self.died}. Fara cadre de acum; supervizorul "
+                          f"vede ratari.", flush=True)
+                    return
+                time.sleep(DETECT_FAIL_BACKOFF_S)
+                continue
+            self.fail_streak = 0
+            if not ok:
+                return                       # sursa epuizata: nu e o bataie
+            self.heartbeat.beat()
 
     def poll(self, now):
         """Interfata din nova/detection.py. Fara fir, proceseaza un cadru

@@ -718,6 +718,87 @@ def test_ratarile_consecutive_pe_clasa_din_productie():
     return f"contor pe cadre: {urme}"
 
 
+def test_F4_firul_de_detectie_publica_bate_si_asculta_flagul():
+    """Faza 4 (refactor/threads). Firul publica ultima detectie in Latest
+    cu timpul CAPTURII, bate heartbeat-ul doar dupa un cadru procesat,
+    citeste flagul `active` (stins: cadrele intra in ring, nu se
+    detecteaza), tolereaza esecuri trecatoare si moare dupa
+    DETECT_FAIL_MAX consecutive (B9). Log per fereastra."""
+    import contextlib
+    import io
+    import logging
+    from nova.detector_pi import DETECT_FAIL_MAX
+    cal = synthetic_calibration()
+    frame, _ = render(cal, R_FLAT, (0.0, 0.0, 6.0))
+    ts = [10.0 + 0.1 * i for i in range(8)]
+    src = ArraySource([frame] * 8, timestamps=ts)
+    pd = PiDetector(src, ArucoMarkerDetector(cal), threaded=False,
+                    clock=lambda: 20.0, ring_frames=8)
+    pd.window_log_s = 0.0                     # linie la fiecare cadru
+    pd.window_log = False
+    # 1. sincron: 3 cadre -> latest cu t de captura, heartbeat neatins (fara fir)
+    for _ in range(3):
+        pd.poll(20.0)
+    det, t = pd.latest.get()
+    assert det is not None and t == ts[2] and det.t == ts[2], (t, det)
+    assert pd.last_window['processed'] >= 1 and pd.last_window['detections'] >= 1
+    assert pd.last_window['mean_ms'] > 0
+    # 2. flag stins: cadrele se citesc (ring creste), nu se detecteaza
+    n_ring = len(pd.ring)
+    n_det = pd.det.n_frames
+    pd.active.clear()
+    for _ in range(3):
+        assert pd.poll(20.0) == []
+    assert len(pd.ring) == n_ring + 3 and pd.det.n_frames == n_det
+    assert pd.latest.get()[1] == ts[2], "a publicat cu detectia inactiva"
+    assert pd.last_window['processed'] == 0 and pd.last_window['captured'] == 1
+    pd.active.set()
+    assert len(pd.poll(20.0)) == 1 and pd.latest.get()[1] == ts[6]
+    # 3. cu fir: heartbeat per cadru procesat, esec trecator tolerat,
+    #    DETECT_FAIL_MAX consecutive = mort
+    class Capricioasa(ArraySource):
+        def __init__(self, frames, esecuri_la):
+            super().__init__(frames)
+            self.esecuri_la = list(esecuri_la)
+            self.n_read = 0
+
+        def read(self):
+            self.n_read += 1
+            if self.n_read in self.esecuri_la:
+                raise RuntimeError('capture timeout')
+            return super().read()
+
+    h = logging.Handler()
+    h.emit = lambda r: None
+    src2 = Capricioasa([frame] * 4, esecuri_la=(2, 3))   # 2 esecuri, apoi ok
+    pd2 = PiDetector(src2, ArucoMarkerDetector(cal), threaded=True).start()
+    t0 = time.time()
+    got = []
+    while time.time() - t0 < 5.0 and not pd2.exhausted:
+        got.extend(pd2.poll(time.monotonic()))
+        time.sleep(0.005)
+    pd2.stop()
+    got.extend(pd2.poll(time.monotonic()))      # ce a ramas in coada
+    assert len(got) == 4 and pd2.died is None, (len(got), pd2.died)
+    assert pd2.n_fail == 2 and pd2.fail_streak == 0
+    assert pd2.heartbeat.count == 4, pd2.heartbeat.count
+    # mort: esecuri la fiecare citire dupa primul cadru
+    src3 = Capricioasa([frame] * 2, esecuri_la=range(2, 100))
+    with contextlib.redirect_stdout(io.StringIO()):
+        pd3 = PiDetector(src3, ArucoMarkerDetector(cal), threaded=True).start()
+        t0 = time.time()
+        while time.time() - t0 < 5.0 and pd3.died is None:
+            pd3.poll(time.monotonic())
+            time.sleep(0.005)
+        pd3._thread.join(2.0)
+    assert pd3.died and pd3.n_fail == DETECT_FAIL_MAX, (pd3.died, pd3.n_fail)
+    assert pd3.heartbeat.count == 1, "a batut si pe esecuri"
+    pd3.stop()
+    return (f"latest cu t captura; inactiv: ring +3, 0 detectii; "
+            f"2 esecuri tolerate ({pd2.heartbeat.count} batai); "
+            f"{DETECT_FAIL_MAX} consecutive -> mort")
+
+
 def test_B9_firul_mort_nu_arata_sanatos():
     """26.09.2026 seara (B9). O exceptie in read()/detect() (ex. timeout
     picamera2) omora firul cu un traceback si nimic altceva: contorul de
@@ -1073,6 +1154,8 @@ TESTS = [
      test_ratarile_consecutive_pe_clasa_din_productie),
     ('calibrarea scalata la 1280x720', test_calibrarea_scalata_la_1280x720),
     ('B9: firul mort nu arata sanatos', test_B9_firul_mort_nu_arata_sanatos),
+    ('F4: firul de detectie publica, bate si asculta flagul',
+     test_F4_firul_de_detectie_publica_bate_si_asculta_flagul),
     ('ExtNav: orientarea markerului in corp', test_ExtNav_orientarea_markerului_in_corp),
     ('B8: etapele se citesc cat firul adauga chei',
      test_B8_timpii_pe_etape_se_citesc_in_timp_ce_firul_adauga_etape),
