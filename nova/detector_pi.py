@@ -1659,7 +1659,7 @@ class PiCameraSource(FrameSource):
 
     def __init__(self, size=None, sensor_mode=None, fps=TRACK_FPS,
                  controls=None, verbose=True, auto_expose=True, fresh=True,
-                 settings=None):
+                 settings=None, keep_color=False):
         """`settings` (CameraSettings, from camera_settings(cfg, preset))
         says everything: sensor mode, stream, exposure mode, AWB, focus.
         Without it, `sensor_mode` + `size` + `auto_expose` (auto_lock or
@@ -1682,6 +1682,12 @@ class PiCameraSource(FrameSource):
 
         self.verbose = verbose
         self.settings = settings
+        #: 27.09.2026 (touchdown capture): the whole YUV420 array of the
+        #: last few frames, so ONE of them can be saved in colour after the
+        #: fact (the touchdown frame is chosen when ON_GROUND arrives, a
+        #: frame or two later). References only: make_array() already copied.
+        self.keep_color = bool(keep_color)
+        self.chroma_ring = collections.deque(maxlen=8)
         self.sensor_mode = settings.sensor_mode
         self.size = settings.output_size
         self.geometry = None
@@ -1925,6 +1931,9 @@ class PiCameraSource(FrameSource):
             req.release()
         h = self.size[1]
         gray = np.ascontiguousarray(arr[:h, :self.size[0]])   # planul Y
+        if self.keep_color and arr.shape[1] == self.size[0]:
+            # I420 needs width == stride (1280, 1536: multiples of 64)
+            self.chroma_ring.append((md.get('SensorTimestamp'), arr))
         t2 = time.perf_counter()
         self.last_metadata = md
         ts = md.get('SensorTimestamp')
@@ -1950,6 +1959,20 @@ class PiCameraSource(FrameSource):
                     print("[camera] picamera2 fara capture_request(flush=): "
                           "raman pe coada veche (varsta cadrului ramane)")
         return self.picam2.capture_request()
+
+    def color_for(self, t_capture, gray=None):
+        """BGR of the frame captured at `t_capture` if its YUV is still in
+        the chroma ring, else None (the capture then saves gray)."""
+        import cv2
+        if not self.chroma_ring:
+            return None
+        ts = None if t_capture is None else round((t_capture - self._boot_offset) * 1e9)
+        w, h = self.size
+        for sts, arr in reversed(list(self.chroma_ring)):
+            if ts is not None and sts is not None and abs(sts - ts) < 1e6:
+                return cv2.cvtColor(np.ascontiguousarray(arr[:h * 3 // 2, :w]),
+                                    cv2.COLOR_YUV2BGR_I420)
+        return None
 
     def capture_scoring_frame(self):
         """Cadru la rezolutie nativa, prin comutare de mod (~0.3-0.5 s fara
@@ -2063,6 +2086,9 @@ class PiDetector:
         #: share of the gray plane.
         self.frame_seq = 0
         self.n_no_timestamp = 0
+        #: (t_capture, camera metadata) of the last frames: the touchdown
+        #: capture writes the metadata of the frame it saves, not the newest
+        self.md_ring = collections.deque(maxlen=64)
         self._win_sat = self._win_dark = self._win_px = 0
         self._win_exp = []
         self._win_gain = []
@@ -2227,6 +2253,7 @@ class PiDetector:
             return False
         gray, t_cap = item
         md = self._diag(self._frame_stats, gray)
+        self.md_ring.append((t_cap, md))
         if self.keep_last_frame:
             self.last_frame = gray
         if self.ring is not None:
@@ -2268,6 +2295,14 @@ class PiDetector:
         self._diag(self._log_frame, t_cap, md, det, dt)
         self._diag(self._window_log, t_pub)
         return True
+
+    def metadata_at(self, t_capture):
+        """The camera metadata of the frame captured at `t_capture`
+        (within 1 ms), or None."""
+        for t, md in reversed(list(self.md_ring)):
+            if t is not None and abs(t - t_capture) < 1e-3:
+                return md
+        return None
 
     def _publish_view(self, gray, det):
         """The frame and its outcome, one tuple, one assignment (atomic for
@@ -2481,7 +2516,8 @@ class PiDetector:
 # --- Constructor de bord -------------------------------------------------------------
 
 def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None,
-                      keep_last_frame=False, preset=None, frame_log=None):
+                      keep_last_frame=False, preset=None, frame_log=None,
+                      keep_color=False):
     """Detectorul complet pentru aplicatia de bord, din config/nova.json.
     Refuza sa porneasca fara calibrare reala (E1.2).
 
@@ -2514,7 +2550,8 @@ def build_pi_detector(cfg, verbose=True, ring_frames=0, max_rms=None,
     if verbose:
         print(f"[detector] camera: {settings.describe()}")
     source = PiCameraSource(settings=settings, verbose=verbose,
-                            fresh=cfg.get('camera_fresh_capture', True))
+                            fresh=cfg.get('camera_fresh_capture', True),
+                            keep_color=keep_color)
     try:
         return _detector_on(source, calib, cfg, verbose, ring_frames,
                             keep_last_frame, frame_log)

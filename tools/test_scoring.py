@@ -267,9 +267,18 @@ def test_B6_recorderul_e_chemat_din_bucla_pe_bord_si_in_sim():
     # faza 5 (refactor/threads): carligul per ciclu e PasPrincipal, pus pe
     # LastDetection.on_poll; recorderul e unul din pasii lui (verificat si
     # comportamental in test_threads_integration)
-    assert 'recorder=rec)' in pi and 'detector.on_poll = PasPrincipal(' in pi, (
+    # 27.09.2026: `Recordere(rec, cap)` - ScoringRecorder si captura de
+    # touchdown, amandoua chemate la fiecare iteratie
+    assert 'recorder=Recordere(rec, cap))' in pi and 'detector.on_poll = PasPrincipal(' in pi, (
         "nova_pi.py nu cheama ScoringRecorder.update din bucla")
-    assert pi.index('rec = ScoringRecorder(') < pi.index('recorder=rec)')
+    assert pi.index('rec = ScoringRecorder(') < pi.index('recorder=Recordere(rec, cap))')
+    k = pi.index('class Recordere')
+    assert 'r.update(now)' in pi[k:k + 600], "Recordere nu cheama update"
+    import nova_pi as _np
+    chemat = []
+    _np.Recordere(type('R', (), {'update': lambda self, now: chemat.append(now)})(),
+                  None).update(3.0)
+    assert chemat == [3.0]
     i = pi.index('class PasPrincipal')
     assert 'self.rec.update(now)' in pi[i:i + 2000], "PasPrincipal nu cheama rec.update"
     sim = open(os.path.join(radacina, 'tools', 'nova_sim.py')).read()

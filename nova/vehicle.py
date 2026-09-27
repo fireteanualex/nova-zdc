@@ -146,7 +146,8 @@ STATE_FIELDS = ('x', 'y', 'z', 'vx', 'vy', 'vz', 'rel_alt', 'lat', 'lon',
                 'roll', 'pitch', 'yaw', 'have_pos', 'armed', 'mode',
                 'landed_state', 'time_boot_ms', 'rc', 'rc_t', 'ekf_flags',
                 'ekf_pos_horiz_var', 'ekf_t', 'ekf_src_ack',
-                'n_lt', 'n_ds', 'n_vpe', 'n_pos_target')
+                'n_lt', 'n_ds', 'n_vpe', 'n_pos_target',
+                'unix_usec', 'unix_boot_ms')
 
 
 class VehicleState:
@@ -172,6 +173,11 @@ class VehicleState:
         self.ekf_t = None
         self.ekf_src_ack = None
         self.n_lt = self.n_ds = self.n_vpe = self.n_pos_target = 0
+        #: SYSTEM_TIME: the FC's GPS/UTC clock (0 = unknown) and the
+        #: time_boot_ms it was read at - for LABELLING the touchdown capture
+        #: only (docs/SCORING_FORMAT.md), never for guidance
+        self.unix_usec = None
+        self.unix_boot_ms = None
 
     def copy(self):
         c = VehicleState.__new__(VehicleState)
@@ -299,6 +305,9 @@ class Vehicle:
 
         #: Ultimul raspuns la SET_EKF_SOURCE_SET, sau None daca nu s-a cerut.
         self.ekf_src_ack = None
+        #: SYSTEM_TIME (27.09.2026): labelling of the touchdown capture only
+        self.unix_usec = None
+        self.unix_boot_ms = None
 
         # statistici de emisie (numarate cand octetii chiar pleaca)
         self.n_lt = 0
@@ -472,6 +481,14 @@ class Vehicle:
             return None
         return with_gaps[len(with_gaps) // 2]
 
+    def fc_unix_usec_now(self):
+        """The FC's GPS/UTC time now (us), extrapolated from the last
+        SYSTEM_TIME with the FC's own time_boot_ms; None without a GPS
+        clock. For labelling the touchdown capture, never for guidance."""
+        if not self.unix_usec or self.unix_boot_ms is None or self.time_boot_ms is None:
+            return None
+        return int(self.unix_usec + 1000 * (self.time_boot_ms - self.unix_boot_ms))
+
     def time_since_heartbeat(self, now=None):
         """Secunde de la ultimul HEARTBEAT, sau None daca nu a existat."""
         hb = self.hb_t
@@ -579,6 +596,7 @@ class Vehicle:
             (mavutil.mavlink.MAVLINK_MSG_ID_EXTENDED_SYS_STATE, self.landed_hz),
             (mavutil.mavlink.MAVLINK_MSG_ID_RC_CHANNELS, RC_HZ),
             (mavutil.mavlink.MAVLINK_MSG_ID_EKF_STATUS_REPORT, EKF_HZ),
+            (mavutil.mavlink.MAVLINK_MSG_ID_SYSTEM_TIME, 1),
         ]
         for msg_id, hz in rates:
             self.m.mav.command_long_send(
@@ -657,6 +675,9 @@ class Vehicle:
             if msg.lat != 0 or msg.lon != 0:
                 st.lat = msg.lat / 1e7
                 st.lon = msg.lon / 1e7
+        elif t == 'SYSTEM_TIME':
+            st.unix_usec = msg.time_unix_usec or None
+            st.unix_boot_ms = msg.time_boot_ms
         elif t == 'EXTENDED_SYS_STATE':
             st.landed_state = msg.landed_state
         elif t == 'HEARTBEAT':

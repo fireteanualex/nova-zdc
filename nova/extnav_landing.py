@@ -879,6 +879,9 @@ class ExtNavLanding:
             'z_contact': self.v.z,
             'last_det_age_s': None if last_t is None else now - last_t,
             'last_lateral_m': None if e is None else e.lateral_m,
+            # start of the touchdown descent: the capture's burst reaches
+            # back to it, to include the frames at ~1 m
+            'td_start_t': self._td_t0,
         }
         self._ground_xy = (self.v.x, self.v.y)
         self._ground_vpe_t = float('-inf')

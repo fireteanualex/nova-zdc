@@ -45,6 +45,7 @@ from pymavlink import mavutil                              # noqa: E402
 from nova import config as nova_config                     # noqa: E402
 from nova.authority import AuthorityScheduler              # noqa: E402
 from nova.board_window import FereastraBord, OsdMesaje    # noqa: E402
+from nova.touchdown_capture import TouchdownCapture        # noqa: E402
 from nova.concurrency import (Heartbeat, Latest,           # noqa: E402
                               install_excepthook)
 from nova.supervisor_thread import SupervisorThread        # noqa: E402
@@ -155,6 +156,40 @@ def frame_log_path(arg, now=None):
     d = os.environ.get('NOVA_LOG_DIR') or os.path.expanduser('~/nova-logs')
     stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime(now))
     return os.path.join(d, f"cadre-{stamp}.csv")
+
+
+#: Ring frames on extnav: the touchdown descent from 1 m at 0.4 m/s
+#: (2.5 s) + the FC's land detection (1.5 s) + 1 s after + margin, 30 fps.
+TOUCHDOWN_RING_FRAMES = 200
+
+
+def ring_frames_for(a, cfg):
+    if a.ring_frames is not None:
+        return a.ring_frames
+    return TOUCHDOWN_RING_FRAMES if nova_config.guidance(cfg) == 'extnav' else 30
+
+
+def camera_info(detector):
+    """Preset, geometry and calibration kind, for the capture's meta."""
+    src = getattr(detector, 'source', None)
+    g = getattr(src, 'geometry', None)
+    s = getattr(src, 'settings', None)
+    cal = getattr(getattr(detector, 'det', None), 'calib', None)
+    return {'preset': getattr(s, 'preset', None),
+            'sensor_mode': list(g.sensor_mode) if g else None,
+            'scaler_crop': list(g.scaler_crop) if g else None,
+            'calibration': getattr(cal, 'kind', None)}
+
+
+class Recordere:
+    """The recorders updated once per main-loop iteration (PasPrincipal)."""
+
+    def __init__(self, *recs):
+        self.recs = [r for r in recs if r is not None]
+
+    def update(self, now):
+        for r in self.recs:
+            r.update(now)
 
 
 def vedere(vehicle):
@@ -397,10 +432,11 @@ def main():
     p.add_argument('--fast-descent', action='store_true',
                    help='permite viteze peste 0.5 m/s; cere intai '
                         'masuratoarea de distanta de franare (§6/15.2.9)')
-    p.add_argument('--ring-frames', type=int, default=30,
-                   help='cate cadre tine ringul pentru 8.3.3. Pe Pi un cadru '
-                        'e ~3 MB, deci 30 inseamna ~90 MB. 0 = oprit, si '
-                        'atunci NU se produce imaginea predata juriului')
+    p.add_argument('--ring-frames', type=int, default=None,
+                   help='cate cadre tine ringul pentru 8.3.3. Implicit 200 pe '
+                        'extnav (~6.7 s la 30 fps: coborarea de la 1 m, contactul, '
+                        '1 s dupa; ~185 MB la 1280x720) si 30 pe plnd. 0 = oprit, '
+                        'si atunci NU se produce imaginea predata juriului')
     p.add_argument('--scoring-dir', default='data/scoring',
                    help='unde se scriu imaginea de scoring, cea de contact '
                         'si evidenta lor (6.2.1.30)')
@@ -502,7 +538,8 @@ def main():
         # Detectorul intai: daca lipseste calibrarea, ne oprim inainte sa
         # deschidem legatura cu FC-ul.
         detector = build_pi_detector(cfg, verbose=True,
-                                     ring_frames=a.ring_frames,
+                                     ring_frames=ring_frames_for(a, cfg),
+                                     keep_color=nova_config.guidance(cfg) == 'extnav',
                                      max_rms=a.max_rms,
                                      keep_last_frame=(a.show_window or
                                                       a.fullscreen),
@@ -559,6 +596,19 @@ def main():
     # eveniment, deci recorder-ul e chemat la fiecare ciclu (B6).
     ring = getattr(detector, 'ring', None)
     rec = ScoringRecorder(a.scoring_dir, ring, vehicle=vehicle)
+    # 27.09.2026: on extnav the 8.3.3 image is taken at CONTACT (on the
+    # ground, ON_GROUND from the FC), written by nova/touchdown_capture in
+    # its own low-priority thread, in the format the PC tool fetches
+    cap = None
+    if nova_config.guidance(cfg) == 'extnav' and ring is not None:
+        cap = TouchdownCapture(
+            os.path.join(nova_config.REPO_ROOT, 'scoring'), ring,
+            camera_info=lambda d=detector: camera_info(d),
+            on_event=lambda n, i: on_sm_event(n, i),
+            color_for=getattr(detector.source, 'color_for', None),
+            meta_for=getattr(detector, 'metadata_at', None))
+        print(f"[bord] captura de touchdown: {cap.root}/{cap.date}/{cap.session}/"
+              f" (ring {ring.buf.maxlen} cadre)")
     detector = LastDetection(detector)      # on_poll: PasPrincipal, below
     if ring is None:
         print("[bord] ATENTIE: detectorul nu are ring buffer; 8.3.3 NU va "
@@ -574,6 +624,8 @@ def main():
     def on_sm_event(name, info):
         rec.on_event(name, info)
         osd.note(name, info, time.monotonic())
+        if name == 'contact' and cap is not None:
+            cap.on_contact(info)
         if name == 'abort' and info.get('action') == 'LOITER':
             # Pilot abort (AUX down): the sticks are live again. Said through
             # the FC, like the reject, so it reaches the OSD/GCS if there is
@@ -614,7 +666,8 @@ def main():
                               mav_io=getattr(vehicle, 'io_heartbeat', None),
                               principal=hb_principal)
     detector.on_poll = PasPrincipal(sm, faza, hb_principal,
-                                    supervisor_thread=st, recorder=rec)
+                                    supervisor_thread=st,
+                                    recorder=Recordere(rec, cap))
     # 2a: with the supervisor's abort up, the I/O thread drops the TX queue
     # and the periodic slots (counted, logged); URGENT still goes.
     vehicle.set_abort_event(sup.abort)
@@ -700,6 +753,11 @@ def main():
     finally:
         pv.close()
         opreste_firele(st, detector, vehicle)
+        if cap is not None:
+            cap.stop()              # a capture is evidence: flushed, not dropped
+            for d, ok, why in cap.done:
+                print(f"[bord] 8.3.3 captura {'OK' if ok else 'ESUATA'}: {d}"
+                      + ('' if ok else f" ({why})"))
         r = rec.raport()
         if r['salvate']:
             print(f"[bord] 8.3.3: {', '.join(sorted(r['salvate'].values()))}")
