@@ -45,8 +45,12 @@ class SimVeh(Vehicle):
     """Vehicle real + fizica de mucava. Adevarul: pozitia in cadrul
     MARKERULUI (`p`), altitudinea `h`, yaw-ul `yaw_true`."""
 
-    def __init__(self, h=8.0, p=(2.0, -1.0), yaw=0.3):
-        super().__init__('udpin:127.0.0.1:1')
+    def __init__(self, h=8.0, p=(2.0, -1.0), yaw=0.3, threaded=False):
+        # threaded=True (test_threads_integration): the FC-side state is
+        # written to `_live` and published by _io_step(), like the real
+        # I/O thread does; in sync mode `_live` IS self - same behaviour.
+        super().__init__('udpin:127.0.0.1:1', threaded=threaded)
+        live = self._live
         self.link_verbose = False
         self.link_healthy = True
         self.p = [float(p[0]), float(p[1])]
@@ -56,8 +60,8 @@ class SimVeh(Vehicle):
         self.src = 1
         self.bias = None                 # EKF: marker = truth + bias
         self.target = None               # (x, y, z, yaw) din SET_POSITION_TARGET
-        self.armed = True
-        self.mode = MODE_LOITER
+        live.armed = True
+        live.mode = MODE_LOITER
         self.mode_delay_s = 0.15
         self.refuse_modes = ()
         self.mode_pending = []
@@ -74,11 +78,11 @@ class SimVeh(Vehicle):
                        'EK3_SRC2_YAW': 1, 'EK3_SRC_OPTIONS': 0,
                        'RC1_TRIM': 1500, 'RC2_TRIM': 1500, 'RC3_TRIM': 1100,
                        'RC4_TRIM': 1500}
-        self.rc = (1500, 1500, 1500, 1500, 1000, 1000, 1000, 1000)
-        self.rc_t = 0.0
-        self.landed_state = LANDED_IN_AIR
+        live.rc = (1500, 1500, 1500, 1500, 1000, 1000, 1000, 1000)
+        live.rc_t = 0.0
+        live.landed_state = LANDED_IN_AIR
         self.ground_t = None
-        self.time_boot_ms = 1000
+        live.time_boot_ms = 1000
         self.now = 0.0
         outer = self
 
@@ -106,7 +110,9 @@ class SimVeh(Vehicle):
                 pass
 
         self.m = types.SimpleNamespace(mav=_Mav(), target_system=1,
-                                       target_component=1)
+                                       target_component=1,
+                                       recv_match=lambda **k: None,
+                                       close=lambda: None)
         self._publish(0.0)
 
     # -- ce vede companion-ul ----------------------------------------------
@@ -120,13 +126,14 @@ class SimVeh(Vehicle):
         self._on_position(now, x, y, -self.h, self.vel[0], self.vel[1],
                           self.vel[2])
         self._on_attitude(now, 0.0, 0.0, self.yaw_true)
-        self.rel_alt = self.h
-        self.rc_t = now
+        live = self._live
+        live.rel_alt = self.h
+        live.rc_t = now
         self.hb_t = now                  # legatura vie (monitorul de link)
         valid = self.ekf_valid if self.src == 1 else self.ekf_valid_after_switch
-        self.ekf_flags = (mavutil.mavlink.EKF_ATTITUDE
+        live.ekf_flags = (mavutil.mavlink.EKF_ATTITUDE
                           | (mavutil.mavlink.EKF_POS_HORIZ_REL if valid else 0))
-        self.ekf_t = now
+        live.ekf_t = now
 
     def ekf_pos_horiz_ok(self):
         return super().ekf_pos_horiz_ok()
@@ -137,15 +144,15 @@ class SimVeh(Vehicle):
     def request_param(self, name):
         return True                      # valorile sunt deja in params
 
-    def send_ekf_source_set(self, n):
+    def send_ekf_source_set(self, n, urgent=False):
         self.src_cmds.append(n)
-        self.ekf_src_ack = mavutil.mavlink.MAV_RESULT_ACCEPTED
+        self._live.ekf_src_ack = mavutil.mavlink.MAV_RESULT_ACCEPTED
         self.src = n
         if n == 1:
             self.bias = None
         return True
 
-    def request_mode(self, m):
+    def request_mode(self, m, urgent=False):
         self.mode_reqs.append(m)
         self.last_mode_req = m
         if m in self.refuse_modes:
@@ -154,16 +161,17 @@ class SimVeh(Vehicle):
         return True
 
     def set_aux(self, pwm):
-        rc = list(self.rc)
+        rc = list(self._live.rc)
         rc[AUX - 1] = pwm
-        self.rc = tuple(rc)
+        self._live.rc = tuple(rc)
 
     # -- fizica ------------------------------------------------------------
     def step(self, now, dt):
         self.now = now
+        live = self._live
         while self.mode_pending and self.mode_pending[0][0] <= now:
-            self.mode = self.mode_pending.pop(0)[1]
-        if self.mode == MODE_GUIDED and self.target is not None:
+            live.mode = self.mode_pending.pop(0)[1]
+        if live.mode == MODE_GUIDED and self.target is not None:
             tx, ty, tz, tyaw = self.target
             # consemnul e in cadrul EKF; il traducem in adevar prin bias
             bx, by = self.bias if self.bias is not None else GPS_OFFSET
@@ -177,17 +185,17 @@ class SimVeh(Vehicle):
             self.vel[2] = -vz
             d = ex.wrap_pi(tyaw - self.yaw_true)
             self.yaw_true = ex.wrap_pi(self.yaw_true + max(-0.8, min(0.8, 2.0 * d)) * dt)
-        elif self.mode == MODE_LAND:
+        elif live.mode == MODE_LAND:
             self.vel = [0.0, 0.0, 0.5]
             self.h = max(0.0, self.h - 0.5 * dt)
             if self.h <= 0.02:
                 # land_complete, apoi dezarmarea dupa rampa de spool-down
                 # (~0.5 s, §5.6) - exact fereastra in care se vede ON_GROUND
-                if self.landed_state != LANDED_ON_GROUND:
-                    self.landed_state = LANDED_ON_GROUND
+                if live.landed_state != LANDED_ON_GROUND:
+                    live.landed_state = LANDED_ON_GROUND
                     self.ground_t = now
                 elif self.disarm_on_ground and now - self.ground_t >= 0.5:
-                    self.armed = False
+                    live.armed = False
         else:
             self.vel = [0.0, 0.0, 0.0]
         self._publish(now)

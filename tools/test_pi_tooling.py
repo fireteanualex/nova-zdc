@@ -1644,6 +1644,59 @@ def test_comanda_de_log_merge_pe_raspberry_pi_os():
     return "peste tot --user-unit"
 
 
+def test_tracker_si_bringup_se_exclud():
+    """`~/trackerV2.py` (pi/install_tracker.sh) si bring-up-ul (pi/install.sh)
+    tin amandoua camera, deci nu pot rula in acelasi timp (§5.27). Fiecare
+    instalare trebuie sa-l opreasca pe celalalt SI sa-i scoata intrarea de
+    autostart: doar oprirea serviciului nu ajunge, la urmatorul login ar
+    porni amandoua si ar castiga cine porneste ultimul."""
+    def cod(cale):
+        src = open(os.path.join(REPO, 'pi', cale)).read()
+        return '\n'.join(l for l in src.splitlines()
+                         if not l.lstrip().startswith('#'))
+
+    inst = cod('install.sh')
+    assert 'stop nova-tracker.service' in inst, (
+        "install.sh nu opreste trackerul")
+    assert 'nova-tracker.desktop' in inst, (
+        "install.sh nu scoate autostart-ul trackerului")
+
+    tr = cod('install_tracker.sh')
+    assert 'stop nova-bringup.service' in tr, (
+        "install_tracker.sh nu opreste bring-up-ul")
+    assert 'nova-bringup.desktop' in tr, (
+        "install_tracker.sh nu scoate autostart-ul bring-up-ului")
+    assert 'trackerV2.py' in tr and 'die' in tr, (
+        "install_tracker.sh nu verifica ca ~/trackerV2.py exista")
+    i_root = tr.find('EUID -eq 0')
+    i_cp = tr.find('run cp ')
+    assert -1 < i_root < i_cp, "verificarea de root vine dupa copiere"
+
+    # Unitatea: aceleasi reguli ca la bring-up (§5.26, §5.41, §5.47), plus
+    # Conflicts= - excluderea tine si la un `systemctl --user start` de mana,
+    # nu doar la autostart.
+    unit = open(os.path.join(REPO, 'pi', 'nova-tracker.service')).read()
+    sec = _unit_sections(unit)
+    assert sec['Unit'].get('Conflicts') == 'nova-bringup.service'
+    assert 'StartLimitIntervalSec' in sec['Unit']
+    assert 'Install' not in sec
+    srv = sec['Service']
+    assert srv.get('KillSignal') == 'SIGINT'
+    assert 'PYTHONUNBUFFERED=1' in srv.get('Environment', '')
+    assert 'trackerV2.py' in srv.get('ExecStart', '')
+    b_unit = open(os.path.join(REPO, 'pi', 'nova-bringup.service')).read()
+    assert _unit_sections(b_unit)['Unit'].get('Conflicts') == 'nova-tracker.service'
+
+    # Autostart-ul trackerului: import de ecran, apoi stop bring-up, apoi start.
+    auto = open(os.path.join(REPO, 'pi', 'nova-tracker.desktop')).read()
+    cmd = [l for l in auto.splitlines() if l.startswith('Exec=')][0]
+    i_imp = cmd.find('import-environment')
+    i_stop = cmd.find('stop nova-bringup')
+    i_start = cmd.find('start nova-tracker')
+    assert -1 < i_imp < i_stop < i_start, cmd
+    return "se opresc reciproc, serviciu + autostart, si Conflicts= in unitati"
+
+
 def test_install_refuza_sudo():
     """Rulat cu sudo pe vehicul, pi/install.sh a pus unitatea in configul lui
     ROOT, cu ExecStart spre /root/nova-zdc, iar `systemctl --user` nu a
@@ -1894,8 +1947,11 @@ def test_ExtNav_cablajul_de_bord():
     for cerut in ('ExtNavLanding(', 'ExtNavSupervisor(', 'ExtNavEstimator(',
                   'EkfSourceManager(', 'faze=SRC2_PHASES',
                   'dist_max_m=None', 'detection_max_age_s=None',
-                  'sup.on_exit = sm.request_exit'):
+                  'sm.attach_supervisor(sup)', 'vedere(vehicle)'):
         assert cerut in ext, f"{cerut} lipseste de pe drumul ExtNav"
+    # faza 5 (refactor/threads): verdictul supervizorului ajunge la masina
+    # de stari prin `abort`, citit in firul principal - nu prin callback
+    assert 'sup.on_exit' not in ext, "callback-ul on_exit a revenit pe ExtNav"
     assert 'LandingStateMachine(' in plnd and 'AuthorityScheduler(' in plnd
     assert "nova_config.guidance(cfg) == 'extnav'" in src
     # config: implicitul din cod si fisierul versionat spun amandoua extnav
@@ -1922,7 +1978,9 @@ def test_ExtNav_cablajul_de_bord():
             a, cfg, v, OverrideMonitor(v), {'alt_min_m': 0.0}, 8, 1500,
             lambda r: None, lambda n, i: None)
     assert isinstance(sm, ExtNavLanding) and isinstance(sup, ExtNavSupervisor)
-    assert aut is None and sup.on_exit == sm.request_exit
+    assert aut is None and sup.on_exit is None and sm.sup is sup
+    # supervizorul citeste vehiculul prin vederea lui (faza 3), nu fatada
+    assert sup.v is not v and sup.v._v is v
     assert gate.dist_max_m is None and gate.detection_max_age_s is None
     assert gate.alt_min_m == 0.0 and gate.alt_max_m == 12.0
     assert tuple(sm.ekf.faze) == SRC2_PHASES and sm.cfg.aux_channel == 8
@@ -2109,6 +2167,7 @@ TESTS = [
     ('comanda de log merge pe Raspberry Pi OS',
      test_comanda_de_log_merge_pe_raspberry_pi_os),
     ('install refuza sudo', test_install_refuza_sudo),
+    ('trackerV2 si bring-up se exclud', test_tracker_si_bringup_se_exclud),
     ('bringup: nu e un al doilea cablaj',
      test_bringup_nu_e_un_al_doilea_cablaj),
     ('setup_uart: cauta ambele directoare de boot',

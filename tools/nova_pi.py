@@ -45,6 +45,9 @@ from pymavlink import mavutil                              # noqa: E402
 from nova import config as nova_config                     # noqa: E402
 from nova.authority import AuthorityScheduler              # noqa: E402
 from nova.board_window import FereastraBord, OsdMesaje    # noqa: E402
+from nova.concurrency import (Heartbeat, Latest,           # noqa: E402
+                              install_excepthook)
+from nova.supervisor_thread import SupervisorThread        # noqa: E402
 from nova.ekf_source import EkfSourceManager               # noqa: E402
 from nova.extnav import ExtNavEstimator                    # noqa: E402
 from nova.extnav_landing import (ExtNavConfig, ExtNavLanding,  # noqa: E402
@@ -151,6 +154,64 @@ class LastDetection:
         return getattr(self._inner, name)
 
 
+def vedere(vehicle):
+    """The supervisor's view of the vehicle (phase 3): snapshots, commands
+    through the queues. A vehicle without one (tests, stubs) is used as is."""
+    fn = getattr(vehicle, 'view', None)
+    return fn() if callable(fn) else vehicle
+
+
+class PasPrincipal:
+    """Phase 5: what the main thread publishes / checks once per loop
+    iteration, hung on LastDetection.on_poll (the one per-cycle hook we
+    have without touching run_loop): the phase for the supervisor thread,
+    its own heartbeat, the watchdog over the supervisor, and the scoring
+    recorder's pending frame request (B6)."""
+
+    def __init__(self, sm, faza, heartbeat, supervisor_thread=None,
+                 recorder=None):
+        self.sm = sm
+        self.faza = faza
+        self.heartbeat = heartbeat
+        self.st = supervisor_thread
+        self.rec = recorder
+        self.n = 0
+
+    def __call__(self, now):
+        self.faza.set(self.sm.state, now)
+        self.heartbeat.beat(now)
+        if self.st is not None:
+            self.st.watchdog(now)
+        if self.rec is not None:
+            self.rec.update(now)
+        self.n += 1
+
+
+def opreste_firele(supervizor, detector, vehicle):
+    """Ordered shutdown, the reverse of the start: the state machine has
+    already stopped (the main loop returned), then the supervisor (so it
+    queues nothing into a vehicle that is closing), the detection thread,
+    and the I/O thread last (it drains what is still queued, then closes
+    the port). Every step is guarded: one that fails must not skip the
+    next."""
+    ramase = []
+    for nume, fn in (('supervizor', getattr(supervizor, 'stop', None)),
+                     ('detectie', getattr(detector, 'stop', None)),
+                     ('mav_io', getattr(vehicle, 'close', None))):
+        if fn is None:
+            continue
+        try:
+            r = fn()
+            if r:
+                ramase.extend(r if isinstance(r, list) else [nume])
+        except Exception as e:                              # noqa: BLE001
+            print(f"[bord] oprirea firului {nume} a picat: "
+                  f"{type(e).__name__}: {e}")
+    if ramase:
+        print(f"[bord] fire inca in viata la iesire: {', '.join(ramase)}")
+    return ramase
+
+
 def mesaj_mod(gate, canal, prag):
     """Textul STATUSTEXT de la pornire: ce face comutatorul, daca il ridici.
     Sub 50 de caractere, limita campului."""
@@ -186,13 +247,17 @@ def cablaj_extnav(a, cfg, vehicle, override, gate_kw, canal, prag,
     gate = HandoverGate(vehicle, override, on_reject=signal_reject,
                         dist_max_m=None, detection_max_age_s=None,
                         **gate_kw, monitor=a.monitor_motiv or a.monitor)
-    sup = ExtNavSupervisor(vehicle, override=override)
+    # Phase 5 (refactor/threads): the supervisor lives in its own thread
+    # and reads the vehicle through a VehicleView (snapshots); its verdict
+    # reaches the state machine through `abort`, read by the main thread
+    # each step - no on_exit callback across threads.
+    sup = ExtNavSupervisor(vedere(vehicle), override=override)
     est = ExtNavEstimator(vehicle, verbose=False)
     ekf = EkfSourceManager(vehicle, faze=SRC2_PHASES)
     sm = ExtNavLanding(vehicle, est, ekf, gate,
                        ExtNavConfig(aux_channel=canal, aux_high_pwm=prag),
                        on_event=on_sm_event)
-    sup.on_exit = sm.request_exit
+    sm.attach_supervisor(sup)
     print("[bord] ghidare EXTNAV: camera -> VISION_POSITION_ESTIMATE -> EKF3 "
           "SRC2; GUIDED in trepte h/2 pana la 1 m; LAND vertical. PLND 0.")
     print(f"[bord] poarta: {gate_kw.get('alt_min_m', 1.0):.1f}-12 m, fara "
@@ -212,7 +277,7 @@ def cablaj_plnd(a, cfg, vehicle, override, gate_kw, canal, prag,
     monitor = a.monitor_motiv or a.monitor
     gate = HandoverGate(vehicle, override, on_reject=signal_reject,
                         **gate_kw, monitor=monitor)
-    sup = SafetySupervisor(vehicle, override=override)
+    sup = SafetySupervisor(vedere(vehicle), override=override)
     # Modularea de autoritate pe praguri de altitudine. `None` o dezactiveaza
     # complet: fara ea, vehiculul zboara cu reglajul lui nominal, ceea ce e
     # exact comportamentul de dinainte.
@@ -230,6 +295,7 @@ def cablaj_plnd(a, cfg, vehicle, override, gate_kw, canal, prag,
         print("[bord] 15.2.7 OPRIT (--no-ascent): secventa se incheie pe "
               "sol, fara urcare la 5 m")
     sm = LandingStateMachine(vehicle, seq, gate=gate, on_event=on_sm_event)
+    sm.attach_supervisor(sup)
     print("[bord] ghidare PLND (calea veche): LAND + precision landing")
     return gate, sup, sm, autoritate
 
@@ -278,6 +344,9 @@ def race_mode(a, cfg):
 
 
 def main():
+    # A thread that dies outside run_loop is logged with its name, not
+    # lost on the stderr of a headless service (phase 5).
+    install_excepthook()
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -450,7 +519,7 @@ def main():
     # eveniment, deci recorder-ul e chemat la fiecare ciclu (B6).
     ring = getattr(detector, 'ring', None)
     rec = ScoringRecorder(a.scoring_dir, ring, vehicle=vehicle)
-    detector = LastDetection(detector, on_poll=rec.update)
+    detector = LastDetection(detector)      # on_poll: PasPrincipal, below
     if ring is None:
         print("[bord] ATENTIE: detectorul nu are ring buffer; 8.3.3 NU va "
               "avea imagine. Vezi --ring-frames.")
@@ -489,6 +558,24 @@ def main():
     # modul in care a pornit companion-ul se spune o data, prin FC.
     anunta_modul(vehicle, gate, canal, prag)
 
+    # Phase 5 (refactor/threads): the supervisor in its own thread, fed
+    # from Latest[Detection] (the detection thread), Latest[phase] and the
+    # heartbeats (the main thread, through PasPrincipal); it monitors the
+    # three other threads and the main thread watches it back (watchdog).
+    # run_loop gets supervisor=None: the supervisor no longer runs inside
+    # the main loop.
+    faza = Latest(sm.state)
+    hb_principal = Heartbeat('principal')
+    st = SupervisorThread(sup, vehicle, getattr(detector, 'latest', None),
+                          faza,
+                          miss_streak_fn=lambda: getattr(detector,
+                                                         'miss_streak', None))
+    sup.set_thread_heartbeats(detectie=getattr(detector, 'heartbeat', None),
+                              mav_io=getattr(vehicle, 'io_heartbeat', None),
+                              principal=hb_principal)
+    detector.on_poll = PasPrincipal(sm, faza, hb_principal,
+                                    supervisor_thread=st, recorder=rec)
+
     ecran = race_screen.RaceScreen() if a.race else None
 
     # Step 0 (§5.65): stage timings every --etape seconds, from the timer
@@ -510,7 +597,7 @@ def main():
     def _status(now):
         if ecran is None:
             print(f"{sm.status_line()} | {detector.status_line()} | "
-                  f"{sup.status()}"
+                  f"{sup.status()} | {st.status()}"
                   + ('' if autoritate is None else f" | {autoritate.status()}"))
             if a.etape > 0 and (etape_la['t'] is None
                                 or now - etape_la['t'] >= a.etape):
@@ -543,16 +630,21 @@ def main():
               "inchiderea ei NU opreste zborul)")
         detector = FereastraBord(detector, pv, sm=sm, sup=sup,
                                  vehicle=vehicle, mesaje=osd)
-    print("[bord] rulez. Ctrl-C pentru oprire.")
+    # Start order: I/O (connect, above), detection (build_pi_detector,
+    # above), supervisor, then the state machine (run_loop). The two
+    # producers run before anyone consumes them; the supervisor watches
+    # the state machine's thread from its first step.
+    st.start()
+    print(f"[bord] rulez: fire mav_io, detectie, supervizor "
+          f"({1.0 / st.period_s:.0f} Hz), principal. Ctrl-C pentru oprire.")
     try:
-        run_loop(vehicle, detector, sm, supervisor=sup, on_status=status,
+        run_loop(vehicle, detector, sm, supervisor=None, on_status=status,
                  authority=autoritate)
     except KeyboardInterrupt:
         print("\n[bord] oprire.")
     finally:
         pv.close()
-        detector.stop()
-        vehicle.close()
+        opreste_firele(st, detector, vehicle)
         r = rec.raport()
         if r['salvate']:
             print(f"[bord] 8.3.3: {', '.join(sorted(r['salvate'].values()))}")

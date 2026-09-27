@@ -164,6 +164,11 @@ class ExtNavLanding:
         self.state_since = self.now
         self.was_armed = False
         self._aux_was_high = None       # B7: first reading = reference
+        #: Phase 5 (refactor/threads): the supervisor whose `abort` Event
+        #: we read every step (attach_supervisor). None = the callback
+        #: wiring (`on_exit`), which the simulator and the tests keep.
+        self.sup = None
+        self._abort_seen_n = 0
 
         self.window = extnav.DetectionWindow(estimator)
         self.window_since = None
@@ -349,6 +354,27 @@ class ExtNavLanding:
         return self.v.mode != self._mode_expected
 
     # -- EXIT --------------------------------------------------------------
+    def attach_supervisor(self, sup):
+        """Phase 5: the supervisor's verdict reaches us through its `abort`
+        Event, read HERE, in our own thread, at every step - not through a
+        callback that would run the EXIT inside the supervisor's thread."""
+        self.sup = sup
+        self._abort_seen_n = getattr(sup, 'abort_n', 0)
+
+    def _abort_asked(self):
+        """(reason, passive) for an abort not yet acted on, else None.
+        Counted, not level-triggered: an abort left over from the previous
+        attempt (the supervisor releases it only when ITS thread sees the
+        new phase) must not end the attempt the pilot just started."""
+        sup = self.sup
+        if sup is None or not sup.abort.is_set():
+            return None
+        n = sup.abort_n
+        if n == self._abort_seen_n:
+            return None
+        self._abort_seen_n = n
+        return (sup.abort_reason or 'abort supervizor'), bool(sup.abort_passive)
+
     def request_exit(self, reason, passive=False):
         """The supervisor's lever, and ours. Idempotent inside EXIT."""
         if self.state in (Phase.EXIT, Phase.ABORT, Phase.IDLE, Phase.DONE):
@@ -432,6 +458,13 @@ class ExtNavLanding:
         elif aux_falling and self.state in (Phase.GATE_SEARCH,):
             self.reset('AUX eliberat in cautare')
             return
+
+        # Phase 5: the supervisor's abort, read every step. Same lever as
+        # the old on_exit callback (request_exit), same order (SRC1, LOITER,
+        # ALT_HOLD) - only the thread that pulls it changes.
+        ab = self._abort_asked()
+        if ab is not None:
+            self.request_exit(ab[0], passive=ab[1])
 
         st = self.state
         if st == Phase.EXIT:

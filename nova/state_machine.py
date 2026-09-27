@@ -234,6 +234,12 @@ class LandingStateMachine:
         #: segmentul autonom: fara ea nu exista dovada ca activarea s-a facut
         #: in fereastra ceruta de 15.2.3, si nu exista cale de refuz.
         self.gate = gate
+        #: Phase 5 (refactor/threads): the supervisor whose `abort` Event
+        #: gates our emission (attach_supervisor). The supervisor sends its
+        #: own BRAKE through URGENT; while its abort is up this machine
+        #: sends nothing on the periodic path. None = the old wiring
+        #: (simulator, tests): nothing gated, behaviour unchanged.
+        self.sup = None
         #: AUX history for edge detection. None = no RC reading seen yet
         #: (B7, 26.09.2026): the FIRST reading is the reference, never an
         #: edge. Starting at False made a restart in flight - service
@@ -353,6 +359,11 @@ class LandingStateMachine:
         return False, ''
 
     # -- intrare: detectii -------------------------------------------------
+    def attach_supervisor(self, sup):
+        """Phase 5: read the supervisor's `abort` Event every detection;
+        no callback from its thread."""
+        self.sup = sup
+
     def on_detection(self, det, now=None):
         """Singura cale prin care viziunea intra in control."""
         now = now if now is not None else time.monotonic()
@@ -389,6 +400,11 @@ class LandingStateMachine:
         # filtreaza e EMISIA pe MAVLink, adica singurul lucru care ajunge la
         # FC in afara segmentului autonom.
         if self.state not in EMITTING_PHASES:
+            return
+        # Phase 5: the supervisor has decided (BRAKE/RTL in URGENT) - a
+        # LANDING_TARGET sent now would only compete with it. Nothing goes
+        # out until its abort is released (new attempt through the gate).
+        if self.sup is not None and self.sup.abort.is_set():
             return
         angle_x, angle_y = self._apply_conv(det.angle_x, det.angle_y)
         self.v.send_landing_target(angle_x, angle_y, det.distance_m)

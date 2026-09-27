@@ -256,6 +256,12 @@ class SafetySupervisor:
         self.abort = threading.Event()
         self.abort_reason = None
         self.abort_passive = False
+        #: Faza 5: de cate ori s-a aprins abort-ul. Masina de stari retine
+        #: ultimul numar tratat: un abort vechi, inca neconsumat de
+        #: supervizor (firul lui nu a vazut inca incercarea noua), nu
+        #: omoara incercarea noua; unul nou, aprins intre doi pasi ai ei,
+        #: chiar dupa o stingere, nu se pierde.
+        self.abort_n = 0
         #: Heartbeat-urile firelor supravegheate: nume -> Heartbeat, cu
         #: pragul fiecaruia. Se dau prin set_thread_heartbeats().
         self.heartbeats = {}
@@ -439,6 +445,7 @@ class SafetySupervisor:
     def _set_abort(self, reason, passive=False):
         self.abort_reason = reason
         self.abort_passive = passive
+        self.abort_n += 1
         self.abort.set()
 
     def _clear_abort(self):

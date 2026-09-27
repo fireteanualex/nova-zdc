@@ -264,10 +264,14 @@ def test_B6_recorderul_e_chemat_din_bucla_pe_bord_si_in_sim():
     deci pe bord carligul e invelisul detectorului; in sim, bucla proprie."""
     radacina = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     pi = open(os.path.join(radacina, 'tools', 'nova_pi.py')).read()
-    assert 'LastDetection(detector, on_poll=rec.update)' in pi, (
+    # faza 5 (refactor/threads): carligul per ciclu e PasPrincipal, pus pe
+    # LastDetection.on_poll; recorderul e unul din pasii lui (verificat si
+    # comportamental in test_threads_integration)
+    assert 'recorder=rec)' in pi and 'detector.on_poll = PasPrincipal(' in pi, (
         "nova_pi.py nu cheama ScoringRecorder.update din bucla")
-    assert pi.index('rec = ScoringRecorder(') < pi.index(
-        'LastDetection(detector, on_poll=rec.update)')
+    assert pi.index('rec = ScoringRecorder(') < pi.index('recorder=rec)')
+    i = pi.index('class PasPrincipal')
+    assert 'self.rec.update(now)' in pi[i:i + 2000], "PasPrincipal nu cheama rec.update"
     sim = open(os.path.join(radacina, 'tools', 'nova_sim.py')).read()
     i = sim.index('self.sm.update(now)')
     assert 'self.rec.update(now)' in sim[i:i + 200], (
