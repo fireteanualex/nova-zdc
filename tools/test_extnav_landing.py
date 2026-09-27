@@ -325,7 +325,7 @@ def test_secventa_completa_cu_detectii_rare():
 
 
 def test_poarta_fara_detectii_reincearca_apoi_esueaza_fara_comenzi():
-    """D7: 0 detectii -> un retry (inca 5 s) -> GATE_FAIL, pilotul ramane in
+    """0 detectii -> un retry (inca 5 s) -> GATE_FAIL, pilotul ramane in
     LOITER, STATUSTEXT. Companion-ul nu a comandat NIMIC."""
     app = App(rate=0.0)
     app.handover()
@@ -342,6 +342,45 @@ def test_poarta_fara_detectii_reincearca_apoi_esueaza_fara_comenzi():
     app.run(0.5)
     assert app.sm.state == Phase.GATE_SEARCH, app.sm.state
     return f"GATE_FAIL la {t_fail:.1f} s, 0 comenzi, STATUSTEXT, cautare noua pe front"
+
+
+def test_o_singura_detectie_porneste_segmentul():
+    """Decizia echipei, 27.09.2026 (zborul b29: patru cereri la 3.5 m fara
+    pereche). O singura estimare in fereastra deschide segmentul; nu
+    asteapta a doua. Si fara ea, nimic - nici mai devreme de fereastra de
+    asezare a portii (1 s, manse/E0/altitudine)."""
+    app = App(rate=0.0)
+    app.handover()
+    app.run(1.5)                                   # poarta asezata, 0 detectii
+    assert app.sm.state == Phase.GATE_SEARCH
+    app.det.rate = 1.0                             # un singur cadru cu marker
+    app.run(0.1)
+    app.det.rate = 0.0
+    assert app.det.n_dets == 1, app.det.n_dets
+    app.run(0.5, stop=(Phase.ENGAGE,))
+    assert app.sm.state == Phase.ENGAGE, app.states
+    e = app.ev('engage')[0]
+    assert e['n'] == 1 and e['pair_dt'] is None, e
+    return "o estimare dupa asezarea portii -> ENGAGE"
+
+
+def test_regula_de_doua_detectii_ramane_optiune():
+    """gate_detections=2 pastreaza regula initiala (brief D7): o singura
+    detectie nu ajunge, doua consistente da."""
+    app = App(rate=0.0, cfg=ExtNavConfig(aux_channel=AUX, gate_detections=2))
+    app.handover()
+    app.run(1.5)
+    app.det.rate = 1.0
+    app.run(0.1)
+    app.det.rate = 0.0
+    app.run(1.0, stop=(Phase.ENGAGE,))
+    assert app.sm.state == Phase.GATE_SEARCH, "a pornit pe o singura detectie"
+    app.det.rate = 1.0
+    app.run(0.1)
+    app.det.rate = 0.0
+    app.run(0.5, stop=(Phase.ENGAGE,))
+    assert app.sm.state == Phase.ENGAGE and app.ev('engage')[0]['n'] == 2
+    return "cu 2: una nu ajunge, doua consistente da"
 
 
 def test_poarta_refuza_altitudinea_in_afara_1_12_m():
@@ -499,6 +538,8 @@ TESTS = [
     ('secventa completa cu detectii la 5%', test_secventa_completa_cu_detectii_rare),
     ('poarta: fara detectii -> retry -> GATE_FAIL, 0 comenzi',
      test_poarta_fara_detectii_reincearca_apoi_esueaza_fara_comenzi),
+    ('poarta: o singura detectie porneste segmentul', test_o_singura_detectie_porneste_segmentul),
+    ('poarta: regula de doua ramane optiune', test_regula_de_doua_detectii_ramane_optiune),
     ('poarta: altitudinea 1-12 m', test_poarta_refuza_altitudinea_in_afara_1_12_m),
     ('AUX jos: SRC1 apoi LOITER', test_AUX_jos_in_coborare_iese_ordonat_SRC1_apoi_LOITER),
     ('mod pus de altcineva: EXIT pasiv', test_modul_pus_de_altcineva_da_EXIT_pasiv),

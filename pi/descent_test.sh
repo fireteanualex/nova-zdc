@@ -321,7 +321,7 @@ cat <<FIN
      4. MANA PE COMUTATORUL DE MOD pana se termina; THROTTLE LA MIJLOC
 
    Ce face vehiculul (ghidare EXTNAV, config guidance):
-     cauta 2 detectii consistente (<= 5 s, un retry) - pana atunci NIMIC
+     cauta o detectie a markerului (<= 5 s, un retry) - pana atunci NIMIC
      ENGAGE: EKF pe setul 2 (camera = pozitie, fara GNSS), apoi GUIDED
      MOVE deasupra markerului, verificare cu detectie proaspata,
      coborare in trepte h/2 pana la 1 m, aliniere, captura, LAND vertical

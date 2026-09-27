@@ -7,9 +7,11 @@ PLND machine in nova/state_machine.py stays for the simulator.
     IDLE
      |-AUX8 up-> GATE_SEARCH   pilot in LOITER; we command NOTHING. The gate
      |                         (E0, sticks, 1-12 m) decides once settled;
-     |                         two consistent detections in a window of
-     |                         <= 5 s open the segment; none -> one retry
-     |                         -> GATE_FAIL (stays in LOITER, STATUSTEXT).
+     |                         ONE estimate in a window of <= 5 s opens the
+     |                         segment (team decision 27.09.2026; two
+     |                         consistent ones with gate_detections=2);
+     |                         none -> one retry -> GATE_FAIL (stays in
+     |                         LOITER, STATUSTEXT).
      v
     ENGAGE        1. EKF on SRC2 (no GNSS), read back before switching
                   2. first VISION_POSITION_ESTIMATE right away
@@ -57,7 +59,13 @@ from . import extnav
 from .vehicle import (MODE_ALT_HOLD, MODE_GUIDED, MODE_LAND, MODE_LOITER)
 
 # --- Thresholds (brief §3), named for the Safety Case ------------------------
-GATE_WINDOW_S = 5.0          # search window for two consistent detections
+GATE_WINDOW_S = 5.0          # search window for the gate detection(s)
+#: How many detections open the segment. Team decision 27.09.2026, after
+#: the flight in which four requests at 3.5 m found no pair: ONE. The
+#: consistency check of two (brief D7) was a guard against an outlier;
+#: what remains against one is the ID filter (26 only) and CENTER_CHECK,
+#: which asks for a FRESH detection before any descent. 2 = the pair rule.
+GATE_DETECTIONS = 1
 GATE_RETRIES = 1             # extra windows before GATE_FAIL
 CENTER_WINDOW_S = 5.0        # hover window for a fresh detection
 CENTER_RETRIES = 1
@@ -117,6 +125,7 @@ class ExtNavConfig:
     aux_channel: int = AUX_CHANNEL
     aux_high_pwm: int = AUX_HIGH_PWM
     gate_window_s: float = GATE_WINDOW_S
+    gate_detections: int = GATE_DETECTIONS
     gate_retries: int = GATE_RETRIES
     center_window_s: float = CENTER_WINDOW_S
     center_retries: int = CENTER_RETRIES
@@ -480,24 +489,39 @@ class ExtNavLanding:
             self._emit('handover_reject', reason=why, alt=self.h_now())
             self.set_state(Phase.REJECT, why)
             return
-        pair = self.window.pair()
-        if ok is True and pair is not None:
-            self._emit('engage', alt=self.h_now(), pair_dt=pair[1].t - pair[0].t,
-                       lateral_m=pair[1].lateral_m)
-            self._say(f"  == doua detectii consistente ({pair[1].lateral_m:.2f} m "
-                      f"lateral): ENGAGE")
+        found = self._gate_found()
+        if ok is True and found is not None:
+            e = found[-1]
+            self._emit('engage', alt=self.h_now(), n=len(found),
+                       pair_dt=(found[-1].t - found[0].t) if len(found) > 1 else None,
+                       lateral_m=e.lateral_m)
+            ce = ('o detectie' if len(found) == 1
+                  else f"{len(found)} detectii consistente")
+            self._say(f"  == {ce} ({e.lateral_m:.2f} m lateral): ENGAGE")
             self._sub = 'src2'
             self.set_state(Phase.ENGAGE, f"alt {self.h_now():.2f} m")
             return
         if now - self.window_since >= self.cfg.gate_window_s:
             if self.window_tries <= self.cfg.gate_retries:
                 self._say(f"  .. fereastra {self.window_tries}: {len(self.window)} "
-                          f"estimari, fara pereche consistenta; reincerc")
+                          f"estimari, {self._gate_need()}; reincerc")
                 self._open_window(now)
                 return
             self._emit('gate_fail', n=len(self.window), alt=self.h_now())
             self._statustext("NOVA: marker negasit, raman in LOITER")
-            self.set_state(Phase.GATE_FAIL, 'fara doua detectii consistente')
+            self.set_state(Phase.GATE_FAIL, self._gate_need())
+
+    def _gate_found(self):
+        """The estimates that open the segment, oldest first, or None.
+        One (the newest) by default; with gate_detections >= 2, the newest
+        and an earlier one it agrees with (DetectionWindow.pair)."""
+        if self.cfg.gate_detections <= 1:
+            return (self.window.items[-1],) if len(self.window) else None
+        return self.window.pair()
+
+    def _gate_need(self):
+        return ('nicio detectie' if self.cfg.gate_detections <= 1
+                else 'fara pereche consistenta')
 
     def _run_engage(self, now):
         if now - self.state_since > self.cfg.engage_timeout_s:

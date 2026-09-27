@@ -263,7 +263,7 @@ def cablaj_extnav(a, cfg, vehicle, override, gate_kw, canal, prag,
     print("[bord] ghidare EXTNAV: camera -> VISION_POSITION_ESTIMATE -> EKF3 "
           "SRC2; GUIDED in trepte h/2 pana la 1 m; LAND vertical. PLND 0.")
     print(f"[bord] poarta: {gate_kw.get('alt_min_m', 1.0):.1f}-12 m, fara "
-          f"raza; segmentul porneste la 2 detectii consistente in <= 5 s")
+          f"raza; segmentul porneste la o detectie in <= 5 s (un retry)")
     if a.no_ascent:
         print("[bord] --no-ascent: fara efect pe extnav (secventa se "
               "incheie la contact oricum)")

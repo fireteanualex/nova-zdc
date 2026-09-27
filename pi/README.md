@@ -357,7 +357,7 @@ Ce face vehiculul:
 ```
 pilotul aduce la 1–12 m deasupra markerului, LOITER (cu GPS), manșe libere ~1 s
 pilotul ridică AUX (8) → poarta (E0, manșe, altitudine) + GATE_SEARCH:
-                         2 detecții consistente în ≤ 5 s (un retry);
+                         o detecție a markerului în ≤ 5 s (un retry);
                          fără → GATE_FAIL, rămâne LOITER, STATUSTEXT
 ENGAGE                 → EKF pe setul 2 (camera = poziție, fără GNSS),
                          VISION_POSITION_ESTIMATE, GUIDED confirmat
@@ -439,7 +439,7 @@ Ce vezi în log, dacă merge:
 
 ```
 >> IDLE -> GATE_SEARCH   (AUX sus, alt 7.2 m)
-  == doua detectii consistente (0.83 m lateral): ENGAGE
+  == o detectie (0.83 m lateral): ENGAGE
 >> GATE_SEARCH -> ENGAGE   (alt 7.2 m)
 >> ENGAGE -> MOVE   (GUIDED confirmat, h 7.2 m)
 >> MOVE -> CENTER_CHECK   (EKF la 0.31 m de (0,0))
