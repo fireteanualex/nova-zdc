@@ -63,7 +63,62 @@ def test_parametrii_FC_ai_secventei_in_fisierele_verificate():
     return f"DISARM_DELAY 20, PILOT_THR_BHV 0 in {', '.join(out)}"
 
 
+def test_supervizorul_vegheaza_fazele_noi():
+    """Punctul 5: fazele de dupa contact sunt in segmentul supravegheat.
+    TOUCHDOWN_DESCENT: monitoarele de coborare; GROUND_HOLD: EKF fara
+    pozitie -> EXIT (VPE pe sol o tine valida); RISEUP: urcare prea rapida,
+    inclinare -> EXIT. Supervizorul ExtNav nu trimite comenzi de mod."""
+    import test_safety as ts
+    from nova.safety import (Action, CLIMB_PHASES, EXTNAV_ENGAGED_PHASES,
+                             EXTNAV_PHASES, MAX_CLIMB_RATE_MS)
+    noi = ('TOUCHDOWN_DESCENT', 'CONTACT', 'GROUND_HOLD', 'RISEUP', 'HOVER_CONFIRM')
+    assert all(p in EXTNAV_PHASES and p in EXTNAV_ENGAGED_PHASES for p in noi)
+    assert 'COMPLETE' not in EXTNAV_PHASES, "COMPLETE preda pilotului"
+    assert CLIMB_PHASES == ('RISEUP', 'HOVER_CONFIRM')
+    rez = []
+    # urcare prea rapida in RISEUP
+    v, sup, exits = ts.build_extnav()
+    t = ts.ruleaza_extnav(v, sup, ['MOVE'] * 3 + ['GROUND_HOLD'] * 3, 100.0)
+    assert sup.armed and not exits
+    v.vz = -(MAX_CLIMB_RATE_MS + 0.5)
+    t = ts.ruleaza_extnav(v, sup, ['RISEUP'] * 3, t)
+    assert not exits, "declansat inainte de CLIMB_RATE_HOLD_S"
+    ts.ruleaza_extnav(v, sup, ['RISEUP'] * 4, t)
+    assert exits and 'climb_rate' in exits[0], exits
+    assert sup.latched == Action.EXIT and v.mode_reqs == []
+    rez.append('urcare 3.5 m/s')
+    # urcare normala (2.5 m/s, WPNAV_SPEED_UP implicit): nimic
+    v, sup, exits = ts.build_extnav()
+    t = ts.ruleaza_extnav(v, sup, ['MOVE'] * 3, 100.0)
+    v.vz = -2.5
+    ts.ruleaza_extnav(v, sup, ['RISEUP'] * 20, t)
+    assert not exits, exits
+    # EKF fara pozitie pe sol -> EXIT
+    v, sup, exits = ts.build_extnav()
+    t = ts.ruleaza_extnav(v, sup, ['MOVE'] * 3 + ['GROUND_HOLD'], 100.0)
+    v.ekf_ok = False
+    ts.ruleaza_extnav(v, sup, ['GROUND_HOLD'] * 3, t)
+    assert exits and 'ekf' in exits[0], exits
+    rez.append('EKF pe sol')
+    # inclinare in RISEUP -> EXIT
+    v, sup, exits = ts.build_extnav()
+    t = ts.ruleaza_extnav(v, sup, ['MOVE'] * 3, 100.0)
+    v.roll = 0.7
+    ts.ruleaza_extnav(v, sup, ['RISEUP'] * 6, t)
+    assert exits and 'tilt' in exits[0], exits
+    rez.append('inclinare')
+    # coborare prea rapida in TOUCHDOWN_DESCENT -> EXIT
+    v, sup, exits = ts.build_extnav()
+    t = ts.ruleaza_extnav(v, sup, ['MOVE'] * 3, 100.0)
+    v.vz = 2.5
+    ts.ruleaza_extnav(v, sup, ['TOUCHDOWN_DESCENT'] * 8, t)
+    assert exits and 'descent_rate' in exits[0], exits
+    rez.append('coborare')
+    return "EXIT la: " + ', '.join(rez) + "; urcare 2.5 m/s tolerata; fara comenzi de mod"
+
+
 TESTS = [
+    ('supervizorul vegheaza fazele noi', test_supervizorul_vegheaza_fazele_noi),
     ('configul secventei si validarea', test_configul_secventei_si_validarea),
     ('parametrii FC ai secventei in fisierele verificate',
      test_parametrii_FC_ai_secventei_in_fisierele_verificate),

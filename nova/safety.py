@@ -758,7 +758,11 @@ class SafetySupervisor:
 #: Phases of nova/extnav_landing.py in which the supervisor is armed.
 #: Positive list, like AUTONOMOUS_PHASES.
 EXTNAV_PHASES = ('GATE_SEARCH', 'ENGAGE', 'MOVE', 'CENTER_CHECK', 'DESCEND',
-                 'FINAL_ALIGN', 'LAND', 'TOUCHDOWN')
+                 'FINAL_ALIGN', 'LAND', 'TOUCHDOWN',
+                 # touchdown without disarming and the climb back (15.1.2):
+                 # the segment goes on after contact, so does supervision
+                 'TOUCHDOWN_DESCENT', 'CONTACT', 'GROUND_HOLD', 'RISEUP',
+                 'HOVER_CONFIRM')
 #: Phases after ENGAGE: the EKF runs on SRC2 with the camera as position
 #: source, and the vehicle is guided on it. Here a lost link or an invalid
 #: EKF position means the guidance has nothing to stand on -> EXIT.
@@ -766,7 +770,14 @@ EXTNAV_PHASES = ('GATE_SEARCH', 'ENGAGE', 'MOVE', 'CENTER_CHECK', 'DESCEND',
 #: ENGAGE is the switch itself, guarded by its own timeout in the state
 #: machine (a reset of position is expected there).
 EXTNAV_ENGAGED_PHASES = ('MOVE', 'CENTER_CHECK', 'DESCEND', 'FINAL_ALIGN',
-                         'LAND', 'TOUCHDOWN')
+                         'LAND', 'TOUCHDOWN', 'TOUCHDOWN_DESCENT', 'CONTACT',
+                         'GROUND_HOLD', 'RISEUP', 'HOVER_CONFIRM')
+#: The climb back to alt_riseup: GUIDED takeoff climbs at WPNAV_SPEED_UP
+#: (2.5 m/s by default, not set in our parameter files). Faster than this,
+#: sustained, is not the takeoff controller any more -> EXIT.
+CLIMB_PHASES = ('RISEUP', 'HOVER_CONFIRM')
+MAX_CLIMB_RATE_MS = 3.0
+CLIMB_RATE_HOLD_S = 0.5
 #: EKF_STATUS_REPORT is requested at 5 Hz (vehicle.EKF_HZ). Older than
 #: this, or never received while engaged, the position is unknown - and
 #: unknown is not valid.
@@ -799,6 +810,8 @@ class ExtNavSupervisor(SafetySupervisor):
         self.geometry_phases = EXTNAV_ENGAGED_PHASES
         self.ekf_report_max_age_s = EKF_REPORT_MAX_AGE_S
         self._engaged_since = None
+        self.max_climb_rate_ms = MAX_CLIMB_RATE_MS
+        self._climb_since = None
 
     def update(self, now=None, detection_age_s=None, phase='IDLE',
                miss_streak=None):
@@ -859,7 +872,8 @@ class ExtNavSupervisor(SafetySupervisor):
         worst, monitor, detail = Action.NONE, None, ''
         for mon in (self._mon_override, self._mon_link, self._mon_ekf,
                     self._mon_threads, self._mon_radius, self._mon_ceiling,
-                    self._mon_descent_rate, self._mon_tilt):
+                    self._mon_descent_rate, self._mon_climb_rate,
+                    self._mon_tilt):
             act, name, why = mon(now, None, phase)
             if act > worst:
                 worst, monitor, detail = act, name, why
@@ -867,6 +881,20 @@ class ExtNavSupervisor(SafetySupervisor):
             self._trigger_exit(now, monitor, detail, phase)
             return Action.EXIT
         return Action.NONE
+
+    def _mon_climb_rate(self, now, age, phase):
+        """The climb back (RISEUP, HOVER_CONFIRM): faster than
+        max_climb_rate_ms for CLIMB_RATE_HOLD_S -> EXIT. NED: up is -vz."""
+        if phase not in CLIMB_PHASES or -self.v.vz <= self.max_climb_rate_ms:
+            self._climb_since = None
+            return Action.NONE, None, ''
+        if self._climb_since is None:
+            self._climb_since = now
+        if now - self._climb_since >= CLIMB_RATE_HOLD_S:
+            return (Action.EXIT, 'climb_rate',
+                    f"urcare {-self.v.vz:.2f} m/s de {now - self._climb_since:.2f} s "
+                    f"(prag {self.max_climb_rate_ms:.1f} m/s)")
+        return Action.NONE, None, ''
 
     def _mon_threads(self, now, age, phase):
         """Faza 3, pe ExtNav: orice fir mort dupa ENGAGE e EXIT - un fir
