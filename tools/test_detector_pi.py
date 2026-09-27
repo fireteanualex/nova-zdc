@@ -718,6 +718,27 @@ def test_ratarile_consecutive_pe_clasa_din_productie():
     return f"contor pe cadre: {urme}"
 
 
+def test_F4_heartbeat_bate_si_cu_detectia_inactiva():
+    """Regula (CLAUDE.md §5.68): heartbeat-ul detectiei bate si cand
+    `active` e stins. Un fir care citeste cadre fara sa detecteze e viu,
+    nu mort - altfel legarea lui `active` de AUX8 ar face supervizorul sa
+    vada "fir mort" la fiecare AUX jos."""
+    cal = synthetic_calibration()
+    frame, _ = render(cal, R_FLAT, (0.0, 0.0, 6.0))
+    pd = PiDetector(ArraySource([frame] * 6), ArucoMarkerDetector(cal),
+                    threaded=True)
+    pd.active.clear()
+    pd.start()
+    t0 = time.time()
+    while time.time() - t0 < 5.0 and not pd.exhausted:
+        time.sleep(0.005)
+    pd.stop()
+    assert pd.heartbeat.count == 6, pd.heartbeat.count
+    assert pd.det.n_frames == 0 and pd.poll(time.monotonic()) == []
+    assert pd.latest.get() == (None, None)
+    return "6 cadre citite inactiv: 6 batai, 0 detectii"
+
+
 def test_F4_firul_de_detectie_publica_bate_si_asculta_flagul():
     """Faza 4 (refactor/threads). Firul publica ultima detectie in Latest
     cu timpul CAPTURII, bate heartbeat-ul doar dupa un cadru procesat,
@@ -1144,6 +1165,8 @@ def test_luminozitatea_ajunge_in_statistici():
 
 
 TESTS = [
+    ('F4: heartbeat-ul bate si cu detectia inactiva',
+     test_F4_heartbeat_bate_si_cu_detectia_inactiva),
     ('expunerea se masoara apoi se blocheaza',
      test_expunerea_se_masoara_apoi_se_blocheaza),
     ('luminozitatea ajunge in statistici',
