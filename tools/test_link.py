@@ -640,7 +640,215 @@ def test_ExtNav_EKF_STATUS_REPORT_se_cere_si_se_citeste():
     return f"EKF_STATUS_REPORT cerut la {EKF_HZ} Hz; None / True / False din flags"
 
 
+# --- teste: firul I/O (faza 2, refactor/threads) ------------------------------
+
+def make_threaded(link=None):
+    """Vehicle cu fir I/O configurat dar NEPORNIT: testele pasesc firul de
+    mana cu _io_step(), ca ordinea sa fie deterministă."""
+    link = link or FakeLink()
+    h = Harness(link)
+    vechi = vehicle_mod.mavutil.mavlink_connection
+    vehicle_mod.mavutil.mavlink_connection = h
+    try:
+        v = Vehicle('/dev/fake0', baud=921600, threaded=True)
+        v.m = h('/dev/fake0', baud=921600)
+        v.link_verbose = False
+        v._note_heartbeat()
+    finally:
+        vehicle_mod.mavutil.mavlink_connection = vechi
+    return v, link
+
+
+def test_IO_urgent_pleaca_inaintea_lui_TX():
+    """Coada URGENT (supervizor) se goleste INAINTEA cozii TX si a mesajelor
+    periodice, oricare ar fi ordinea in care au fost puse."""
+    from nova.vehicle import MODE_BRAKE, MODE_LAND
+    v, link = make_threaded()
+    assert v.send_landing_target(0.1, 0.2, 5.0) is True         # periodic
+    assert v.request_mode(MODE_LAND) is True                    # TX
+    assert v.send_vision_position_estimate(1, 0, 0, -5, 0, 0, 0) is True
+    assert v.request_mode(MODE_BRAKE, urgent=True) is True      # URGENT
+    assert link.sent == [], "a trimis inainte ca firul I/O sa paseasca"
+    v._io_step(100.0)
+    nume = [n for n, _a, _k in link.sent_args]
+    moduri = [a[5] for n, a, _k in link.sent_args if n == 'command_long_send']
+    assert nume[0] == 'command_long_send' and moduri[0] == MODE_BRAKE, nume
+    assert moduri == [MODE_BRAKE, MODE_LAND], moduri
+    assert nume.index('landing_target_send') > nume.index('command_long_send')
+    assert nume[-2:] in (['landing_target_send', 'vision_position_estimate_send'],
+                         ['vision_position_estimate_send', 'landing_target_send'])
+    assert v.n_lt == 0, "contorul creste in fatada abia la pump()"
+    v.pump()
+    assert v.n_lt == 1 and v.n_vpe == 1
+    return "URGENT -> TX -> periodice; contoarele prin instantaneu"
+
+
+def test_IO_coada_plina_pentru_comenzi_inlocuire_pentru_periodice():
+    """Comenzile nu se pierd tacut: coada plina = False + eroare logata.
+    Mesajele periodice au un singur loc pe tip: cel mai nou castiga."""
+    import logging
+    from nova.vehicle import QUEUE_TX
+
+    class _H(logging.Handler):
+        def __init__(self):
+            super().__init__()
+            self.n = 0
+
+        def emit(self, r):
+            self.n += 1
+
+    h = _H()
+    vehicle_mod.log.addHandler(h)
+    try:
+        v, link = make_threaded()
+        for i in range(QUEUE_TX):
+            assert v.send_takeoff(1.0 + i) is True
+        assert v.send_takeoff(99.0) is False, "coada plina acceptata tacut"
+        assert v.n_queue_full == 1 and h.n == 1
+        # periodice: trei VPE, pleaca doar ultimul
+        for k in range(3):
+            assert v.send_vision_position_estimate(k, k, 0, -5, 0, 0, 0) is True
+        v._io_step(100.0)
+        vpe = [a for n, a, _k in link.sent_args if n == 'vision_position_estimate_send']
+        assert len(vpe) == 1 and vpe[0][0] == 2, vpe
+        dec = [a for n, a, _k in link.sent_args if n == 'command_long_send']
+        assert len(dec) == QUEUE_TX
+        v.pump()
+        assert v.n_vpe == 1
+    finally:
+        vehicle_mod.log.removeHandler(h)
+    return f"comanda {QUEUE_TX + 1} refuzata si logata; 3 VPE -> 1 trimis (ultimul)"
+
+
+def test_IO_timeout_pe_confirmarea_de_mod():
+    """Supervizorul cere BRAKE prin coada; FC-ul (fals) ramane in LAND.
+    Reincercarile si mode_fail au aceleasi cifre ca in modul sincron:
+    MODE_RETRY_MAX comenzi la MODE_CONFIRM_S, apoi nimic."""
+    from nova.safety import MODE_RETRY_MAX, MODE_CONFIRM_S, Action
+    v, link = make_threaded()
+    v._on_position(100.0, 0.0, 0.0, -6.0, 0.0, 0.0, 0.0)   # firul I/O: pozitie
+    v._io_step(100.0)                              # HEARTBEAT fals: LAND (9)
+    v.pump()
+    assert v.mode == 9 and v.have_pos, (v.mode, v.have_pos)
+    sup = SafetySupervisor(v, verbose=False)
+    sup.auto_arm = False
+    sup.arm(100.0, 0.0, 0.0, 0.0)
+    t = 100.0
+    for i in range(30):
+        sup.update(t, 0.9, 'DESCEND_TRACK')        # detectie veche -> BRAKE
+        v._io_step(t)
+        v.pump()
+        t += MODE_CONFIRM_S + 0.01
+    braki = [a for n, a, _k in link.sent_args
+             if n == 'command_long_send' and a[5] == 17]
+    assert len(braki) == MODE_RETRY_MAX, len(braki)
+    assert any(e.monitor == 'mode_fail' for e in sup.log)
+    assert sup.latched == Action.BRAKE and v.mode == 9
+    return f"{MODE_RETRY_MAX} BRAKE prin coada, apoi mode_fail; FC ramas in LAND"
+
+
+def test_IO_instantaneul_prin_pump():
+    """Firul I/O scrie in starea lui; fatada se schimba DOAR la pump(),
+    deci o iteratie a buclei vede o singura telemetrie."""
+    class HB:
+        base_mode = 128
+        custom_mode = 5
+
+        def get_type(self):
+            return 'HEARTBEAT'
+
+        def get_srcComponent(self):
+            return 1
+
+    class L(FakeLink):
+        def __init__(self):
+            super().__init__()
+            self.msgs = [HB()]
+
+        def recv_match(self, type=None, blocking=False, timeout=None):  # noqa: A002
+            return self.msgs.pop(0) if self.msgs else None
+
+    v, link = make_threaded(L())
+    assert v.mode is None and not v.armed
+    v._io_step(100.0)
+    assert v.mode is None, "fatada s-a schimbat fara pump()"
+    snap, t = v.state.get()
+    assert snap.mode == 5 and snap.armed and t == 100.0
+    v.pump()
+    assert v.mode == 5 and v.armed
+    # istoricul de atitudine e in buffer-ul sigur, citibil imediat
+    v._on_attitude(100.0, 0.1, 0.2, 0.3)
+    assert v.attitude_at(100.0) == (0.1, 0.2, 0.3)
+    assert v.att_hist[-1][3] == 0.3
+    return "starea firului -> Latest -> fatada la pump(); atitudinea in buffer"
+
+
+def test_IO_niciun_apel_pe_mav_in_afara_firului():
+    """Regula 1: un singur fir atinge serialul. Verificat pe SURSA (cine
+    mai scrie `.m.mav` / `recv_match`) si la RUNTIME (o scriere din alt fir
+    decat cel I/O e refuzata cu eroare)."""
+    import ast
+    import threading
+    radacina = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # 1. in vehicle.py, `self.m.mav` doar in cele trei locuri ale firului I/O
+    src = open(os.path.join(radacina, 'nova', 'vehicle.py')).read()
+    tree = ast.parse(src)
+    unde = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            text = ast.get_source_segment(src, node) or ''
+            if 'self.m.mav' in text or 'recv_match(' in text:
+                unde.add(node.name)
+    assert unde == {'_request_streams', '_probe_distance_api', '_write',
+                    '_recv_batch', '_try_reopen'}, sorted(unde)
+    # 2. in restul codului de zbor, nimeni nu atinge mav / recv_match.
+    #    fence.py: necablat in zbor, foloseste protocolul de misiune direct
+    #    - de rutat prin Vehicle INAINTE de a fi cablat (raport, in afara
+    #    perimetrului). nova_sim.py e simulatorul, sincron, un singur fir.
+    exceptii = {'vehicle.py', 'fence.py'}
+    rele = []
+    for d, fisiere in (('nova', os.listdir(os.path.join(radacina, 'nova'))),
+                       ('tools', ['nova_pi.py'])):
+        for f in fisiere:
+            if not f.endswith('.py') or f in exceptii:
+                continue
+            text = open(os.path.join(radacina, d, f)).read()
+            for tipar in ('.m.mav.', 'recv_match(', '.m.close('):
+                if tipar in text:
+                    rele.append(f"{d}/{f}: {tipar}")
+    assert not rele, rele
+    # 3. runtime: cu firul I/O pornit, o scriere din alt fir e refuzata
+    v, link = make_threaded()
+    v.start_io()
+    try:
+        time.sleep(0.05)
+        assert v.io_heartbeat.count > 0, "firul I/O nu bate"
+        try:
+            v._write('command_long_send', (1, 1, 176, 0, 1, 9, 0, 0, 0, 0, 0), {})
+            assert False, "scriere din firul principal acceptata"
+        except RuntimeError as e:
+            assert 'I/O' in str(e)
+        # iar prin coada ajunge: de aici, nu din firul principal
+        n = len(link.sent)
+        assert v.request_mode(9) is True
+        t0 = time.monotonic()
+        while len(link.sent) == n and time.monotonic() - t0 < 1.0:
+            time.sleep(0.005)
+        assert len(link.sent) > n, "comanda din coada nu a plecat"
+    finally:
+        v.close()
+    assert not v._io_thread and not threading.current_thread() is None
+    return "sursa: mav doar in 5 metode ale firului; runtime: scriere din alt fir refuzata"
+
+
 TESTS = [
+    ('I/O: URGENT inaintea lui TX', test_IO_urgent_pleaca_inaintea_lui_TX),
+    ('I/O: coada plina pentru comenzi, inlocuire pentru periodice',
+     test_IO_coada_plina_pentru_comenzi_inlocuire_pentru_periodice),
+    ('I/O: timeout pe confirmarea de mod', test_IO_timeout_pe_confirmarea_de_mod),
+    ('I/O: instantaneul prin pump()', test_IO_instantaneul_prin_pump),
+    ('I/O: niciun apel pe mav in afara firului',
+     test_IO_niciun_apel_pe_mav_in_afara_firului),
     ('ExtNav: istoricul de atitudine si pozitie la captura',
      test_ExtNav_istoricul_de_atitudine_si_pozitie_la_momentul_capturii),
     ('ExtNav: VPE si consemnul de pozitie pleaca doar cu legatura vie',

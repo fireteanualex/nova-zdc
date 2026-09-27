@@ -302,8 +302,12 @@ class ExtNavLanding:
     def _statustext(self, text, warn=True):
         sev = (mavutil.mavlink.MAV_SEVERITY_WARNING if warn
                else mavutil.mavlink.MAV_SEVERITY_NOTICE)
+        # Prin Vehicle, nu direct pe `mav`: portul e al firului I/O (faza 2).
+        fn = getattr(self.v, 'send_statustext', None)
+        if fn is None:
+            return
         try:
-            self.v.m.mav.statustext_send(sev, text[:50].encode('ascii', 'replace'))
+            fn(sev, text[:50])
         except Exception:                                   # noqa: BLE001
             pass
 

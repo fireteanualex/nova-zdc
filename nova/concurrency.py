@@ -83,14 +83,17 @@ class AttitudeBuffer:
     Pushes come from the I/O thread, reads from the main thread: one
     lock, held only for the copy."""
 
-    def __init__(self, maxlen=400, max_gap_s=0.25):
+    def __init__(self, maxlen=400, max_gap_s=0.25, wrap=(0, 1, 2)):
         self._lock = threading.Lock()
         self._buf = collections.deque(maxlen=maxlen)
         self.max_gap_s = float(max_gap_s)
+        #: Which value indices are angles (shortest arc). The default is an
+        #: attitude; wrap=() makes the same buffer hold positions.
+        self.wrap = tuple(wrap)
 
-    def push(self, t, roll, pitch, yaw):
+    def push(self, t, *values):
         with self._lock:
-            self._buf.append((float(t), float(roll), float(pitch), float(yaw)))
+            self._buf.append((float(t),) + tuple(float(v) for v in values))
 
     def __len__(self):
         with self._lock:
@@ -100,10 +103,15 @@ class AttitudeBuffer:
         with self._lock:
             return self._buf[-1] if self._buf else None
 
+    def snapshot(self):
+        """A list copy of the history (oldest first)."""
+        with self._lock:
+            return list(self._buf)
+
     def at(self, t):
         with self._lock:
             hist = list(self._buf)          # C-level copy, atomic under the GIL
-        return interpolate(hist, t, wrap=(0, 1, 2), max_gap_s=self.max_gap_s)
+        return interpolate(hist, t, wrap=self.wrap, max_gap_s=self.max_gap_s)
 
 
 def wrap_pi(a):

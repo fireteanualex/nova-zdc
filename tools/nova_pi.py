@@ -168,7 +168,7 @@ def anunta_modul(vehicle, gate, canal, prag):
     sev = (mavutil.mavlink.MAV_SEVERITY_WARNING if gate.monitor
            else mavutil.mavlink.MAV_SEVERITY_NOTICE)
     try:
-        vehicle.m.mav.statustext_send(sev, text.encode('ascii', 'replace'))
+        vehicle.send_statustext(sev, text)
     except Exception:                                           # noqa: BLE001
         pass
 
@@ -410,7 +410,9 @@ def main():
         return 2
 
     baud = a.baud if not a.conn.startswith(('udp', 'tcp')) else None
-    vehicle = Vehicle(a.conn, baud=baud).connect()
+    # Faza 2 (refactor/threads): portul e al firului I/O al lui Vehicle;
+    # bucla principala vede instantanee si trimite prin cozi.
+    vehicle = Vehicle(a.conn, baud=baud, threaded=True).connect()
 
     override = OverrideMonitor(vehicle)
 
@@ -419,9 +421,8 @@ def main():
             ecran.note_handover(False, reason, time.time())
         print(f"\n!! HANDOVER REFUZAT: {reason}\n")
         try:
-            vehicle.m.mav.statustext_send(
-                mavutil.mavlink.MAV_SEVERITY_WARNING,
-                f"NOVA refuz: {reason}"[:50].encode('ascii', 'replace'))
+            vehicle.send_statustext(mavutil.mavlink.MAV_SEVERITY_WARNING,
+                                    f"NOVA refuz: {reason}")
         except Exception:                                   # noqa: BLE001
             pass
 
@@ -469,9 +470,9 @@ def main():
             # the FC, like the reject, so it reaches the OSD/GCS if there is
             # telemetry; nothing depends on it arriving.
             try:
-                vehicle.m.mav.statustext_send(
+                vehicle.send_statustext(
                     mavutil.mavlink.MAV_SEVERITY_WARNING,
-                    b"NOVA ABORT pilot: LOITER, throttle la mijloc")
+                    "NOVA ABORT pilot: LOITER, throttle la mijloc")
             except Exception:                               # noqa: BLE001
                 pass
 
@@ -551,6 +552,7 @@ def main():
     finally:
         pv.close()
         detector.stop()
+        vehicle.close()
         r = rec.raport()
         if r['salvate']:
             print(f"[bord] 8.3.3: {', '.join(sorted(r['salvate'].values()))}")
