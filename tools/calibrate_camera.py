@@ -8,6 +8,11 @@ config/camera_pi.yaml.
     python3 tools/calibrate_camera.py --live --target charuco \
         --cols 9 --rows 6 --square-mm 37 --marker-mm 27.75
 
+    # nativ in modul altui preset (fluxul = dimensiunea modului, fara
+    # scalare ISP; expunerea si focusul din preset):
+    python3 tools/calibrate_camera.py --live --preset full1280 --target charuco \
+        --cols 9 --rows 6 --square-mm 37 --marker-mm 27.75
+
     # tabla de sah clasica, dintr-un director de imagini:
     python3 tools/calibrate_camera.py --from-dir ~/calib_imgs \
         --target checker --cols 8 --rows 5 --square-mm 37
@@ -48,9 +53,10 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nova.detector_pi import (CameraCalibration, MAX_REPROJ_ERR_PX,  # noqa: E402
-                              ImageDirSource, geometric_focal_px,
-                              parse_rect, parse_size)
+from nova.detector_pi import (CAMERA_PRESETS, CameraCalibration,  # noqa: E402
+                              CameraSettings, MAX_REPROJ_ERR_PX,
+                              ImageDirSource, camera_settings,
+                              geometric_focal_px, parse_rect, parse_size)
 
 DEFAULT_OUT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -367,9 +373,12 @@ def report(cal, seen, target=None, n_total=None):
     if dropped:
         print(f"  poze respinse ca aberante: {len(dropped)} "
               f"(indici {dropped}) - colt localizat gresit sau cadru miscat")
-    geo = CameraCalibration.geometric(cal.width, cal.height)
-    print(f"  fata de focala geometrica {geo.fx:.1f} px: "
-          f"fx {cal.fx / geo.fx - 1:+.1%}, fy {cal.fy / geo.fy - 1:+.1%}")
+    # Same reference as the save guard: the nominal field over the part of
+    # the sensor the images cover (a crop mode is not a narrower lens).
+    _mode, crop, _legacy = cal.recorded_geometry()
+    geo_f = geometric_focal_px(cal.width, crop)
+    print(f"  fata de focala geometrica {geo_f:.1f} px: "
+          f"fx {cal.fx / geo_f - 1:+.1%}, fy {cal.fy / geo_f - 1:+.1%}")
     print(f"  centru optic la ({cal.cx - cal.width / 2:+.1f}, "
           f"{cal.cy - cal.height / 2:+.1f}) px de centrul cadrului")
     print(f"  distorsiune k1={cal.dist[0]:+.4f} k2={cal.dist[1]:+.4f}"
@@ -378,6 +387,68 @@ def report(cal, seen, target=None, n_total=None):
     if not all(all(r) for r in seen):
         print("  ATENTIE: celule nevizitate - distorsiunea de acolo e "
               "extrapolata, nu masurata. Marginile conteaza cel mai mult.")
+
+
+def live_settings(cfg, preset=None, sensor_mode=None, size=None):
+    """The CameraSettings a live calibration opens the camera with.
+
+    Everything (exposure mode, AWB, LensPosition) from camera_settings(cfg,
+    preset) - the same keys and presets as the flight - except the stream:
+    by default the sensor mode's OWN size, so the calibration is native to
+    the mode (no ISP scaling; calibration_for derives / scales from it for
+    any stream). `size` asks for another stream, `sensor_mode` overrides
+    the preset's mode. The focus matters most: a calibration is valid only
+    at the LensPosition it was made at (recorded as meta lens_position)."""
+    s = camera_settings(cfg, preset)
+    values = {k: getattr(s, k) for k in CameraSettings.FIELDS}
+    origin = dict(s.origin)
+    if sensor_mode is not None:
+        values['sensor_mode'] = tuple(parse_size(sensor_mode))
+        origin['sensor_mode'] = '--sensor-mode'
+    values['output_size'] = (tuple(parse_size(size)) if size is not None
+                             else tuple(values['sensor_mode']))
+    origin['output_size'] = '--size' if size is not None else 'calibrare nativa'
+    return CameraSettings(values, preset=s.preset, origin=origin)
+
+
+def _meta_value(v):
+    """A meta value CameraCalibration.save can write (string or number)."""
+    if isinstance(v, (tuple, list)):
+        return 'x'.join(str(int(x)) for x in v)
+    return v
+
+
+def camera_meta(settings):
+    """The preset and every camera setting, as calibration meta keys
+    (meta_preset, meta_camera_<field> in the YAML). Strings / numbers
+    only; None values are skipped by save()."""
+    meta = {'preset': settings.preset or '-'}
+    for k in CameraSettings.FIELDS:
+        meta['camera_' + k] = _meta_value(getattr(settings, k))
+    return meta
+
+
+def dir_camera_meta(path):
+    """The same keys for images recorded by tools/record_frames.py: the
+    preset and settings from its meta.json, and the LensPosition the frames
+    were taken at. {} when there is no meta.json (older recordings)."""
+    import json
+    mp = os.path.join(path, 'meta.json')
+    if not os.path.exists(mp):
+        return {}
+    with open(mp) as f:
+        meta = json.load(f)
+    out = {}
+    if 'preset' in meta:
+        out['preset'] = meta['preset'] or '-'
+    for k, v in (meta.get('settings') or {}).items():
+        if k in CameraSettings.FIELDS and v is not None:
+            out['camera_' + k] = _meta_value(v)
+    lens = [fr.get('LensPosition') for fr in meta.get('frames') or []
+            if fr.get('LensPosition') is not None]
+    if lens:
+        out['lens_position'] = float(np.median(lens))
+    return out
 
 
 def geometry_for_dir(path, sensor_mode=None, scaler_crop=None):
@@ -451,12 +522,20 @@ def draw_overlay(gray, corners, n_dets, cov, total, acceptat):
 
 
 def collect_live(target, min_images, max_images, show_window=True,
-                 preview_scale=0.5, sensor_mode=None, size=None):
+                 preview_scale=0.5, sensor_mode=None, size=None,
+                 settings=None):
+    """(detectii, seturi_de_colturi, dimensiune, LensPosition, geometrie).
+
+    `settings` (live_settings): the camera exactly as configured. Without
+    it, the older call: `sensor_mode` + `size`, locked auto exposure."""
     from nova.detector_pi import PiCameraSource
     from nova.preview import bench_preview
     # 27.09.2026: an explicit sensor mode, read back; the geometry it
     # returns is written into the calibration file.
-    src = PiCameraSource(size=size, sensor_mode=sensor_mode, verbose=True)
+    if settings is not None:
+        src = PiCameraSource(settings=settings, verbose=True)
+    else:
+        src = PiCameraSource(size=size, sensor_mode=sensor_mode, verbose=True)
     geometry = src.geometry
     # H3, contextul 1: unealta de banc -> fullscreen. Operatorul trebuie sa
     # vada colturile detectate ca sa stie daca a acoperit marginile cadrului,
@@ -514,15 +593,19 @@ def collect_live(target, min_images, max_images, show_window=True,
     finally:
         pv.close()
         # LensPosition-ul e parte din calibrare: focusul schimba intrinsecii.
-        try:
-            lens = src.picam2.capture_metadata().get('LensPosition')
-        except Exception:                                   # noqa: BLE001
-            lens = None
+        # The last frame's own metadata first (what the images were taken
+        # at), a fresh capture only if no frame was read.
+        lens = (src.last_metadata or {}).get('LensPosition')
+        if lens is None:
+            try:
+                lens = src.picam2.capture_metadata().get('LensPosition')
+            except Exception:                               # noqa: BLE001
+                lens = None
         src.close()
     return dets, sets, size, lens, geometry
 
 
-def main():
+def main(argv=None):
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -554,10 +637,14 @@ def main():
     # (sensor mode + ScalerCrop); nova.detector_pi.calibration_for uses it
     # to decide what may be scaled or derived.
     p.add_argument('--config', default=None)
+    p.add_argument('--preset', choices=sorted(CAMERA_PRESETS), default=None,
+                   help='--live: presetul camerei, ca la zbor (implicit '
+                   '`camera_preset` + cheile camerei din config); fluxul e '
+                   'dimensiunea modului, daca nu dai --size')
     p.add_argument('--sensor-mode', type=int, nargs=2, metavar=('W', 'H'),
                    default=None, help='--live: modul senzorului (implicit '
-                   '`sensor_mode` din config); --from-dir: modul in care au '
-                   'fost facute pozele')
+                   'cel al presetului / config-ului); --from-dir: modul in '
+                   'care au fost facute pozele')
     p.add_argument('--size', type=int, nargs=2, metavar=('W', 'H'),
                    default=None, help='--live: fluxul (implicit dimensiunea '
                    'modului: calibrare nativa, fara scalare ISP)')
@@ -565,7 +652,7 @@ def main():
                    metavar=('X', 'Y', 'W', 'H'), default=None,
                    help='--from-dir: ScalerCrop-ul pozelor (implicit din '
                    'meta.json scris de record_frames.py)')
-    a = p.parse_args()
+    a = p.parse_args(argv)
 
     if a.square_mm is None:
         p.error('--square-mm e obligatoriu: latura MASURATA cu rigla dupa '
@@ -579,6 +666,7 @@ def main():
     print(f"  tinta: {target.describe()}")
 
     lens = None
+    cam_meta = {}
     if a.from_dir:
         try:
             geom_mode, geom_crop = geometry_for_dir(a.from_dir, a.sensor_mode,
@@ -586,17 +674,24 @@ def main():
         except ValueError as e:
             print(f"\n  REFUZ: {e}\n")
             return 1
+        cam_meta = dir_camera_meta(a.from_dir)
+        lens = cam_meta.pop('lens_position', None)
         dets, sets, size = collect_from_dir(a.from_dir, target)
     elif a.live:
         from nova import config as nova_config
-        from nova.detector_pi import sensor_mode_from_config
-        mode = (tuple(a.sensor_mode) if a.sensor_mode
-                else sensor_mode_from_config(nova_config.load(a.config)))
+        try:
+            settings = live_settings(nova_config.load(a.config), a.preset,
+                                     a.sensor_mode, a.size)
+        except ValueError as e:                  # CameraModeError
+            print(f"\n  REFUZ: {e}\n")
+            return 1
+        print(f"  camera: {settings.describe()}")
         dets, sets, size, lens, geometry = collect_live(
             target, a.min_images, a.max_images,
             show_window=not a.no_window, preview_scale=a.preview_scale,
-            sensor_mode=mode, size=tuple(a.size) if a.size else None)
+            settings=settings)
         geom_mode, geom_crop = geometry.sensor_mode, geometry.scaler_crop
+        cam_meta = camera_meta(settings)
     else:
         p.error('alege --from-dir sau --live')
 
@@ -619,6 +714,9 @@ def main():
         'lens_position': lens,
         'calibrated_at': time.strftime('%Y-%m-%d %H:%M:%S'),
     })
+    # The camera settings the images were taken with (preset, exposure
+    # mode, AWB, focus): a calibration is only valid at its LensPosition.
+    cal.meta.update(cam_meta)
     cal.set_geometry(geom_mode, geom_crop)
     print(f"  geometrie: mod {geom_mode[0]}x{geom_mode[1]}, ScalerCrop "
           f"{tuple(geom_crop)}, imagini {size[0]}x{size[1]}")
