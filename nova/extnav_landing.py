@@ -113,7 +113,13 @@ TOUCHDOWN_BELOW_M = 0.5      # the ramp ends this far below the ground
 GROUND_VPE_S = 0.1           # vision on the ground: 10 Hz, like detections
 TAKEOFF_RETRY_S = 3.0        # still on the ground this long -> takeoff again
 TAKEOFF_TRIES = 2
-HOVER_CONFIRM_TIMEOUT_S = 20.0
+HOVER_CONFIRM_TIMEOUT_S = 30.0
+#: The one correction in HOVER_CONFIRM ends when the EKF is on (0, 0),
+#: stable AND agrees with a fresh detection within half the tolerance - the
+#: EKF absorbs vision slowly (VISO_POS_M_NSE 0.5 m, ~3 detections/s): in
+#: SITL 4.5.7 (27.09.2026) it said "there" while the camera still saw
+#: 0.37 m. Not converged in this long -> EXIT.
+HOVER_CORRECTION_TIMEOUT_S = 10.0
 THROTTLE_LOW_PWM = 1100      # pilot's throttle at the bottom: disarm risk
 YAW_ALIGN_TOL_DEG = 5.0
 
@@ -312,6 +318,7 @@ class ExtNavLanding:
         self._confirm_since = None
         self._corrected = False
         self._correcting = False
+        self._correct_since = None
         self._throttle_warned = False
         self.n_ground_vpe = 0
 
@@ -967,12 +974,20 @@ class ExtNavLanding:
                                  getattr(self.v, 'vy', 0.0)) < STILL_SPEED_MS)
         tol = self.tol_now()
         if self._correcting:
-            # one correction: the fresh detection moved the EKF onto the
-            # marker frame again; holding (0, 0) brings the vehicle over it
-            if stable and math.hypot(self.v.x, self.v.y) < tol:
+            # one correction: the fresh detections pull the EKF onto the
+            # marker frame; holding (0, 0) brings the vehicle over it. Done
+            # only when the EKF also AGREES with a fresh detection - "EKF
+            # on (0, 0)" alone may just be the EKF not having caught up
+            ec = self._fresh_est(self._correct_since + 0.5)
+            agree = (ec is not None
+                     and math.hypot(self.v.x - ec.x, self.v.y - ec.y) < 0.5 * tol)
+            if stable and math.hypot(self.v.x, self.v.y) < tol and agree:
                 self._correcting = False
                 self._confirm_since = None
                 self._open_window(now)
+            elif now - self._correct_since > HOVER_CORRECTION_TIMEOUT_S:
+                self.request_exit(f"corectia nu a convers in "
+                                  f"{HOVER_CORRECTION_TIMEOUT_S:.0f} s")
             return
         e = self._fresh_est(self.window_since)
         if e is not None and e.lateral_m >= tol:
@@ -981,6 +996,7 @@ class ExtNavLanding:
                                   f"({e.lateral_m:.2f} m >= {tol:.2f})")
                 return
             self._corrected = self._correcting = True
+            self._correct_since = now
             self._emit('hover_correction', lateral_m=e.lateral_m, tol=tol)
             return
         if e is not None and stable:

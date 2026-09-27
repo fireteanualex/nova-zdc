@@ -24,10 +24,13 @@ from nova import config as nova_config                          # noqa: E402
 def test_configul_secventei_si_validarea():
     """Implicitul din prompt; touchdown_hold_s < 1 s refuzat (15.1.3);
     alt_riseup < 5 m doar avertisment (15.1.2); nova.json = implicitul."""
-    v, w = nova_config.touchdown_settings(nova_config.load())
+    # the code's defaults are the prompt's; config/nova.json may differ
+    # (the team tests at low altitude first: alt_riseup 2.5 -> a warning)
+    v, w = nova_config.touchdown_settings(nova_config.DEFAULTS)
     assert v == {'alt_riseup': 5.5, 'touchdown_speed': 0.4, 'touchdown_hold_s': 1.5,
                  'riseup_timeout_s': 15.0, 'hover_confirm_s': 1.0}, v
     assert w == [], w
+    nova_config.touchdown_settings(nova_config.load())      # the file validates
     try:
         nova_config.touchdown_settings({'touchdown_hold_s': 0.8})
         assert False, "0.8 s acceptat"
@@ -220,6 +223,25 @@ def test_hover_confirm_offset_mare_corectat_o_data():
     return f"1.2 m -> o corectie ({cor[0]['lateral_m']:.2f} m) -> DONE; a doua -> EXIT"
 
 
+def test_hover_confirm_cu_EKF_care_absoarbe_lent():
+    """Ce a aratat SITL-ul 4.5.7 (27.09.2026): EKF-ul absoarbe viziunea cu
+    intarziere, deci dupa corectie "EKF pe (0,0)" nu inseamna "deasupra
+    markerului". Corectia se incheie doar cand EKF-ul e si de acord cu o
+    detectie proaspata; cu un EKF lent (tau 3 s) secventa ajunge la DONE,
+    nu la EXIT."""
+    from nova.extnav_landing import Phase
+    app = _app()
+    _pana_la(app, Phase.HOVER_CONFIRM)
+    app.v.bias_tau = 3.0
+    app.v.p[0] += 0.8
+    st = app.run(60.0, stop=(Phase.DONE, Phase.ABORT))
+    assert st == Phase.DONE, (st, app.states, app.sm.exit_reason)
+    import math
+    assert len(app.ev('hover_correction')) == 1
+    assert math.hypot(*app.v.p) < app.sm.tol_now(), math.hypot(*app.v.p)
+    return f"EKF lent (tau 3 s), deriva 0.8 m -> o corectie, convergenta, DONE"
+
+
 def test_abort_in_fiecare_faza_noua():
     """AUX jos in fiecare faza noua: EXIT ordonat (SRC1, apoi LOITER), fara
     RTL; pe sol la fel (LOITER pe sol = pilotul preia)."""
@@ -279,6 +301,7 @@ TESTS = [
      test_timeout_de_urcare_si_decolare_care_nu_porneste),
     ('HOVER_CONFIRM: offset mare corectat o data',
      test_hover_confirm_offset_mare_corectat_o_data),
+    ('HOVER_CONFIRM cu EKF care absoarbe lent', test_hover_confirm_cu_EKF_care_absoarbe_lent),
     ('abort in fiecare faza noua', test_abort_in_fiecare_faza_noua),
     ('VPE pe sol tine EKF-ul; fara el pica', test_VPE_pe_sol_tine_EKF_si_fara_el_pica),
     ('throttle la minim pe sol avertizeaza', test_throttle_la_minim_pe_sol_avertizeaza),

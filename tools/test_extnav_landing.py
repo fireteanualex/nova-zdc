@@ -83,6 +83,11 @@ class SimVeh(Vehicle):
         self.vpe_t = None
         self.vpe_timeout_s = 7.0
         self.climb_ms = 1.0
+        #: None = the EKF takes each vision fix at once; a number = it
+        #: converges to it with this time constant (SITL 4.5.7 shows a lag
+        #: of seconds with VISO_POS_M_NSE 0.5 and ~3 fixes/s)
+        self.bias_tau = None
+        self.bias_target = None
         self.params = {'EK3_SRC2_POSXY': 6, 'EK3_SRC2_VELXY': 0,
                        'EK3_SRC2_POSZ': 1, 'EK3_SRC2_VELZ': 0,
                        'EK3_SRC2_YAW': 1, 'EK3_SRC_OPTIONS': 0,
@@ -105,7 +110,11 @@ class SimVeh(Vehicle):
                 outer.vpe_t = outer.now
                 if outer.src == 2:
                     # EKF-ul preia pozitia noastra: cadrul markerului
-                    outer.bias = [a[1] - outer.p[0], a[2] - outer.p[1]]
+                    b = [a[1] - outer.p[0], a[2] - outer.p[1]]
+                    if outer.bias_tau is None or outer.bias is None:
+                        outer.bias = b
+                    else:
+                        outer.bias_target = b
 
             def set_position_target_local_ned_send(self, *a):
                 outer.targets.append(a)
@@ -188,6 +197,9 @@ class SimVeh(Vehicle):
     def step(self, now, dt):
         self.now = now
         live = self._live
+        if self.bias_tau and self.bias_target is not None and self.bias is not None:
+            k = min(1.0, dt / self.bias_tau)
+            self.bias = [b + (t - b) * k for b, t in zip(self.bias, self.bias_target)]
         while self.mode_pending and self.mode_pending[0][0] <= now:
             live.mode = self.mode_pending.pop(0)[1]
         on_ground = live.landed_state == LANDED_ON_GROUND
