@@ -250,6 +250,37 @@ def test_un_fir_mort():
     return ', '.join(out) + '; principal mort pe ExtNav -> SRC1 + LOITER direct'
 
 
+def test_supervizorul_e_proprietarul_monitorului_de_override():
+    """Faza 5 (2b): fereastra de asezare a portii o conduce supervizorul,
+    din faza (observe): la intrarea in faza portii se deschide (settle_n
+    creste, trim-urile se cer), in fereastra se esantioneaza, dupa ea
+    neutrul se memoreaza o data - nu la arm, cu mansele in miscare. PLND:
+    HANDOVER_CHECK; ExtNav: GATE_SEARCH (unde arm() vine chiar la intrare)."""
+    out = []
+    for extnav, faza_poarta, faza_segment in ((False, 'HANDOVER_CHECK', 'ACQUIRE'),
+                                              (True, 'GATE_SEARCH', 'ENGAGE')):
+        v, sup, st, det, phase_l, _ = build(extnav=extnav, phase='IDLE')
+        ov = sup.override
+        st.step(100.0)
+        assert ov.settle_n == 0 and ov.neutral is None and not ov.in_gate
+        phase_l.set(faza_poarta)
+        st.step(100.1)
+        assert ov.settle_n == 1 and ov.in_gate and ov.neutral is None, (
+            extnav, ov.settle_n, ov.neutral)
+        assert abs(ov.settle_until - (100.1 + ov.settle_s)) < 1e-9
+        assert any(i[0] == 'send' and 'param' in i[1] for i in list(v._tx.queue)), (
+            "trim-urile nu au fost cerute la deschiderea ferestrei")
+        st.step(100.5)
+        assert ov.settle_span(0) is not None and ov.neutral is None
+        st.step(101.3)                            # fereastra trecuta: neutrul
+        assert ov.neutral == (1500, 1500, 1100, 1500), (extnav, ov.neutral)
+        phase_l.set(faza_segment)
+        st.step(101.4)
+        assert sup.armed and ov.neutral == (1500, 1500, 1100, 1500) and not ov.in_gate
+        out.append(f"{faza_poarta}: fereastra {ov.settle_n}, neutru dupa {ov.settle_s:.0f} s")
+    return '; '.join(out)
+
+
 def test_supervizorul_mort_watchdog():
     """Firul principal verifica heartbeat-ul supervizorului. Stagnat peste
     0.5 s: abort aprins si actiunea de siguranta in URGENT - BRAKE (PLND)
@@ -334,6 +365,8 @@ def test_override_monitor_sub_lock():
 
 
 TESTS = [
+    ('supervizorul e proprietarul monitorului de override',
+     test_supervizorul_e_proprietarul_monitorului_de_override),
     ('supervizorul citeste din instantaneu si scrie in URGENT',
      test_supervizorul_citeste_din_instantaneu_si_scrie_in_URGENT),
     ('fiecare monitor pe calea noua', test_fiecare_monitor_pe_calea_noua),

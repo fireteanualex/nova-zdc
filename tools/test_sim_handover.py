@@ -276,6 +276,9 @@ def test_poarta_reala_ACCEPTA_semnalul_injectat():
         if aux_sus and not cerut:
             cerut = True
             gate.on_aux_requested(t)
+        # faza 5 (2b): fereastra de asezare o conduce proprietarul
+        # monitorului (supervizorul, din faza portii); aici, harness-ul
+        ov.observe(t, cerut and verdict is None)
         if cerut and verdict is None:
             ok, why = gate.check(t, 1.8, 0.05)      # 1.8 m de marker, det 50 ms
             if ok is not None:

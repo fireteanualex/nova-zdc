@@ -280,6 +280,11 @@ def run(v, det, sm, args, seconds=40.0, dt=0.002, stop_states=()):
         now = 1000.0 + t          # ceas injectat, timp accelerat
         v.rc_t = now              # fluxul RC e proaspat
         v.now = now
+        # faza 5 (2b): fereastra de asezare a portii o conduce proprietarul
+        # monitorului de override (supervizorul); harness-ul fara
+        # supervizor ii joaca rolul
+        if getattr(sm, 'gate', None) is not None:
+            sm.gate.ov.observe(now, sm.state == 'HANDOVER_CHECK')
         for d in det.poll(now):
             sm.on_detection(d, now)
         sm.update(now)

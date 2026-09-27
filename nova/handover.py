@@ -115,6 +115,7 @@ class HandoverGate:
         self.decided = None          # True = accept, False = reject
         self.reason = ''
         self.rejects = []            # istoricul refuzurilor, pentru log
+        self._settle_n_req = None    # phase 5 (2b): window at the request
 
     # -- ciclu de viata ----------------------------------------------------
     def on_aux_requested(self, now=None):
@@ -123,8 +124,11 @@ class HandoverGate:
         self.requested_t = now
         self.decided = None
         self.reason = ''
-        self.ov.begin_settle(now)
-        self.ov.request_trims()
+        # Phase 5 (2b): the gate WRITES nothing into the OverrideMonitor. Its
+        # owner (the supervisor, observe() on the gate phase) opens the
+        # settle window; we remember which window was current at the
+        # request, so only a window opened after it can be accepted.
+        self._settle_n_req = getattr(self.ov, 'settle_n', 0)
 
     def reset(self):
         self.requested_t = None
@@ -156,10 +160,10 @@ class HandoverGate:
                      else Reject.AUTONOMY_DISABLED)
             return self._reject(now, motiv)
 
-        if not self.ov.settled(now):
-            # Esantionam continuu: throttle-ul se valideaza pe amplitudinea
-            # din fereastra asta, nu pe pozitia absoluta.
-            self.ov.sample_settle(now)
+        # The window is sampled by its owner; a window left over from the
+        # previous attempt (same settle_n as at the request) does not count.
+        if (getattr(self.ov, 'settle_n', 0) == self._settle_n_req
+                or not self.ov.settled(now)):
             return None, Reject.SETTLING
 
         # Ordinea conteaza doar pentru mesajul afisat; toate sunt eliminatorii.
@@ -194,8 +198,10 @@ class HandoverGate:
                    else f"{detection_age_s:.2f} s")
             return self._reject(now, f"{Reject.NO_MARKER} (ultima acum {age})")
 
-        # ACCEPT: abia acum memoram neutrul, dupa ce manetele s-au asezat.
-        if self.ov.capture_neutral(now) is None:
+        # ACCEPT. The neutral reference is captured by the monitor's owner
+        # (supervisor.arm, on entering the segment - after this window),
+        # not here: the gate writes nothing.
+        if self.v.rc is None:
             return self._reject(now, Reject.NO_RC)
         self.decided = True
         self.reason = ''

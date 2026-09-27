@@ -94,14 +94,19 @@ class OverrideMonitor:
         self.deadband_pwm = deadband_pwm
         self.hold_s = hold_s
         self.settle_s = settle_s
-        #: Faza 3 (refactor/threads): acelasi obiect e folosit de poarta
-        #: (firul principal: begin_settle, sample_settle, capture_neutral)
-        #: si de supervizor (firul lui: update). Un lock scurt, reintrant,
-        #: pe fiecare metoda care scrie sau citeste mai multe campuri.
+        #: Faza 5 (2b): UN singur proprietar - supervizorul, in firul lui:
+        #: el cheama observe() (fereastra de asezare, din faza) si update();
+        #: neutrul il memoreaza tot el, la arm(). Poarta (firul principal)
+        #: doar CITESTE: settled, settle_n, sticks_neutral. Lock-ul ramane
+        #: pentru citirile de mai multe campuri din celalalt fir.
         self._lock = threading.RLock()
 
         self.neutral = None
         self.settle_until = None
+        #: Generatia ferestrei de asezare: creste la fiecare begin_settle.
+        #: Poarta accepta doar pe o fereastra deschisa DUPA cererea ei.
+        self.settle_n = 0
+        self._in_gate = False
         self.trims = None
 
         self.exceed_since = None      # prima depasire a pragului
@@ -130,6 +135,7 @@ class OverrideMonitor:
     def begin_settle(self, now):
         """La comutarea AUX: porneste fereastra de asezare."""
         with self._lock:
+            self.settle_n += 1
             self.settle_until = now + self.settle_s
             self.neutral = None
             self._settle_min = None
@@ -155,6 +161,33 @@ class OverrideMonitor:
             for i, val in enumerate(vals):
                 self._settle_min[i] = min(self._settle_min[i], val)
                 self._settle_max[i] = max(self._settle_max[i], val)
+
+    def observe(self, now, in_gate):
+        """Pasul PROPRIETARULUI (supervizorul), la fiecare iteratie a lui.
+        `in_gate` = masina de stari e in faza portii (HANDOVER_CHECK /
+        GATE_SEARCH): la intrare porneste fereastra de asezare si cere
+        trim-urile; in fereastra esantioneaza. In afara fazei nu atinge
+        nimic - neutrul memorat la arm() ramane pentru update()."""
+        with self._lock:
+            if in_gate and not self._in_gate:
+                self._in_gate = True
+                self.begin_settle(now)
+                self.request_trims()
+                return                      # first sample at the next step
+            self._in_gate = in_gate
+            if not in_gate:
+                return
+            if not self.settled(now):
+                self.sample_settle(now)
+            elif self.neutral is None:
+                # after the window, once: the reference the override
+                # monitor compares against (15.3.1 B3.1), taken settled
+                self.capture_neutral(now)
+
+    @property
+    def in_gate(self):
+        """True cat timp proprietarul conduce o fereastra (faza portii)."""
+        return self._in_gate
 
     def settle_span(self, idx):
         """Amplitudinea canalului `idx` pe fereastra de asezare, sau None."""

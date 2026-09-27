@@ -240,6 +240,10 @@ class SafetySupervisor:
         # fi testat independent - si ca sa fie ACELASI obiect pe care il
         # foloseste poarta de handover cand memoreaza referinta de neutru.
         self.override = override if override is not None else OverrideMonitor(vehicle)
+        #: Faza 5 (2b): supervizorul e SINGURUL proprietar al monitorului de
+        #: override - fereastra de asezare o conduce el, din faza portii
+        #: (override.observe), neutrul il memoreaza el (arm). Poarta citeste.
+        self.gate_phases = ('HANDOVER_CHECK',)
         #: True dupa un override: companion-ul nu mai comanda NIMIC pentru
         #: restul incercarii. Zavor ireversibil, si daca mansa revine la
         #: neutru.
@@ -292,10 +296,12 @@ class SafetySupervisor:
         self._want_mode = None
         self._mode_confirmed = None
         self.passive = False
-        if rc_neutral_captured and self.override.neutral is None:
-            # Cine nu trece prin HANDOVER_CHECK (teste, intrare directa in
-            # LAND) primeste referinta de neutru acum. In cursa, referinta se
-            # memoreaza la validare, dupa fereastra de asezare (15.3.1 B3.1).
+        if (rc_neutral_captured and self.override.neutral is None
+                and not getattr(self.override, 'in_gate', False)):
+            # Cine nu trece prin faza portii (teste, intrare directa in
+            # LAND) primeste referinta de neutru acum. In cursa, referinta o
+            # memoreaza observe(), dupa fereastra de asezare (15.3.1 B3.1) -
+            # nu aici, la intrarea in GATE_SEARCH, cu mansele inca in miscare.
             self.override.capture_neutral(now)
         self._emit(now, 'arm', Action.NONE,
                    f"origine N={origin_n:.2f} E={origin_e:.2f} "
@@ -333,6 +339,7 @@ class SafetySupervisor:
         """
         now = now if now is not None else time.monotonic()
         self.miss_streak = miss_streak
+        self.override.observe(now, phase in self.gate_phases)
 
         # Zavorul se verifica INAINTEA armarii, deliberat. Cand supervizorul
         # comanda BRAKE, masina de stari vede ca nu mai e in LAND si isi
@@ -785,6 +792,7 @@ class ExtNavSupervisor(SafetySupervisor):
         self.autonomous_phases = EXTNAV_PHASES
         self.link_phases = EXTNAV_ENGAGED_PHASES
         self.ekf_phases = EXTNAV_ENGAGED_PHASES
+        self.gate_phases = ('GATE_SEARCH',)
         # Radius / ceiling only once the frame is the marker's and the
         # origin has been re-anchored (see update): in GATE_SEARCH the
         # vehicle is the pilot's, in ENGAGE the EKF position is being reset.
@@ -798,6 +806,7 @@ class ExtNavSupervisor(SafetySupervisor):
         shared run_loop calls it positionally: (now, age, phase). The
         detection arguments are accepted and ignored."""
         now = now if now is not None else time.monotonic()
+        self.override.observe(now, phase in self.gate_phases)
         new_attempt = (phase in self.autonomous_phases
                        and self._last_phase not in self.autonomous_phases)
         self._last_phase = phase

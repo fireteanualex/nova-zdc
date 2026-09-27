@@ -48,6 +48,9 @@ def build(alt=8.0, autonomy=True):
     gate = HandoverGate(v, ov, on_reject=rejects.append,
                         autonomy_enabled=autonomy)
     gate.on_aux_requested(100.0)
+    # faza 5 (2b): fereastra de asezare o deschide PROPRIETARUL monitorului
+    # (supervizorul, prin observe); aici o joaca harness-ul
+    ov.observe(100.0, True)
     return v, ov, gate, rejects
 
 
@@ -65,6 +68,7 @@ def settle(gate, start=100.0, until=SETTLE_END, step=0.05):
     criteriul pentru throttle, deci nu poate fi sarita."""
     t = start
     while t < until:
+        gate.ov.observe(t, True)          # proprietarul esantioneaza
         gate.check(t, **GOOD)
         t += step
 
@@ -74,11 +78,16 @@ def settle(gate, start=100.0, until=SETTLE_END, step=0.05):
 def test_accept_in_conditii_bune():
     v, ov, gate, rej = build()
     settle(gate)
+    # faza 5 (2b): neutrul NU il memoreaza poarta, ci proprietarul
+    # monitorului (supervizorul, observe dupa fereastra) - poarta nu scrie
+    assert ov.neutral is None
+    ov.observe(SETTLED, True)
+    assert ov.neutral == (1500, 1500, 1100, 1500), ov.neutral
     ok, why = gate.check(SETTLED, **GOOD)
     assert ok is True, f"refuzat: {why}"
     assert not rej
-    assert ov.neutral == (1500, 1500, 1100, 1500), ov.neutral
-    return f"acceptat, neutru memorat {ov.neutral}"
+    assert ov.settle_n == 1 and ov.settle_span(0) == 0
+    return f"acceptat dupa fereastra proprietarului, neutru {ov.neutral}"
 
 
 def test_nu_decide_in_fereastra_de_asezare():
@@ -126,6 +135,7 @@ def test_throttle_departe_de_trim_dar_nemiscat():
     v.params['RC3_TRIM'] = 1100
     v.set_rc(3, 1600)                       # 500 PWM de trim, dar nemiscat
     settle(gate)
+    ov.observe(SETTLED, True)               # proprietarul: neutrul dupa fereastra
     ok, why = gate.check(SETTLED, **GOOD)
     assert ok is True, f"a refuzat un throttle stationar: {why}"
     assert ov.neutral[2] == 1600, ov.neutral
@@ -141,6 +151,7 @@ def test_refuz_throttle_care_se_misca():
     while t < SETTLE_END:
         val += 20                           # pilotul urca lent throttle-ul
         v.set_rc(3, val)
+        ov.observe(t, True)                 # proprietarul esantioneaza
         gate.check(t, **GOOD)
         t += 0.05
     ok, why = gate.check(SETTLED, **GOOD)
@@ -201,6 +212,7 @@ def test_pragul_de_altitudine_din_config_ajunge_in_poarta():
         gate = HandoverGate(v, ov, autonomy_enabled=True,
                             alt_min_m=float(floor))
         gate.on_aux_requested(100.0)
+        ov.observe(100.0, True)
         settle(gate)
         ok, why = gate.check(SETTLED, **GOOD)
         assert ok is expect, f"la {alt} m: {ok} ({why})"
@@ -234,9 +246,17 @@ def test_neutrul_nu_se_memoreaza_la_refuz():
     v, ov, gate, rej = build()
     v.set_rc(1, 1500 + 200)
     settle(gate)
-    gate.check(SETTLED, **GOOD)
-    assert ov.neutral is None, f"a memorat neutru la refuz: {ov.neutral}"
-    return "fara referinta de neutru dupa refuz"
+    ok, _ = gate.check(SETTLED, **GOOD)
+    assert ok is False
+    assert ov.neutral is None, f"poarta a memorat neutru la refuz: {ov.neutral}"
+    # faza 5 (2b): proprietarul memoreaza dupa fereastra, oricare ar fi
+    # verdictul; o cerere noua deschide alta fereastra si sterge referinta
+    ov.observe(SETTLED, True)
+    assert ov.neutral is not None
+    ov.observe(SETTLED + 1.0, False)
+    ov.observe(SETTLED + 2.0, True)
+    assert ov.neutral is None and ov.settle_n == 2
+    return "poarta nu scrie; referinta veche piere la fereastra urmatoare"
 
 
 def test_decizia_e_stabila():
@@ -252,6 +272,60 @@ def test_decizia_e_stabila():
 
 
 # --- E0: garda de autonomie -------------------------------------------------
+
+def test_poarta_doar_citeste_monitorul_de_override():
+    """Faza 5 (2b): OverrideMonitor are UN proprietar - supervizorul
+    (observe pe faza portii, neutrul la arm). Poarta nu scrie: fara
+    proprietar nu accepta niciodata; o fereastra ramasa de la incercarea
+    anterioara nu se refoloseste; pe sursa, niciun apel de scriere."""
+    import ast
+    v = StubVehicle(8.0)
+    ov = OverrideMonitor(v)
+    gate = HandoverGate(v, ov, autonomy_enabled=True)
+    gate.on_aux_requested(100.0)
+    for t in (100.5, 101.5, 105.0):
+        assert gate.check(t, **GOOD) == (None, Reject.SETTLING), t
+    assert ov.settle_n == 0 and ov.neutral is None and ov.settle_until is None
+    # proprietarul deschide fereastra: accept dupa ea, neutrul ramane al lui
+    t = 100.0
+    while t < SETTLE_END:
+        ov.observe(t, True)
+        gate.check(t, **GOOD)
+        t += 0.05
+    ov.observe(SETTLED, True)             # proprietarul: neutrul, dupa fereastra
+    assert gate.check(SETTLED, **GOOD) == (True, ''), gate.reason
+    assert ov.neutral is not None and ov.settle_n == 1
+    # cerere noua cat timp proprietarul nu a deschis alta fereastra: nu se
+    # accepta pe cea veche (settle_until 101.0 e demult trecut)
+    ov.observe(105.0, False)              # intre incercari: alta faza
+    gate.reset()
+    gate.on_aux_requested(110.0)
+    assert gate.check(110.0, **GOOD) == (None, Reject.SETTLING)
+    assert gate.check(112.0, **GOOD) == (None, Reject.SETTLING), (
+        "a acceptat pe fereastra ramasa de la incercarea anterioara")
+    t = 112.0
+    while t < 112.95:
+        ov.observe(t, True)
+        gate.check(t, **GOOD)
+        t += 0.05
+    ov.observe(113.5, True)
+    assert gate.check(113.5, **GOOD) == (True, '') and ov.settle_n == 2
+    # sursa: poarta nu cheama nicio metoda care scrie in monitor
+    cale = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'nova', 'handover.py')
+    scriu = {'begin_settle', 'sample_settle', 'capture_neutral',
+             'request_trims', 'observe', 'update', 'note_mode_confirmed',
+             'load_trims'}
+    rele = []
+    for node in ast.walk(ast.parse(open(cale).read())):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in scriu
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == 'ov'):
+            rele.append(f"ov.{node.func.attr} la linia {node.lineno}")
+    assert not rele, rele
+    return "fara proprietar: SETTLING mereu; fereastra veche nerefolosita; 0 scrieri pe sursa"
+
 
 def test_E0_autonomie_dezactivata_refuza_imediat():
     """E0. Cu autonomy_enabled=false, refuz explicit, cu motiv, INAINTE de
@@ -383,6 +457,8 @@ def test_monitorul_poarta_motivul_pornirii_automate():
     return f"refuz cu motivul dat: {motiv_dat!r}"
 
 TESTS = [
+    ('poarta doar citeste monitorul de override',
+     test_poarta_doar_citeste_monitorul_de_override),
     ('monitorul fortat refuza cu motivul lui',
      test_monitorul_fortat_refuza_cu_motivul_lui),
     ('monitorul poarta motivul pornirii automate',
