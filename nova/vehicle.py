@@ -253,8 +253,8 @@ class VehicleView:
     def send_ekf_source_set(self, n, urgent=True):
         return self._v.send_ekf_source_set(n, urgent=urgent)
 
-    def send_statustext(self, severity, text):
-        return self._v.send_statustext(severity, text)
+    def send_statustext(self, severity, text, urgent=False):
+        return self._v.send_statustext(severity, text, urgent=urgent)
 
     def request_param(self, name):
         return self._v.request_param(name)
@@ -371,6 +371,11 @@ class Vehicle:
         self._stop = threading.Event()
         self._io_thread = None
         self.n_queue_full = 0
+        #: Faza 5 (2a): abort-ul supervizorului (set_abort_event). Aprins,
+        #: firul I/O ARUNCA coada TX si sloturile periodice, cu numar.
+        self.abort_event = None
+        self.n_tx_purged = 0
+        self._purge_log_t = float('-inf')
 
     # -- initializare ------------------------------------------------------
     def connect(self, verbose=True):
@@ -767,19 +772,47 @@ class Vehicle:
         self._update_params_io(now)
         self.state.set(self._live.copy(), now)
 
+    def set_abort_event(self, ev):
+        """Faza 5 (2a): abort-ul supervizorului. Cat e aprins, firul I/O
+        goleste coada TX si sloturile periodice FARA sa trimita - inclusiv
+        ce a fost pus inainte de abort - si numara ce a aruncat
+        (n_tx_purged, log). URGENT trece mereu: pe el vin actiunea
+        supervizorului si EXIT-ul / abort-ul de pilot al masinii de stari."""
+        self.abort_event = ev
+
     def _drain_queues(self, now):
-        for q in (self._urgent, self._tx):
+        purge = self.abort_event is not None and self.abort_event.is_set()
+        aruncate_tx = aruncate_per = 0
+        for q, e_tx in ((self._urgent, False), (self._tx, True)):
             while True:
                 try:
                     item = q.get_nowait()
                 except queue.Empty:
                     break
+                if purge and e_tx:
+                    aruncate_tx += 1
+                    continue
                 self._dispatch(item, now)
         with self._periodic_lock:
             items = list(self._periodic.values())
             self._periodic.clear()
+        if purge:
+            aruncate_per = len(items)
+            items = []
         for item in items:
             self._dispatch(item, now)
+        n = aruncate_tx + aruncate_per
+        if n:
+            self.n_tx_purged += n
+            if now - self._purge_log_t >= 1.0:          # cel mult o linie pe secunda
+                self._purge_log_t = now
+                log.warning("[vehicle] abort aprins: %d mesaje aruncate (%d din "
+                            "TX, %d periodice), total %d", n, aruncate_tx,
+                            aruncate_per, self.n_tx_purged)
+                if self.link_verbose:
+                    print(f"!! abort aprins: {n} mesaje aruncate ({aruncate_tx} "
+                          f"TX, {aruncate_per} periodice), total "
+                          f"{self.n_tx_purged}")
 
     def _dispatch(self, item, now):
         """Executa un element de coada, in firul I/O (sau inline, sincron)."""
@@ -940,12 +973,13 @@ class Vehicle:
                           mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0,
                           0, 0, 0, 0, 0, 0, alt_above_home_m)
 
-    def send_statustext(self, severity, text):
+    def send_statustext(self, severity, text, urgent=False):
         """STATUSTEXT catre GCS / OSD, prin FC. Nu e o comanda de zbor; se
-        pierde fara efect daca nu exista telemetrie."""
+        pierde fara efect daca nu exista telemetrie. `urgent=True` pentru
+        mesajele caii de EXIT, care trebuie sa treaca si cu abort aprins."""
         if isinstance(text, str):
             text = text[:50].encode('ascii', 'replace')
-        return self._send('statustext_send', int(severity), text)
+        return self._send('statustext_send', int(severity), text, urgent=urgent)
 
     def send_vision_position_estimate(self, usec, x, y, z, roll, pitch, yaw):
         """VISION_POSITION_ESTIMATE (ExtNav): the vehicle's pose in the

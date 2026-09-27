@@ -221,11 +221,20 @@ class EkfSourceManager:
 
         return self.state
 
-    def release(self, now=None, reason=''):
-        """Inapoi la setul normal. Se apeleaza si pe calea de abort."""
+    def release(self, now=None, reason='', urgent=False):
+        """Inapoi la setul normal. Se apeleaza si pe calea de abort.
+        `urgent=True` (EXIT-ul ExtNav): pe coada URGENT a vehiculului, care
+        nu se goleste cand abort-ul supervizorului e aprins (faza 5)."""
         now = time.monotonic() if now is None else now
         if self._comutat:
-            self.v.send_ekf_source_set(self.set_normal)
+            fn = self.v.send_ekf_source_set
+            if urgent:
+                try:
+                    fn(self.set_normal, urgent=True)
+                except TypeError:              # vehicule de test fara `urgent`
+                    fn(self.set_normal)
+            else:
+                fn(self.set_normal)
             self._comutat = False
             self._emit(now, 'restore',
                        f"set {self.set_normal} cerut inapoi; {reason}")

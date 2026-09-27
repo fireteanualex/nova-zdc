@@ -169,6 +169,9 @@ class ExtNavLanding:
         #: wiring (`on_exit`), which the simulator and the tests keep.
         self.sup = None
         self._abort_seen_n = 0
+        #: Phase 5 (2a): mode requests of the EXIT path go URGENT - the TX
+        #: queue is dropped while the supervisor's abort is up.
+        self._mode_urgent = False
 
         self.window = extnav.DetectionWindow(estimator)
         self.window_since = None
@@ -304,7 +307,7 @@ class ExtNavLanding:
         my = getattr(self, 'last_marker_yaw', None)
         self.yaw_target = extnav.yaw_setpoint(self.v.yaw, my)
 
-    def _statustext(self, text, warn=True):
+    def _statustext(self, text, warn=True, urgent=False):
         sev = (mavutil.mavlink.MAV_SEVERITY_WARNING if warn
                else mavutil.mavlink.MAV_SEVERITY_NOTICE)
         # Prin Vehicle, nu direct pe `mav`: portul e al firului I/O (faza 2).
@@ -312,17 +315,33 @@ class ExtNavLanding:
         if fn is None:
             return
         try:
+            if urgent:
+                try:
+                    fn(sev, text[:50], urgent=True)
+                    return
+                except TypeError:
+                    pass
             fn(sev, text[:50])
         except Exception:                                   # noqa: BLE001
             pass
 
     # -- mode requests (the rule of §6) ------------------------------------
-    def _mode_begin(self, now, mode):
+    def _request_mode(self, mode):
+        """Through the vehicle; URGENT on the EXIT path (phase 5, 2a)."""
+        if self._mode_urgent:
+            try:
+                return self.v.request_mode(mode, urgent=True)
+            except TypeError:                  # test vehicles without `urgent`
+                pass
+        return self.v.request_mode(mode)
+
+    def _mode_begin(self, now, mode, urgent=False):
         self._mode_want = mode
         self._mode_before = self.v.mode
         self._mode_req_t = now
         self._mode_req_n = 1
-        self.v.request_mode(mode)
+        self._mode_urgent = urgent
+        self._request_mode(mode)
 
     def _mode_drive(self, now):
         """'ok' when the FC reports the wanted mode; 'taken' when it is in
@@ -344,7 +363,7 @@ class ExtNavLanding:
             return 'fail'
         self._mode_req_t = now
         self._mode_req_n += 1
-        self.v.request_mode(self._mode_want)
+        self._request_mode(self._mode_want)
         return None
 
     def _mode_watch(self):
@@ -388,11 +407,14 @@ class ExtNavLanding:
         self._emit('exit', reason=reason, passive=passive)
         self._say(f"\n!! EXIT: {reason}" + (" (pasiv: fara comenzi de mod)"
                                            if passive else '') + "\n")
-        self._statustext(f"NOVA EXIT: {reason}")
+        # Everything on the EXIT path rides the URGENT queue (phase 5, 2a):
+        # the TX queue is dropped while the supervisor's abort is up, and
+        # a supervisor-asked EXIT is exactly that case.
+        self._statustext(f"NOVA EXIT: {reason}", urgent=True)
         # 1. SRC1 first, whatever else: home is in another frame on SRC2
         self._exit_step = 'src1'
         self._exit_t = self.now
-        self.ekf.release(self.now, reason)
+        self.ekf.release(self.now, reason, urgent=True)
         self._mode_want = None
         self._mode_expected = None
         self._mode_stage = 0
@@ -412,8 +434,8 @@ class ExtNavLanding:
                 return
             self._exit_step = 'mode'
             self._mode_stage = 0
-            self._mode_begin(now, MODE_LOITER)
-            self._statustext("NOVA EXIT: LOITER, throttle la mijloc")
+            self._mode_begin(now, MODE_LOITER, urgent=True)
+            self._statustext("NOVA EXIT: LOITER, throttle la mijloc", urgent=True)
             return
         r = self._mode_drive(now)
         if r == 'ok' or r == 'taken':
@@ -424,7 +446,7 @@ class ExtNavLanding:
                 self._mode_stage = 1
                 self._say("  !! FC-ul refuza LOITER (fara pozitie?); cer ALT_HOLD")
                 self._emit('exit_fallback', mode=MODE_ALT_HOLD)
-                self._mode_begin(now, MODE_ALT_HOLD)
+                self._mode_begin(now, MODE_ALT_HOLD, urgent=True)
             else:
                 self.set_state(Phase.ABORT, 'EXIT: nici LOITER, nici ALT_HOLD confirmat')
                 self._emit('exit_done', mode=self.v.mode, passive=False)

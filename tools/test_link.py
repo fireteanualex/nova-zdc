@@ -683,6 +683,52 @@ def test_IO_urgent_pleaca_inaintea_lui_TX():
     return "URGENT -> TX -> periodice; contoarele prin instantaneu"
 
 
+def test_IO_abort_aprins_goleste_TX_si_periodicele_cu_numar():
+    """Faza 5 (2a): cu abort-ul supervizorului aprins, firul I/O arunca
+    TOT ce e in TX si in sloturile periodice - inclusiv ce a fost pus
+    INAINTE de abort - numara (n_tx_purged) si logheaza (cel mult o linie
+    pe secunda). URGENT trece. Stins, TX curge din nou."""
+    import logging
+    import threading
+    from nova.vehicle import MODE_BRAKE, MODE_GUIDED, MODE_LAND, MODE_LOITER
+    v, link = make_threaded()
+    ev = threading.Event()
+    v.set_abort_event(ev)
+    assert v.request_mode(MODE_LAND) is True                    # TX, inainte
+    assert v.send_landing_target(0.1, 0.2, 5.0) is True         # periodic, inainte
+    ev.set()
+    assert v.request_mode(MODE_GUIDED) is True                  # TX, dupa
+    assert v.send_vision_position_estimate(1, 0, 0, -5, 0, 0, 0) is True
+    assert v.request_mode(MODE_BRAKE, urgent=True) is True      # URGENT
+    assert v.send_statustext(6, 'NOVA EXIT', urgent=True) is True
+    records = []
+    h = logging.Handler()
+    h.emit = records.append
+    vehicle_mod.log.addHandler(h)
+    try:
+        v._io_step(100.0)
+        nume = [n for n, _a, _k in link.sent_args]
+        assert nume == ['command_long_send', 'statustext_send'], nume
+        assert link.sent_args[0][1][5] == MODE_BRAKE
+        assert v.n_tx_purged == 4, v.n_tx_purged
+        msgs = [r.getMessage() for r in records if 'aruncate' in r.getMessage()]
+        assert len(msgs) == 1 and '4 mesaje aruncate (2 din TX, 2 periodice)' in msgs[0], msgs
+        # a doua golire in aceeasi secunda: numarata, nelogata din nou
+        assert v.request_mode(MODE_LAND) is True
+        v._io_step(100.5)
+        assert v.n_tx_purged == 5 and len(link.sent_args) == 2
+        assert len([r for r in records if 'aruncate' in r.getMessage()]) == 1
+        # stins: TX curge
+        ev.clear()
+        assert v.request_mode(MODE_LOITER) is True
+        v._io_step(102.0)
+        assert link.sent_args[-1][0] == 'command_long_send'
+        assert link.sent_args[-1][1][5] == MODE_LOITER and v.n_tx_purged == 5
+    finally:
+        vehicle_mod.log.removeHandler(h)
+    return "4 aruncate (2 TX + 2 periodice, si cele de dinainte), URGENT trecut, log cu numar"
+
+
 def test_IO_coada_plina_pentru_comenzi_inlocuire_pentru_periodice():
     """Comenzile nu se pierd tacut: coada plina = False + eroare logata.
     Mesajele periodice au un singur loc pe tip: cel mai nou castiga."""
@@ -842,6 +888,8 @@ def test_IO_niciun_apel_pe_mav_in_afara_firului():
 
 
 TESTS = [
+    ('I/O: abort aprins goleste TX si periodicele, cu numar',
+     test_IO_abort_aprins_goleste_TX_si_periodicele_cu_numar),
     ('I/O: URGENT inaintea lui TX', test_IO_urgent_pleaca_inaintea_lui_TX),
     ('I/O: coada plina pentru comenzi, inlocuire pentru periodice',
      test_IO_coada_plina_pentru_comenzi_inlocuire_pentru_periodice),

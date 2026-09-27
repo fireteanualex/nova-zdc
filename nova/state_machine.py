@@ -446,6 +446,15 @@ class LandingStateMachine:
         exista (grupul B), apelul se muta acolo."""
         self.set_precland(True, now)
 
+    def _request_mode_urgent(self, mode):
+        """Phase 5 (2a): the pilot's abort and the RTL abort ride the URGENT
+        queue. The TX queue is dropped while the supervisor's abort is up -
+        and the pilot's LOITER after a supervisor BRAKE is exactly then."""
+        try:
+            return self.v.request_mode(mode, urgent=True)
+        except TypeError:                      # test vehicles without `urgent`
+            return self.v.request_mode(mode)
+
     def _pilot_abort(self, now):
         """AUX lowered by the pilot inside the autonomous segment."""
         self.set_precland(False, now)
@@ -454,7 +463,7 @@ class LandingStateMachine:
         self._abort_req_n = 1
         self._abort_stage = 0
         self._aux_release_pending = False
-        self.v.request_mode(PILOT_ABORT_MODES[0])
+        self._request_mode_urgent(PILOT_ABORT_MODES[0])
         self.set_state(State.ABORT, 'AUX jos: abort cerut de pilot -> LOITER')
         self._emit('abort', reason='AUX jos: abort cerut de pilot',
                    action='LOITER')
@@ -484,7 +493,7 @@ class LandingStateMachine:
                       f"{PILOT_ABORT_MODES[self._abort_stage]}")
         self._abort_req_t = now
         self._abort_req_n += 1
-        self.v.request_mode(PILOT_ABORT_MODES[self._abort_stage])
+        self._request_mode_urgent(PILOT_ABORT_MODES[self._abort_stage])
 
     def abort_to_rtl(self, reason, now=None):
         """Singura cale catre RTL. Dezactiveaza intai PLND: RTL urca la
@@ -492,7 +501,7 @@ class LandingStateMachine:
         now = now if now is not None else self.now
         self.now = now
         self.set_precland(False, now)
-        self.v.request_mode(MODE_RTL)
+        self._request_mode_urgent(MODE_RTL)
         self.set_state(State.ABORT, f"RTL: {reason}")
         self._emit('abort', reason=reason, action='RTL')
 

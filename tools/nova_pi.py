@@ -575,6 +575,9 @@ def main():
                               principal=hb_principal)
     detector.on_poll = PasPrincipal(sm, faza, hb_principal,
                                     supervisor_thread=st, recorder=rec)
+    # 2a: with the supervisor's abort up, the I/O thread drops the TX queue
+    # and the periodic slots (counted, logged); URGENT still goes.
+    vehicle.set_abort_event(sup.abort)
 
     ecran = race_screen.RaceScreen() if a.race else None
 
