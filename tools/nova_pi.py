@@ -245,6 +245,9 @@ def extnav_config(cfg, canal, prag):
                        ('extnav_tol_frac', 'tol_frac')):
         if cfg.get(key) is not None:
             kw[field] = float(cfg[key])
+    # touchdown and the climb back: validated (ValueError on a refusal)
+    td, _warnings = nova_config.touchdown_settings(cfg)
+    kw.update(td)
     return ExtNavConfig(aux_channel=canal, aux_high_pwm=prag, **kw)
 
 
@@ -449,6 +452,15 @@ def main():
 
     cfg = nova_config.load(a.config)
     banner(cfg)
+    # touchdown and the climb back (27.09.2026): a refused setting stops
+    # here, before the port and the camera; a warning is said and kept
+    try:
+        _td, _td_warn = nova_config.touchdown_settings(cfg)
+    except ValueError as e:
+        print(f"\n[bord] NU PORNESC: {e}\n")
+        return 2
+    for w in _td_warn:
+        print(f"[bord] ATENTIE: {w}")
 
     # H2: portul INAINTE de orice altceva. Daca e ocupat, aflam acum, nu
     # dupa ce am pornit camera si am asteptat calibrarea.

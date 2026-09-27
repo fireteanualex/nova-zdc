@@ -184,6 +184,22 @@ class OsdMesaje:
                     else "CAPTURA scoring"), VERDE
         if name == 'touchdown':
             return "CONTACT", VERDE
+        if name == 'contact':
+            return f"CONTACT: h_ref {g('h_ref', 0.0):.2f} m, armat pe sol", VERDE
+        if name == 'riseup':
+            return f"URCARE la {g('target_above_home', 0.0):.1f} m (home)", VERDE
+        if name == 'hover_correction':
+            return f"CORECTIE: {g('lateral_m', 0.0):.2f} m de marker", GALBEN
+        if name == 'sequence_complete':
+            return "SECVENTA COMPLETA: SRC1, pilotul are drona", VERDE
+        if name == 'ground_disarmed':
+            return f"DEZARMAT PE SOL in {g('phase')}", ROSU
+        if name == 'throttle_low_ground':
+            return "THROTTLE LA MINIM pe sol: risc de dezarmare", GALBEN
+        if name == 'capture_saved':
+            return f"CAPTURA salvata ({g('center', '?')})", VERDE
+        if name == 'capture_failed':
+            return f"CAPTURA ESUATA: {g('reason')}", ROSU
         if name == 'handover_accept':
             return "ACCEPT: pornesc coborarea", VERDE
         if name == 'abort':

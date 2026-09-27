@@ -28,13 +28,36 @@ PLND machine in nova/state_machine.py stays for the simulator.
     DESCEND       setpoint (0, 0, -h_new), h_new = max(h/2, 1.0) -> CENTER_CHECK
      v
     FINAL_ALIGN   hover at 1 m, yaw aligned, centred on a fresh detection
-                  for FINAL_HOLD_S -> scoring_capture -> LAND
+                  for FINAL_HOLD_S
      v
-    LAND          DO_SET_MODE LAND (PLND is 0: vertical) -> TOUCHDOWN on
-                  ON_GROUND -> touchdown event -> the FC disarms -> IDLE
+    TOUCHDOWN_DESCENT  GUIDED, xy on (0, 0), z ramped down at
+                  touchdown_speed to 0.5 m below the ground (LAND is not
+                  used any more: LAND disarms on contact, and the rules
+                  want the climb back - 15.1.2, 15.2.7)
+     v
+    CONTACT       ON_GROUND from the FC -> 'contact' event (the scoring
+                  capture, 8.3.3), h_ref = baro height now (marker plane)
+     v
+    GROUND_HOLD   armed, ground idle, >= touchdown_hold_s (15.1.3). The
+                  marker does not fit the frame here: the EKF gets its own
+                  position frozen at contact as vision (the vehicle does not
+                  move on the ground) - measured in SITL 4.5.7, without it the
+                  EKF loses the position after 7.0 s, the EKF failsafe lands
+                  and disarms, and the real pause was 6.4 s (27.09.2026)
+     v
+    RISEUP        NAV_TAKEOFF to h_ref + alt_riseup (above HOME, measured),
+                  xy held by the EKF; in riseup_timeout_s
+     v
+    HOVER_CONFIRM hover_confirm_s stable at the target, a FRESH detection
+                  with offset < tol(h); one horizontal correction allowed
+     v
+    COMPLETE      SRC1 restored and acknowledged -> LOITER ->
+                  'sequence_complete' -> DONE (the pilot's again)
 
     EXIT (from any phase after ENGAGE, and on AUX down): SRC1 restored and
     acknowledged FIRST, then LOITER, then ALT_HOLD if LOITER is refused.
+    On the ground, a vehicle the FC disarmed gets no command: the event is
+    reported (the EKF set still goes back to SRC1 for the next flight).
     Never RTL while on SRC2: home is in another frame after the reset.
 
 THE MODE RULE, in every phase (brief §6, closes the ACQUIRE bug and the
@@ -84,6 +107,14 @@ MODE_TRIES = 5
 EKF_RESET_TOL_M = 1.0        # EKF position within this of our estimate
 EKF_SETTLE_S = 0.5           # after the switch, before judging the reset
 EXIT_ACK_TIMEOUT_S = 2.0     # SRC1 acknowledged, else go on regardless
+# touchdown and the climb back (27.09.2026)
+TOUCHDOWN_SETPOINT_S = 0.1   # the z ramp is re-sent at 10 Hz
+TOUCHDOWN_BELOW_M = 0.5      # the ramp ends this far below the ground
+GROUND_VPE_S = 0.1           # vision on the ground: 10 Hz, like detections
+TAKEOFF_RETRY_S = 3.0        # still on the ground this long -> takeoff again
+TAKEOFF_TRIES = 2
+HOVER_CONFIRM_TIMEOUT_S = 20.0
+THROTTLE_LOW_PWM = 1100      # pilot's throttle at the bottom: disarm risk
 YAW_ALIGN_TOL_DEG = 5.0
 
 AUX_CHANNEL = 8
@@ -105,19 +136,34 @@ class Phase:
     EXIT = 'EXIT'
     ABORT = 'ABORT'
     DONE = 'DONE'
+    TOUCHDOWN_DESCENT = 'TOUCHDOWN_DESCENT'
+    CONTACT = 'CONTACT'
+    GROUND_HOLD = 'GROUND_HOLD'
+    RISEUP = 'RISEUP'
+    HOVER_CONFIRM = 'HOVER_CONFIRM'
+    COMPLETE = 'COMPLETE'
+
+
+#: After FINAL_ALIGN: descent to contact, the ground and the climb back.
+#: SRC2 until COMPLETE included (15.2.5: no GNSS on the climb either).
+TOUCHDOWN_PHASES = (Phase.TOUCHDOWN_DESCENT, Phase.CONTACT, Phase.GROUND_HOLD,
+                    Phase.RISEUP, Phase.HOVER_CONFIRM)
+#: The part of it on the ground (a disarm there gets no command).
+GROUND_PHASES = (Phase.CONTACT, Phase.GROUND_HOLD, Phase.RISEUP)
 
 
 #: Phases in which the EKF must be on SRC2 (given to EkfSourceManager).
 SRC2_PHASES = (Phase.ENGAGE, Phase.MOVE, Phase.CENTER_CHECK, Phase.DESCEND,
-               Phase.FINAL_ALIGN, Phase.LAND, Phase.TOUCHDOWN, Phase.EXIT)
+               Phase.FINAL_ALIGN, Phase.LAND, Phase.TOUCHDOWN, Phase.EXIT) \
+    + TOUCHDOWN_PHASES + (Phase.COMPLETE,)
 #: Phases from which AUX down or a supervisor request means EXIT.
 ENGAGED_PHASES = (Phase.ENGAGE, Phase.MOVE, Phase.CENTER_CHECK, Phase.DESCEND,
-                  Phase.FINAL_ALIGN, Phase.LAND, Phase.TOUCHDOWN)
+                  Phase.FINAL_ALIGN, Phase.LAND, Phase.TOUCHDOWN) + TOUCHDOWN_PHASES
 #: Phases in which estimates are sent to the EKF (D5: from ENGAGE on).
-VPE_PHASES = ENGAGED_PHASES + (Phase.EXIT,)
+VPE_PHASES = ENGAGED_PHASES + (Phase.EXIT, Phase.COMPLETE)
 #: Phases in which we hold a mode of our own and watch it.
 GUIDED_PHASES = (Phase.MOVE, Phase.CENTER_CHECK, Phase.DESCEND,
-                 Phase.FINAL_ALIGN)
+                 Phase.FINAL_ALIGN) + TOUCHDOWN_PHASES
 
 
 @dataclass
@@ -143,6 +189,12 @@ class ExtNavConfig:
     #: with the geometry fixed (62808e9) these values reproduce it.
     tol_min_m: float = extnav.TOL_MIN_M
     tol_frac: float = extnav.TOL_FRAC
+    #: touchdown and the climb back (nova.config.touchdown_settings)
+    alt_riseup: float = 5.5
+    touchdown_speed: float = 0.4
+    touchdown_hold_s: float = 1.5
+    riseup_timeout_s: float = 15.0
+    hover_confirm_s: float = 1.0
 
 
 class ExtNavLanding:
@@ -208,6 +260,7 @@ class ExtNavLanding:
         self._exit_step = None          # 'src1', 'mode'
         self._exit_t = None
         self.n_vpe_sent = 0
+        self._clear_touchdown()
 
     # -- events ------------------------------------------------------------
     def _emit(self, name, **info):
@@ -244,6 +297,23 @@ class ExtNavLanding:
         self.exit_reason = None
         self.exit_passive = False
         self._exit_step = None
+        self._clear_touchdown()
+
+    def _clear_touchdown(self):
+        self.contact = None             # what CONTACT recorded (dict)
+        self._td_z0 = self._td_t0 = self._td_h0 = None
+        self._td_setpoint_t = float('-inf')
+        self._ground_xy = None
+        self._ground_vpe_t = float('-inf')
+        self._takeoff_t = None
+        self._takeoff_n = 0
+        self._riseup_t0 = None
+        self._z_riseup = None
+        self._confirm_since = None
+        self._corrected = False
+        self._correcting = False
+        self._throttle_warned = False
+        self.n_ground_vpe = 0
 
     # -- detections --------------------------------------------------------
     def on_detection(self, det, now=None):
@@ -405,7 +475,9 @@ class ExtNavLanding:
 
     def request_exit(self, reason, passive=False):
         """The supervisor's lever, and ours. Idempotent inside EXIT."""
-        if self.state in (Phase.EXIT, Phase.ABORT, Phase.IDLE, Phase.DONE):
+        if self.state in (Phase.EXIT, Phase.ABORT, Phase.IDLE, Phase.DONE,
+                          Phase.COMPLETE):
+            # COMPLETE is already the ordered hand-back (SRC1, LOITER)
             return
         if self.state not in ENGAGED_PHASES:
             # nothing engaged: back to IDLE, nothing to send
@@ -429,7 +501,22 @@ class ExtNavLanding:
         self._mode_stage = 0
         self.set_state(Phase.EXIT, reason)
 
+    def _handback_done(self, text, mode, passive):
+        """End of the hand-back: EXIT -> ABORT ('exit_done'), COMPLETE ->
+        DONE ('sequence_complete', said on the OSD and to the FC)."""
+        if self.state == Phase.COMPLETE:
+            self.set_state(Phase.DONE, text)
+            self._emit('sequence_complete', mode=mode, passive=passive,
+                       h=self.h_now())
+            self._statustext("NOVA SECVENTA COMPLETA", warn=False, urgent=True)
+            self._say("\n== SECVENTA COMPLETA: SRC1, predat pilotului ==\n")
+        else:
+            self.set_state(Phase.ABORT, text)
+            self._emit('exit_done', mode=mode, passive=passive)
+
     def _run_exit(self, now):
+        """The ordered hand-back, for EXIT and for COMPLETE alike: SRC1
+        acknowledged first, then LOITER, ALT_HOLD if LOITER is refused."""
         if self._exit_step == 'src1':
             ack = getattr(self.v, 'ekf_src_ack', None)
             acked = ack == mavutil.mavlink.MAV_RESULT_ACCEPTED
@@ -438,18 +525,20 @@ class ExtNavLanding:
             if not acked:
                 self._say("  !! SRC1 fara ACK in timp; continui iesirea")
             if self.exit_passive:
-                self.set_state(Phase.ABORT, 'EXIT pasiv: SRC1 cerut, modul e al pilotului')
-                self._emit('exit_done', mode=self.v.mode, passive=True)
+                self._handback_done('EXIT pasiv: SRC1 cerut, modul e al pilotului',
+                                    self.v.mode, True)
                 return
             self._exit_step = 'mode'
             self._mode_stage = 0
             self._mode_begin(now, MODE_LOITER, urgent=True)
-            self._statustext("NOVA EXIT: LOITER, throttle la mijloc", urgent=True)
+            if self.state == Phase.EXIT:
+                self._statustext("NOVA EXIT: LOITER, throttle la mijloc", urgent=True)
             return
         r = self._mode_drive(now)
         if r == 'ok' or r == 'taken':
-            self.set_state(Phase.ABORT, f"EXIT: FC in {self.v.mode_name()}")
-            self._emit('exit_done', mode=self.v.mode, passive=(r == 'taken'))
+            what = 'EXIT' if self.state == Phase.EXIT else 'COMPLETE'
+            self._handback_done(f"{what}: FC in {self.v.mode_name()}", self.v.mode,
+                                r == 'taken')
         elif r == 'fail':
             if self._mode_stage == 0:
                 self._mode_stage = 1
@@ -457,14 +546,21 @@ class ExtNavLanding:
                 self._emit('exit_fallback', mode=MODE_ALT_HOLD)
                 self._mode_begin(now, MODE_ALT_HOLD, urgent=True)
             else:
-                self.set_state(Phase.ABORT, 'EXIT: nici LOITER, nici ALT_HOLD confirmat')
-                self._emit('exit_done', mode=self.v.mode, passive=False)
+                self._handback_done('nici LOITER, nici ALT_HOLD confirmat',
+                                    self.v.mode, False)
 
     # -- loop --------------------------------------------------------------
     def update(self, now=None):
         now = now if now is not None else time.monotonic()
         self.now = now
         if self.was_armed and not self.v.armed and self.v.have_pos:
+            if self.state in GROUND_PHASES:
+                # the FC disarmed on the marker (throttle at zero for
+                # DISARM_DELAY, a failsafe): no mode command - reported
+                self._emit('ground_disarmed', phase=self.state,
+                           held_s=None if self.contact is None
+                           else now - self.contact['t_on_ground_rx'])
+                self._say(f"\n!! DEZARMAT PE SOL in {self.state}: fara comenzi\n")
             if self.state in ENGAGED_PHASES or self.state == Phase.EXIT:
                 # on the ground, or the pilot disarmed: the EKF set must
                 # not stay on SRC2 for the next flight
@@ -498,7 +594,7 @@ class ExtNavLanding:
             self.request_exit(ab[0], passive=ab[1])
 
         st = self.state
-        if st == Phase.EXIT:
+        if st in (Phase.EXIT, Phase.COMPLETE):
             self._run_exit(now)
             return
         if st in (Phase.ABORT, Phase.GATE_FAIL, Phase.DONE):
@@ -537,6 +633,16 @@ class ExtNavLanding:
             self._run_land(now)
         elif st == Phase.TOUCHDOWN:
             pass
+        elif st == Phase.TOUCHDOWN_DESCENT:
+            self._run_touchdown_descent(now)
+        elif st == Phase.CONTACT:
+            self.set_state(Phase.GROUND_HOLD, 'armat pe sol')
+        elif st == Phase.GROUND_HOLD:
+            self._run_ground_hold(now)
+        elif st == Phase.RISEUP:
+            self._run_riseup(now)
+        elif st == Phase.HOVER_CONFIRM:
+            self._run_hover_confirm(now)
         # The EKF set manager arms and releases from the phase (§5.14); the
         # machine owns it, so the shared run_loop needs no new hook.
         self.ekf.update(now, self.state)
@@ -710,12 +816,15 @@ class ExtNavLanding:
             return
         if now - self._final_since < self.cfg.final_hold_s:
             return
-        if not self.scoring_done:
-            self.scoring_done = True
-            self._emit('scoring_capture', alt=self.h_now(), t=e.t,
-                       lateral_m=e.lateral_m, marker_px=None, fill=None)
-        self._mode_begin(now, MODE_LAND)
-        self.set_state(Phase.LAND, f"centrat {e.lateral_m:.2f} m, {self.cfg.final_hold_s:.0f} s")
+        # 27.09.2026: no LAND (it disarms on contact); the capture for
+        # 8.3.3 is taken at CONTACT, on the ground, not here at 1 m
+        self._td_z0 = self.v.z
+        self._td_h0 = self.h_now()
+        self._td_t0 = now
+        self._td_setpoint_t = float('-inf')
+        self.set_state(Phase.TOUCHDOWN_DESCENT,
+                       f"centrat {e.lateral_m:.2f} m, {self.cfg.final_hold_s:.0f} s; "
+                       f"cobor cu {self.cfg.touchdown_speed:.2f} m/s")
 
     def _run_land(self, now):
         r = self._mode_drive(now)
@@ -731,6 +840,170 @@ class ExtNavLanding:
             self.set_state(Phase.TOUCHDOWN, 'ON_GROUND; FC-ul dezarmeaza')
             # the EKF set goes back at disarm (update: reset) - here the
             # vehicle is on the marker, in the marker frame; nothing to do
+
+    # -- touchdown and the climb back (27.09.2026) -------------------------
+    def touchdown_timeout_s(self):
+        """Descent from FINAL_ALIGN to contact: twice the time at
+        touchdown_speed, plus the FC's land detection (~1.5 s, SITL)."""
+        h0 = self._td_h0 if self._td_h0 is not None else self.cfg.final_h_m
+        return 2.0 * (h0 + TOUCHDOWN_BELOW_M) / self.cfg.touchdown_speed + 5.0
+
+    def _run_touchdown_descent(self, now):
+        if self.v.on_ground():
+            self._contact(now)
+            return
+        if now - self.state_since > self.touchdown_timeout_s():
+            self.request_exit(f"fara contact in {self.touchdown_timeout_s():.0f} s")
+            return
+        if now - self._td_setpoint_t >= TOUCHDOWN_SETPOINT_S:
+            self._td_setpoint_t = now
+            # a z ramp at touchdown_speed, down to 0.5 m below the ground:
+            # the position controller keeps xy on (0, 0) and the land
+            # detector needs the throttle at its lower limit to see contact
+            floor = self._td_z0 + self._td_h0 + TOUCHDOWN_BELOW_M
+            z = min(self._td_z0 + self.cfg.touchdown_speed * (now - self._td_t0), floor)
+            yaw = self.yaw_target if self.yaw_target is not None else self.v.yaw
+            self.v.send_position_target(0.0, 0.0, z, yaw)
+
+    def _contact(self, now):
+        """ON_GROUND from the FC: what the capture and the climb need,
+        recorded once, then the 'contact' event (the 8.3.3 capture)."""
+        e = self.last_est
+        last_t = self.last_det_t
+        self.contact = {
+            't_on_ground_rx': now,
+            'fc_time_boot_ms': getattr(self.v, 'time_boot_ms', None),
+            'fc_time_unix_usec': (self.v.fc_unix_usec_now()
+                                  if hasattr(self.v, 'fc_unix_usec_now') else None),
+            'h_ref': float(getattr(self.v, 'rel_alt', None) or 0.0),
+            'z_contact': self.v.z,
+            'last_det_age_s': None if last_t is None else now - last_t,
+            'last_lateral_m': None if e is None else e.lateral_m,
+        }
+        self._ground_xy = (self.v.x, self.v.y)
+        self._ground_vpe_t = float('-inf')
+        self._emit('contact', **self.contact)
+        self.set_state(Phase.CONTACT, f"ON_GROUND, h_ref {self.contact['h_ref']:.2f} m")
+
+    def _ground_vpe(self, now):
+        """Vision on the ground (team decision 27.09.2026, after phase A):
+        the marker does not fit the frame below ~0.6 m, and without vision
+        the EKF drops the position after 7.0 s (SITL 4.5.7) - the failsafe
+        then lands and disarms on the marker. While the FC says ON_GROUND
+        the vehicle does not move, so its position frozen at contact IS
+        the truth: sent as VISION_POSITION_ESTIMATE, only while on the
+        ground, stopped the moment it leaves it."""
+        if self._ground_xy is None or not self.v.on_ground():
+            return
+        if now - self._ground_vpe_t < GROUND_VPE_S:
+            return
+        self._ground_vpe_t = now
+        x, y = self._ground_xy
+        if self.v.send_vision_position_estimate(
+                int(round(now * 1e6)), x, y, self.v.z, self.v.roll,
+                self.v.pitch, self.v.yaw):
+            self.n_ground_vpe += 1
+
+    def _run_ground_hold(self, now):
+        self._ground_vpe(now)
+        rc = getattr(self.v, 'rc', None)
+        if (not self._throttle_warned and rc is not None and len(rc) >= 3
+                and 0 < rc[2] < THROTTLE_LOW_PWM):
+            self._throttle_warned = True
+            self._emit('throttle_low_ground', pwm=rc[2])
+            self._statustext("NOVA: throttle la minim pe sol - risc dezarmare")
+        held = now - self.contact['t_on_ground_rx']
+        if held < self.cfg.touchdown_hold_s:
+            return
+        self._takeoff(now)
+        self._riseup_t0 = now
+        self.set_state(Phase.RISEUP, f"{held:.1f} s pe sol; urc la h_ref + "
+                                     f"{self.cfg.alt_riseup:.1f} m")
+
+    def _takeoff(self, now):
+        target = self.contact['h_ref'] + self.cfg.alt_riseup
+        # NAV_TAKEOFF altitude is ABOVE HOME on 4.5.7 (measured: home 2 m
+        # below the ground, takeoff 5 m -> 2.9 m above the ground), and
+        # h_ref is the baro height above home at contact
+        self.v.send_takeoff(target)
+        self._takeoff_t = now
+        self._takeoff_n += 1
+        self._z_riseup = self.contact['z_contact'] - self.cfg.alt_riseup
+        self._emit('riseup', target_above_home=target, n=self._takeoff_n)
+
+    def _run_riseup(self, now):
+        self._ground_vpe(now)          # until the vehicle leaves the ground
+        if now - self._riseup_t0 > self.cfg.riseup_timeout_s:
+            self.request_exit(f"urcarea nu a ajuns in {self.cfg.riseup_timeout_s:.0f} s")
+            return
+        if self.v.on_ground():
+            if now - self._takeoff_t >= TAKEOFF_RETRY_S:
+                if self._takeoff_n >= TAKEOFF_TRIES:
+                    self.request_exit('decolarea nu a pornit')
+                    return
+                self._takeoff(now)
+            return
+        h_t = -self._z_riseup
+        if (self.h_now() >= h_t - ALT_TOL_M):
+            self.h_target = h_t
+            self._send_setpoint(now, self._z_riseup, force=True)
+            self._confirm_since = None
+            self._corrected = self._correcting = False
+            self.window_tries = 0
+            self._open_window(now)
+            self.set_state(Phase.HOVER_CONFIRM, f"la {self.h_now():.2f} m")
+
+    def _run_hover_confirm(self, now):
+        self._send_setpoint(now, self._z_riseup)
+        if now - self.state_since > HOVER_CONFIRM_TIMEOUT_S:
+            self.request_exit('HOVER_CONFIRM fara confirmare')
+            return
+        stable = (abs(self.h_now() - self.h_target) <= ALT_TOL_M
+                  and abs(self.v.vz) < STILL_VZ_MS
+                  and math.hypot(getattr(self.v, 'vx', 0.0),
+                                 getattr(self.v, 'vy', 0.0)) < STILL_SPEED_MS)
+        tol = self.tol_now()
+        if self._correcting:
+            # one correction: the fresh detection moved the EKF onto the
+            # marker frame again; holding (0, 0) brings the vehicle over it
+            if stable and math.hypot(self.v.x, self.v.y) < tol:
+                self._correcting = False
+                self._confirm_since = None
+                self._open_window(now)
+            return
+        e = self._fresh_est(self.window_since)
+        if e is not None and e.lateral_m >= tol:
+            if self._corrected:
+                self.request_exit(f"nu e deasupra markerului dupa corectie "
+                                  f"({e.lateral_m:.2f} m >= {tol:.2f})")
+                return
+            self._corrected = self._correcting = True
+            self._emit('hover_correction', lateral_m=e.lateral_m, tol=tol)
+            return
+        if e is not None and stable:
+            if self._confirm_since is None:
+                self._confirm_since = now
+            if now - self._confirm_since >= self.cfg.hover_confirm_s:
+                self._begin_complete(now, e)
+            return
+        self._confirm_since = None
+        if e is None and now - self.window_since >= self.cfg.center_window_s:
+            if self.window_tries <= self.cfg.center_retries:
+                self._open_window(now)
+                return
+            self.request_exit('nicio detectie la altitudinea de predare')
+
+    def _begin_complete(self, now, e):
+        self._emit('hover_confirmed', lateral_m=e.lateral_m, h=self.h_now())
+        self._exit_step = 'src1'
+        self._exit_t = now
+        self.exit_passive = False
+        self.ekf.release(now, 'secventa completa', urgent=True)
+        self._mode_want = None
+        self._mode_expected = None
+        self._mode_stage = 0
+        self.set_state(Phase.COMPLETE, f"deasupra markerului ({e.lateral_m:.2f} m) "
+                                       f"la {self.h_now():.2f} m")
 
     # -- reporting ---------------------------------------------------------
     def status_line(self):

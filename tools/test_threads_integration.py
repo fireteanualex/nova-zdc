@@ -134,6 +134,19 @@ class AppFire:
         self.v.set_aux(2000)
 
 
+def run_hook(app, secs, stop, hook):
+    """app.run with an on_step hook, for both wirings."""
+    if isinstance(app, AppFire):
+        end = app.t + secs
+        while app.t < end:
+            st = app.run(0.02, stop=stop)
+            hook(app)
+            if st in stop:
+                return st
+        return app.sm.state
+    return app.run(secs, stop=stop, on_step=hook)
+
+
 def _mesaje(v):
     """Secventa discreta de mesaje vazuta de FC-ul de mucava, in ordine."""
     return {'moduri': list(v.mode_reqs), 'surse': list(v.src_cmds),
@@ -148,18 +161,21 @@ def test_secventa_completa_aceleasi_mesaje_aceeasi_ordine():
     ordine; fluxurile periodice echivalente; acelasi contact."""
     a = tel.App(h=8.0, p=(2.0, -1.0), rate=0.05)
     b = AppFire(h=8.0, p=(2.0, -1.0), rate=0.05)
+    errs = {}
     for app in (a, b):
         app.handover()
-        st = app.run(120.0, stop=(Phase.TOUCHDOWN, Phase.ABORT, Phase.GATE_FAIL))
-        assert st == Phase.TOUCHDOWN, (type(app).__name__, st, app.states,
-                                       app.sm.exit_reason)
-        app.run(1.0)                  # dezarmarea de pe sol: SRC1, IDLE
-        assert app.sm.state == Phase.IDLE
+        # 27.09.2026: contact in GUIDED, sol, urcare la 5.5 m, predare (DONE)
+        rec, hook = tel.contact_err(app)
+        st = run_hook(app, 180.0, (Phase.DONE, Phase.ABORT, Phase.GATE_FAIL), hook)
+        assert st == Phase.DONE, (type(app).__name__, st, app.states,
+                                  app.sm.exit_reason)
+        errs[id(app)] = rec['err']
     assert a.states == b.states, (a.states, b.states)
     assert a.h_targets == b.h_targets == [4.0, 2.0, 1.0], (a.h_targets, b.h_targets)
     ma, mb = _mesaje(a.v), _mesaje(b.v)
     assert ma == mb, (ma, mb)
-    assert mb['surse'] == [2, 1] and MODE_LAND in mb['moduri'], mb
+    assert mb['surse'] == [2, 1] and MODE_LAND not in mb['moduri'], mb
+    assert mb['moduri'][-1] == MODE_LOITER and a.v.takeoffs == b.v.takeoffs == [5.5]
     # fluxurile periodice: acelasi numar de VPE si de consemne (+-2 %) si
     # aceleasi trepte in consemne
     for camp in ('vpe', 'targets'):
@@ -168,12 +184,14 @@ def test_secventa_completa_aceleasi_mesaje_aceeasi_ordine():
     za = sorted({round(t[7], 1) for t in a.v.targets})
     zb = sorted({round(t[7], 1) for t in b.v.targets})
     assert za == zb, (za, zb)
-    ea, eb = math.hypot(*a.v.p), math.hypot(*b.v.p)
+    ea, eb = errs[id(a)], errs[id(b)]
     assert ea < ex.tol_m(1.0) and eb < ex.tol_m(1.0), (ea, eb)
     assert b.v.n_lt == 0 and b.v.n_ds == 0
     # calea pe fire chiar a fost pe fire: nimic n-a ocolit instantaneul
     assert b.v.threaded and b.v.state.count > 1000 and b.st.n_steps > 1000
-    assert b.hb.count == b.st.n_steps and b.faza.get()[0] == Phase.IDLE
+    # the phase is published at the START of a tick: the run stops on the
+    # tick that entered DONE, so the last one published is COMPLETE
+    assert b.hb.count == b.st.n_steps and b.faza.get()[0] in (Phase.COMPLETE, Phase.DONE)
     assert b.sup.on_exit is None
     return (f"{len(a.states)} stari identice, moduri {ma['moduri']}, surse "
             f"{ma['surse']}, VPE {len(a.v.vpe)}/{len(b.v.vpe)}, contact "

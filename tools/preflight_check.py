@@ -424,9 +424,25 @@ def check_params(conn, baud, parm=FLIGHT_PARM, timeout=120):
 
 # --- orchestrare --------------------------------------------------------------
 
+def check_touchdown(cfg):
+    """The touchdown sequence settings (15.1.2, 15.1.3): a refusal is
+    ESEC, a warning stays OK but is said."""
+    try:
+        v, warnings = nova_config.touchdown_settings(cfg)
+    except ValueError as e:
+        return Result('secventa', ESEC, str(e))
+    det = (f"contact {v['touchdown_speed']:.2f} m/s, sol {v['touchdown_hold_s']:.1f} s, "
+           f"urcare h_ref+{v['alt_riseup']:.1f} m in {v['riseup_timeout_s']:.0f} s, "
+           f"hover {v['hover_confirm_s']:.1f} s")
+    if warnings:
+        det += ' | ATENTIE: ' + '; '.join(warnings)
+    return Result('secventa', OK, det, dict(v, warnings=warnings))
+
+
 def run_checks(args, source_factory=None):
     cfg = nova_config.load(args.config)
     results = [check_stack(args.os_release)]
+    results.append(check_touchdown(cfg))
 
     r, cal = check_calib(cfg)
     results.append(r)

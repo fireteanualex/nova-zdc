@@ -73,6 +73,16 @@ class SimVeh(Vehicle):
         self.vpe = []
         self.targets = []
         self.disarm_on_ground = True
+        # touchdown in GUIDED and the climb back (27.09.2026), numbers from
+        # SITL Copter-4.5.7: ON_GROUND 1.5 s after contact; NAV_TAKEOFF is
+        # above HOME (home = the ground here); the EKF drops the position
+        # 7 s after the last vision on SRC2
+        self.contact_t = None
+        self.takeoff_alt = None
+        self.takeoffs = []
+        self.vpe_t = None
+        self.vpe_timeout_s = 7.0
+        self.climb_ms = 1.0
         self.params = {'EK3_SRC2_POSXY': 6, 'EK3_SRC2_VELXY': 0,
                        'EK3_SRC2_POSZ': 1, 'EK3_SRC2_VELZ': 0,
                        'EK3_SRC2_YAW': 1, 'EK3_SRC_OPTIONS': 0,
@@ -92,6 +102,7 @@ class SimVeh(Vehicle):
 
             def vision_position_estimate_send(self, *a):
                 outer.vpe.append(a)
+                outer.vpe_t = outer.now
                 if outer.src == 2:
                     # EKF-ul preia pozitia noastra: cadrul markerului
                     outer.bias = [a[1] - outer.p[0], a[2] - outer.p[1]]
@@ -101,7 +112,12 @@ class SimVeh(Vehicle):
                 outer.target = (a[5], a[6], a[7], a[14])
 
             def command_long_send(self, *a):
-                pass
+                if a[2] == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
+                    outer.takeoffs.append(a[-1])
+                    if (outer._live.armed and outer._live.mode == MODE_GUIDED
+                            and outer._live.landed_state == LANDED_ON_GROUND):
+                        outer.takeoff_alt = float(a[-1])
+                        outer.target = None
 
             def param_request_read_send(self, *a):
                 pass
@@ -131,6 +147,9 @@ class SimVeh(Vehicle):
         live.rc_t = now
         self.hb_t = now                  # legatura vie (monitorul de link)
         valid = self.ekf_valid if self.src == 1 else self.ekf_valid_after_switch
+        if (self.src == 2 and self.vpe_t is not None
+                and now - self.vpe_t > self.vpe_timeout_s):
+            valid = False                # SITL 4.5.7: 7.0 s without vision
         live.ekf_flags = (mavutil.mavlink.EKF_ATTITUDE
                           | (mavutil.mavlink.EKF_POS_HORIZ_REL if valid else 0))
         live.ekf_t = now
@@ -171,7 +190,20 @@ class SimVeh(Vehicle):
         live = self._live
         while self.mode_pending and self.mode_pending[0][0] <= now:
             live.mode = self.mode_pending.pop(0)[1]
-        if live.mode == MODE_GUIDED and self.target is not None:
+        on_ground = live.landed_state == LANDED_ON_GROUND
+        if live.mode == MODE_GUIDED and self.takeoff_alt is not None:
+            # GUIDED takeoff: vertical, xy held
+            self.vel = [0.0, 0.0, -self.climb_ms]
+            self.h = min(self.h + self.climb_ms * dt, self.takeoff_alt)
+            if self.h > 0.1:
+                live.landed_state = LANDED_IN_AIR
+                self.contact_t = None
+            if self.h >= self.takeoff_alt - 1e-6:
+                self.takeoff_alt = None
+                self.vel = [0.0, 0.0, 0.0]
+        elif live.mode == MODE_GUIDED and on_ground:
+            self.vel = [0.0, 0.0, 0.0]   # landed: ground idle, targets ignored
+        elif live.mode == MODE_GUIDED and self.target is not None:
             tx, ty, tz, tyaw = self.target
             # consemnul e in cadrul EKF; il traducem in adevar prin bias
             bx, by = self.bias if self.bias is not None else GPS_OFFSET
@@ -181,8 +213,16 @@ class SimVeh(Vehicle):
                 self.vel[i] = v
                 self.p[i] = cur + v * dt
             vz = max(-0.5, min(0.5, 1.0 * (gh - self.h)))
-            self.h += vz * dt
-            self.vel[2] = -vz
+            self.h = max(0.0, self.h + vz * dt)
+            self.vel[2] = -vz if self.h > 0.0 else 0.0
+            if self.h <= 0.0:
+                # the land detector: ON_GROUND after 1.5 s on the ground
+                if self.contact_t is None:
+                    self.contact_t = now
+                elif now - self.contact_t >= 1.5:
+                    live.landed_state = LANDED_ON_GROUND
+            else:
+                self.contact_t = None
             d = ex.wrap_pi(tyaw - self.yaw_true)
             self.yaw_true = ex.wrap_pi(self.yaw_true + max(-0.8, min(0.8, 2.0 * d)) * dt)
         elif live.mode == MODE_LAND:
@@ -214,6 +254,9 @@ class TruthDetector:
         self.n_frames = 0
         self.n_dets = 0
         self.enabled = True
+        #: below this the 0.48 m marker overflows the 73x45 deg frame
+        #: (27.09.2026: ~0.6 m at nadir)
+        self.blind_below_m = 0.61
 
     def poll(self, now):
         if self.next_t is None:
@@ -225,6 +268,8 @@ class TruthDetector:
             if not self.enabled or self.rng.random() >= self.rate:
                 continue
             t_c = now - self.latency
+            if self.v.h < self.blind_below_m:
+                continue                    # the marker does not fit the frame
             d = (-self.v.p[0], -self.v.p[1], self.v.h)      # spre marker, NED
             b = ex.ned_to_body(d, 0.0, 0.0, self.v.yaw_true)
             if b[2] <= 0.05:
@@ -296,40 +341,50 @@ class App:
 
 # --- teste -----------------------------------------------------------------
 
+def contact_err(app):
+    """Record the true lateral error at CONTACT (on_step hook)."""
+    rec = {}
+
+    def hook(a):
+        if a.sm.state == Phase.CONTACT and 'err' not in rec:
+            rec['err'] = math.hypot(*a.v.p)
+    return rec, hook
+
+
 def test_secventa_completa_cu_detectii_rare():
-    """Brief §9.3: secventa completa cu detectii la 5%. De la 8 m: trepte
-    8 -> 4 -> 2 -> 1, captura de scoring la 1 m, LAND vertical, TOUCHDOWN.
-    Fara LANDING_TARGET, fara PLND, VPE doar dupa ENGAGE, SRC 2 -> 1 la
-    dezarmare."""
+    """Brief §9.3 + touchdown (27.09.2026): secventa completa cu detectii
+    la 5%. De la 8 m: trepte 8 -> 4 -> 2 -> 1, apoi coborare GUIDED pana la
+    contact (fara LAND, fara dezarmare), sol, decolare la h_ref + 5.5 m,
+    confirmare de hover deasupra markerului, SRC1 -> LOITER, DONE. Fara
+    LANDING_TARGET / PLND; VPE doar dupa ENGAGE; pe sol VPE din pozitia de
+    la contact (altfel EKF-ul pierde pozitia dupa 7 s)."""
     app = App(h=8.0, p=(2.0, -1.0), rate=0.05)
     app.handover()
-    st = app.run(120.0, stop=(Phase.TOUCHDOWN, Phase.ABORT, Phase.GATE_FAIL))
-    assert st == Phase.TOUCHDOWN, (st, app.states, app.sm.exit_reason)
+    rec, hook = contact_err(app)
+    st = app.run(180.0, stop=(Phase.DONE, Phase.ABORT, Phase.GATE_FAIL), on_step=hook)
+    assert st == Phase.DONE, (st, app.states, app.sm.exit_reason)
     seq = [s for s in app.states if s not in (Phase.CENTER_CHECK, Phase.MOVE)]
     assert seq[:3] == [Phase.IDLE, Phase.GATE_SEARCH, Phase.ENGAGE], app.states
-    assert seq[-3:] == [Phase.FINAL_ALIGN, Phase.LAND, Phase.TOUCHDOWN], app.states
+    assert seq[-8:] == [Phase.FINAL_ALIGN, Phase.TOUCHDOWN_DESCENT, Phase.CONTACT,
+                        Phase.GROUND_HOLD, Phase.RISEUP, Phase.HOVER_CONFIRM,
+                        Phase.COMPLETE, Phase.DONE], app.states
+    assert Phase.LAND not in app.states and MODE_LAND not in app.v.mode_reqs
     assert app.h_targets == [4.0, 2.0, 1.0], app.h_targets
     assert app.v.n_lt == 0 and app.v.n_ds == 0, "a trimis LANDING_TARGET / DISTANCE_SENSOR"
-    assert not any(n == 'PLND_ENABLED' and val != 0 for n, val in
-                   [(k, v_) for k, v_ in app.v.params.items()])
-    # VPE doar din ENGAGE: primul VPE dupa comanda de comutare pe setul 2
     assert app.v.src_cmds[0] == 2 and app.v.vpe, (app.v.src_cmds, len(app.v.vpe))
-    # eroarea finala la contact
-    err = math.hypot(*app.v.p)
-    assert err < ex.tol_m(1.0), f"eroare la contact {err:.2f} m"
-    sc = app.ev('scoring_capture')
-    assert len(sc) == 1 and abs(sc[0]['alt'] - 1.0) <= 0.2, sc
-    td = app.ev('touchdown')
-    assert len(td) == 1
-    # dezarmarea de pe sol readuce setul 1 si masina in IDLE
-    app.run(1.0)
-    assert app.sm.state == Phase.IDLE and app.v.src_cmds[-1] == 1, (
-        app.sm.state, app.v.src_cmds)
-    # yaw aliniat: markerul "sus" spre nord, vehiculul a ajuns la yaw ~0
+    assert app.v.src_cmds[-1] == 1 and app.v.mode_reqs[-1] == MODE_LOITER
+    assert app.v._live.armed, "dezarmat"
+    assert rec['err'] < ex.tol_m(1.0), f"eroare la contact {rec['err']:.2f} m"
+    c = app.ev('contact')
+    assert len(c) == 1 and abs(c[0]['h_ref']) < 0.05, c
+    assert app.v.takeoffs == [5.5], app.v.takeoffs
+    assert abs(app.v.h - 5.5) < 0.35, app.v.h
+    assert math.hypot(*app.v.p) < ex.tol_m(5.5), math.hypot(*app.v.p)
+    assert app.sm.n_ground_vpe > 0 and len(app.ev('sequence_complete')) == 1
     assert abs(math.degrees(app.v.yaw_true)) < 6.0, math.degrees(app.v.yaw_true)
-    return (f"{app.det.n_dets} detectii din {app.det.n_frames} cadre "
-            f"({100.0 * app.det.n_dets / app.det.n_frames:.1f}%), trepte "
-            f"{app.h_targets}, contact la {err * 100:.1f} cm, {len(app.v.vpe)} VPE")
+    return (f"{app.det.n_dets} detectii din {app.det.n_frames} cadre, trepte "
+            f"{app.h_targets}, contact la {rec['err'] * 100:.1f} cm, urcare la "
+            f"{app.v.h:.2f} m, {app.sm.n_ground_vpe} VPE pe sol")
 
 
 def test_poarta_fara_detectii_reincearca_apoi_esueaza_fara_comenzi():
@@ -497,6 +552,10 @@ def test_fara_detectie_in_centrare_reincearca_apoi_iese():
     st = app.run(60.0, stop=(Phase.CENTER_CHECK, Phase.ABORT))
     assert st == Phase.CENTER_CHECK, app.states
     app.det.enabled = False
+    # the window logic, alone: with the 7 s EKF model on, the supervisor
+    # exits on the EKF first (7.2 s), before the two 5 s windows - which
+    # is what the real vehicle does too (test_touchdown covers it)
+    app.v.vpe_timeout_s = 1e9
     t0 = app.t
     app.run(20.0, stop=(Phase.ABORT,))
     assert app.sm.state == Phase.ABORT, app.sm.state
@@ -591,9 +650,10 @@ def test_toleranta_din_config_reproduce_ce_a_zburat():
     app = App(h=8.0, p=(2.0, -1.0), rate=0.05, cfg=c)
     assert abs(app.sm.tol_now() - 0.5336) < 1e-6
     app.handover()
-    st = app.run(120.0, stop=(Phase.TOUCHDOWN, Phase.ABORT, Phase.GATE_FAIL))
-    assert st == Phase.TOUCHDOWN, (st, app.states, app.sm.exit_reason)
-    err = math.hypot(*app.v.p)
+    rec, hook = contact_err(app)
+    st = app.run(180.0, stop=(Phase.DONE, Phase.ABORT, Phase.GATE_FAIL), on_step=hook)
+    assert st == Phase.DONE, (st, app.states, app.sm.exit_reason)
+    err = rec['err']
     assert err < 0.10, f"eroare la contact {err:.3f} m"
     return f"0.10 / 0.0667 h = brief / 1.5; secventa completa, contact la {100 * err:.1f} cm"
 
