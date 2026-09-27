@@ -326,7 +326,16 @@ def test_piesele_capturii_metadate_culoare_ora_FC():
     return "metadate dupa t_capture; BGR 1280x720 din I420; ora FC extrapolata 2.5 s"
 
 
+def test_deploy_nu_sterge_capturile_de_pe_Pi():
+    """pi/deploy.sh face rsync --delete: scoring/ (scris pe Pi) trebuie
+    exclus, altfel fiecare deploy ar sterge dovezile 8.3.3."""
+    d = open(os.path.join(REPO, 'pi', 'deploy.sh')).read()
+    assert "--delete" in d and "--exclude '/scoring/'" in d, "scoring/ neexclus din rsync --delete"
+    return "rsync --delete cu scoring/ exclus"
+
+
 TESTS = [
+    ('deploy nu sterge capturile de pe Pi', test_deploy_nu_sterge_capturile_de_pe_Pi),
     ('piesele capturii: metadate, culoare, ora FC',
      test_piesele_capturii_metadate_culoare_ora_FC),
     ('cadrul de dinaintea ON_GROUND', test_cadrul_de_dinaintea_ON_GROUND),

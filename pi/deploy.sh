@@ -15,6 +15,7 @@
 #
 #   SE TRIMITE      codul, config/, pi/, tools/, docs/ si **.git/**
 #   NU SE TRIMITE   data/ (cadre E2, sesiuni, campanii - sute de MB)
+#                   scoring/ - si NU SE STERGE de pe Pi: capturile 8.3.3
 #                   __pycache__, *.pyc
 #                   venv-ul: se construieste PE Pi, cu --system-site-packages
 #                   (§5.24). Copiat de pe desktop ar fi legat de alt Python
@@ -69,8 +70,12 @@ if git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
   fi
 fi
 
+# scoring/: the 8.3.3 touchdown captures WRITTEN ON THE PI
+# (nova/touchdown_capture.py). Not in the desktop tree, so without this
+# `--delete` would erase them at every deploy - evidence lost.
 RSYNC=(rsync -az --delete --human-readable
        --exclude 'data/'
+       --exclude '/scoring/'
        --exclude '__pycache__/'
        --exclude '*.pyc'
        --exclude '.venv/'
