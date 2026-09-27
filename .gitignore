@@ -11,6 +11,10 @@ sim/models/iris_nova/
 # regenereaza din plan (`--seed`), deci nu are ce cauta in istorie. Ce se
 # pastreaza ca evidenta se copiaza explicit, cu tools/collect_session.py.
 data/batch/
+# fetch_scoring.py: copies of the Pi captures and the handover packages
+# (evidence - kept out of the repo on purpose)
+data/scoring_pc/
+scoring/
 claude-markdown
 
 # CONFIDENTIALE. Atentie: gitignore NU scoate un fisier deja urmarit -

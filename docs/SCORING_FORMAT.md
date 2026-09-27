@@ -51,3 +51,13 @@ fișierele din `attempt_<n>/` în afară de manifestul însuși (deci și
 Fereastra 5×5 px centrată în `(w // 2, h // 2)`, pe gri (luminanța):
 `negru` dacă media < 80 și max − min < 60; `alb` dacă media > 170 și
 max − min < 60; altfel `ambiguu`. Decizia finală e a omului.
+
+## Pe PC: `tools/fetch_scoring.py`
+
+`list` / `fetch [--watch N] [--cursa NUME] [--fc-log X.BIN]` / `verify DIR`.
+Copia verificată a fiecărei încercări stă în `data/scoring_pc/pi/...`, identică
+octet cu octet cu cea de pe Pi (manifestul ei rămâne verificabil); pachetul de
+predare în `data/scoring_pc/handover/<YYYYMMDD>_<cursa>/`, cu `README.txt` și
+`MANIFEST_HANDOVER.sha256` peste tot (inclusiv logul FC, în `fc/`). `verify`
+înlocuiește `sha256sum -c` pe Windows. O încercare cu hash greșit merge în
+`carantina/` și nu intră în pachet.
