@@ -25,8 +25,8 @@
   "_guidance": "Ce ghidare zboara bordul (reproiectarea din 27.09.2026, claude-markdown/REPROIECTARE_EXTNAV.md): 'extnav' = camera devine sursa de pozitie a EKF3 (VISION_POSITION_ESTIMATE, markerul = origine), GUIDED in trepte h/2 pana la 1 m, apoi LAND vertical; PLND ramane 0, nu se trimit LANDING_TARGET / DISTANCE_SENSOR. 'plnd' = calea veche (LAND + precision landing), pastrata pentru un zbor de comparatie. Cere parametrii din config/nova_flight_4.5.parm (VISO_TYPE 1 cu REBOOT, EK3_SRC2_POSXY 6, EK3_SRC_OPTIONS 0).",
   "guidance": "extnav",
 
-  "_handover_alt_min_m": "TEMPORAR (echipa, 26.09.2026): poarta accepta handover de la orice inaltime, pentru teste de coborare. Implicitul din cod e 5 m pe calea plnd si 1 m pe extnav (brief D6); sterge cheia ca sa revii la el. Plafonul de 12 m ramane. Pe extnav estimatorul refuza oricum sub 0.3 m.",
-  "handover_alt_min_m": 0.0,
+  "_handover_alt_min_m": "Altitudinea minima la care poarta accepta handover-ul, m (decizia echipei, 27.09.2026: 1 m, brief D6). Fara cheie: 5 m pe calea plnd, 1 m pe extnav. Plafonul de 12 m ramane. Pe extnav estimatorul refuza oricum sub 0.3 m.",
+  "handover_alt_min_m": 1.0,
 
   "_camera_auto_expose": "Expunerea se masoara pe scena la pornire si apoi se blocheaza (plafon 2 ms, limita de blur). Valorile fixe de banc erau cu ~5-6 trepte prea luminoase afara - detectia intermitenta din zborul de pe 24.09.2026.",
   "camera_auto_expose": true,
