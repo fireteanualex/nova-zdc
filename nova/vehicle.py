@@ -180,6 +180,86 @@ class VehicleState:
         return c
 
 
+class VehicleView:
+    """Vederea unui ALT fir asupra vehiculului (faza 3: supervizorul).
+
+    Aceleasi atribute ca fatada lui Vehicle (x, mode, rc, ...), copiate din
+    ultimul instantaneu la `refresh()` - deci consistente pe durata unui
+    pas al firului care o detine - si aceleasi metode de citire. Comenzile
+    pleaca prin cozile vehiculului, cele de mod pe URGENT; nimic nu atinge
+    portul. Fara instantaneu publicat (modul sincron, testele), refresh()
+    copiaza fatada vehiculului."""
+
+    def __init__(self, vehicle):
+        self._v = vehicle
+        for f in STATE_FIELDS:
+            setattr(self, f, getattr(vehicle, f))
+        self.link_healthy = vehicle.link_healthy
+        self.hb_t = vehicle.hb_t
+        self.last_snapshot_t = None
+
+    def refresh(self):
+        v = self._v
+        snap, t = v.state.get()
+        src = snap if snap is not None else v
+        for f in STATE_FIELDS:
+            setattr(self, f, getattr(src, f))
+        self.link_healthy = v.link_healthy
+        self.hb_t = v.hb_t
+        self.last_snapshot_t = t
+        return self
+
+    # -- citiri, ca la Vehicle ----------------------------------------------
+    @property
+    def alt(self):
+        return -self.z
+
+    @property
+    def params(self):
+        return self._v.params
+
+    @property
+    def time_boot_ms_vehicle(self):
+        return self.time_boot_ms
+
+    def mode_name(self):
+        return MODE_NAME.get(self.mode, str(self.mode))
+
+    def on_ground(self):
+        return self.landed_state == mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND
+
+    def time_since_heartbeat(self, now=None):
+        hb = self.hb_t
+        if hb is None:
+            return None
+        now = now if now is not None else time.monotonic()
+        return now - hb
+
+    def ekf_pos_horiz_ok(self):
+        if self.ekf_flags is None:
+            return None
+        return bool(self.ekf_flags & mavutil.mavlink.EKF_POS_HORIZ_REL)
+
+    def attitude_at(self, t):
+        return self._v.attitude_at(t)
+
+    def position_at(self, t):
+        return self._v.position_at(t)
+
+    # -- comenzi: prin cozile vehiculului, cele de mod pe URGENT ---------
+    def request_mode(self, mode, urgent=True):
+        return self._v.request_mode(mode, urgent=urgent)
+
+    def send_ekf_source_set(self, n, urgent=True):
+        return self._v.send_ekf_source_set(n, urgent=urgent)
+
+    def send_statustext(self, severity, text):
+        return self._v.send_statustext(severity, text)
+
+    def request_param(self, name):
+        return self._v.request_param(name)
+
+
 class Vehicle:
 
     def __init__(self, conn, baud=None, telem_hz=TELEM_HZ, landed_hz=LANDED_HZ,
@@ -310,6 +390,10 @@ class Vehicle:
         if self.threaded:
             self.start_io()
         return self
+
+    def view(self):
+        """O VehicleView pentru alt fir (supervizorul)."""
+        return VehicleView(self)
 
     def start_io(self):
         """Porneste firul I/O (o singura data). De aici, portul e al lui."""

@@ -22,6 +22,7 @@ prin Pi deloc. Detectia de aici e necesara pentru 15.1.7 (pilotul trebuie sa
 poata prelua oricand), dar nu e singurul strat.
 """
 
+import threading
 import time
 
 # --- PRAGURI. Se transcriu in Safety Case. --------------------------------
@@ -93,6 +94,11 @@ class OverrideMonitor:
         self.deadband_pwm = deadband_pwm
         self.hold_s = hold_s
         self.settle_s = settle_s
+        #: Faza 3 (refactor/threads): acelasi obiect e folosit de poarta
+        #: (firul principal: begin_settle, sample_settle, capture_neutral)
+        #: si de supervizor (firul lui: update). Un lock scurt, reintrant,
+        #: pe fiecare metoda care scrie sau citeste mai multe campuri.
+        self._lock = threading.RLock()
 
         self.neutral = None
         self.settle_until = None
@@ -123,56 +129,61 @@ class OverrideMonitor:
 
     def begin_settle(self, now):
         """La comutarea AUX: porneste fereastra de asezare."""
-        self.settle_until = now + self.settle_s
-        self.neutral = None
-        self._settle_min = None
-        self._settle_max = None
-        self.exceed_since = None
-        self.triggered = False
-        self.trigger_t = None
-        self.latency_s = None
-        self.peak_deviation = 0
+        with self._lock:
+            self.settle_until = now + self.settle_s
+            self.neutral = None
+            self._settle_min = None
+            self._settle_max = None
+            self.exceed_since = None
+            self.triggered = False
+            self.trigger_t = None
+            self.latency_s = None
+            self.peak_deviation = 0
 
     def sample_settle(self, now):
         """Urmareste amplitudinea fiecarui canal pe fereastra de asezare.
         Pentru throttle e singurul criteriu care are sens (vezi
         THROTTLE_IDX)."""
-        if self.v.rc is None:
-            return
-        vals = [self.v.rc[c] for c in STICK_CHANNELS]
-        if self._settle_min is None:
-            self._settle_min = list(vals)
-            self._settle_max = list(vals)
-            return
-        for i, val in enumerate(vals):
-            self._settle_min[i] = min(self._settle_min[i], val)
-            self._settle_max[i] = max(self._settle_max[i], val)
+        with self._lock:
+            if self.v.rc is None:
+                return
+            vals = [self.v.rc[c] for c in STICK_CHANNELS]
+            if self._settle_min is None:
+                self._settle_min = list(vals)
+                self._settle_max = list(vals)
+                return
+            for i, val in enumerate(vals):
+                self._settle_min[i] = min(self._settle_min[i], val)
+                self._settle_max[i] = max(self._settle_max[i], val)
 
     def settle_span(self, idx):
         """Amplitudinea canalului `idx` pe fereastra de asezare, sau None."""
-        if self._settle_min is None:
-            return None
-        return self._settle_max[idx] - self._settle_min[idx]
+        with self._lock:
+            if self._settle_min is None:
+                return None
+            return self._settle_max[idx] - self._settle_min[idx]
 
     def settled(self, now):
         return self.settle_until is not None and now >= self.settle_until
 
     def capture_neutral(self, now):
         """Memoreaza pozitia curenta ca referinta. De apelat DUPA asezare."""
-        if self.v.rc is None:
-            return None
-        self.neutral = tuple(self.v.rc[i] for i in STICK_CHANNELS)
-        self.exceed_since = None
-        return self.neutral
+        with self._lock:
+            if self.v.rc is None:
+                return None
+            self.neutral = tuple(self.v.rc[i] for i in STICK_CHANNELS)
+            self.exceed_since = None
+            return self.neutral
 
-    # -- masurare ----------------------------------------------------------
+        # -- masurare ----------------------------------------------------------
     def deviation(self):
         """Cea mai mare abatere fata de neutru, pe canalele 1-4, in PWM.
         None daca nu avem referinta sau fluxul RC e vechi."""
-        if self.neutral is None or self.v.rc is None:
-            return None
-        return max(abs(self.v.rc[c] - self.neutral[i])
-                   for i, c in enumerate(STICK_CHANNELS))
+        with self._lock:
+            if self.neutral is None or self.v.rc is None:
+                return None
+            return max(abs(self.v.rc[c] - self.neutral[i])
+                       for i, c in enumerate(STICK_CHANNELS))
 
     def rc_stale(self, now):
         return self.v.rc_t is None or (now - self.v.rc_t) > RC_STALE_S
@@ -191,61 +202,64 @@ class OverrideMonitor:
 
         Prima varianta compara toate patru canalele cu trim-ul si a refuzat
         primul handover din SITL, cu throttle la 500 PWM de RC3_TRIM."""
-        tol = self.deadband_pwm if tolerance_pwm is None else tolerance_pwm
-        if self.v.rc is None:
-            return None, 'fara flux RC'
-        trims = self.trims or self.load_trims()
-        if trims is None:
-            return None, 'RC*_TRIM necitit'
+        with self._lock:
+            tol = self.deadband_pwm if tolerance_pwm is None else tolerance_pwm
+            if self.v.rc is None:
+                return None, 'fara flux RC'
+            trims = self.trims or self.load_trims()
+            if trims is None:
+                return None, 'RC*_TRIM necitit'
 
-        for i in SELF_CENTERING_IDX:
-            c = STICK_CHANNELS[i]
-            d = abs(self.v.rc[c] - trims[i])
-            if d > tol:
-                return False, (f"canalul {c + 1} la {d} PWM de trim "
-                               f"(prag {tol})")
+            for i in SELF_CENTERING_IDX:
+                c = STICK_CHANNELS[i]
+                d = abs(self.v.rc[c] - trims[i])
+                if d > tol:
+                    return False, (f"canalul {c + 1} la {d} PWM de trim "
+                                   f"(prag {tol})")
 
-        span = self.settle_span(THROTTLE_IDX)
-        if span is None:
-            return None, 'fereastra de asezare neesantionata'
-        if span > tol:
-            return False, (f"throttle-ul s-a miscat {span} PWM in fereastra "
-                           f"de asezare (prag {tol})")
-        return True, ''
+            span = self.settle_span(THROTTLE_IDX)
+            if span is None:
+                return None, 'fereastra de asezare neesantionata'
+            if span > tol:
+                return False, (f"throttle-ul s-a miscat {span} PWM in fereastra "
+                               f"de asezare (prag {tol})")
+            return True, ''
 
-    # -- bucla -------------------------------------------------------------
+        # -- bucla -------------------------------------------------------------
     def update(self, now=None):
         """True daca s-a detectat override. Odata declansat, ramane True."""
-        now = now if now is not None else time.monotonic()
-        if self.triggered:
-            return True
-        if self.neutral is None or self.rc_stale(now):
-            return False
+        with self._lock:
+            now = now if now is not None else time.monotonic()
+            if self.triggered:
+                return True
+            if self.neutral is None or self.rc_stale(now):
+                return False
 
-        dev = self.deviation()
-        if dev is None:
-            return False
-        self.peak_deviation = max(self.peak_deviation, dev)
+            dev = self.deviation()
+            if dev is None:
+                return False
+            self.peak_deviation = max(self.peak_deviation, dev)
 
-        if dev <= self.deadband_pwm:
-            self.exceed_since = None
-            return False
+            if dev <= self.deadband_pwm:
+                self.exceed_since = None
+                return False
 
-        if self.exceed_since is None:
-            self.exceed_since = now
-        if now - self.exceed_since >= self.hold_s:
-            self.triggered = True
-            self.trigger_t = now
-            return True
-        return False
+            if self.exceed_since is None:
+                self.exceed_since = now
+            if now - self.exceed_since >= self.hold_s:
+                self.triggered = True
+                self.trigger_t = now
+                return True
+            return False
 
     def note_mode_confirmed(self, now):
         """Inchide masuratoarea de latenta 15.3.1: de la PRIMA depasire de
         prag pana la modul confirmat de FC. Prima depasire, nu declansarea -
         cele 100 ms de confirmare fac parte din buget."""
-        if self.latency_s is None and self.exceed_since is not None:
-            self.latency_s = now - self.exceed_since
-        return self.latency_s
+        with self._lock:
+            if self.latency_s is None and self.exceed_since is not None:
+                self.latency_s = now - self.exceed_since
+            return self.latency_s
 
     def status(self):
         dev = self.deviation()

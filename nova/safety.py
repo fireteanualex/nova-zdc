@@ -26,10 +26,17 @@ Toate pragurile sunt constante numite, la inceputul fisierului, ca sa se
 transcrie direct in Safety Case.
 """
 
+import threading
 import time
 
 from .rc import OverrideMonitor
 from .vehicle import MODE_BRAKE, MODE_LAND, MODE_LOITER, MODE_RTL
+
+#: Faza 3 (refactor/threads): heartbeat-ul unui fir (detectie, I/O,
+#: principal) stagnat peste atat = firul e mort sau blocat. Aceeasi
+#: actiune ca la pierderea sursei respective. Din config, cu implicitul de
+#: aici.
+THREAD_HEARTBEAT_MAX_S = 1.0
 
 # --- PRAGURI DE SIGURANTA -------------------------------------------------
 # Se transcriu ca atare in Safety Case. Fiecare are nevoie de o justificare
@@ -242,6 +249,17 @@ class SafetySupervisor:
         self.latched_monitor = None
         self.log = []
         self._last_phase = 'IDLE'
+        #: Faza 3: aprins cand supervizorul a decis o actiune. Masina de
+        #: stari il verifica la fiecare pas si, aprins, nu mai trimite
+        #: nimic - comenzile de mod sunt ale supervizorului, prin URGENT.
+        #: Se stinge la o incercare noua (latch_release) si la re-armare.
+        self.abort = threading.Event()
+        self.abort_reason = None
+        self.abort_passive = False
+        #: Heartbeat-urile firelor supravegheate: nume -> Heartbeat, cu
+        #: pragul fiecaruia. Se dau prin set_thread_heartbeats().
+        self.heartbeats = {}
+        self.heartbeat_max_s = THREAD_HEARTBEAT_MAX_S
 
         self._descent_since = None
         self._tilt_since = None
@@ -262,6 +280,7 @@ class SafetySupervisor:
         self.origin_alt = origin_alt
         self.latched = Action.NONE
         self.latched_monitor = None
+        self._clear_abort()
         self._descent_since = None
         self._tilt_since = None
         self._want_mode = None
@@ -344,6 +363,7 @@ class SafetySupervisor:
             self._want_mode = None
             self._mode_confirmed = None
             self.passive = False
+            self._clear_abort()
             self.armed = False          # re-armare curata din faza, mai jos
 
         if self.latched != Action.NONE:
@@ -388,8 +408,8 @@ class SafetySupervisor:
 
         worst, monitor, detail = Action.NONE, None, ''
         for mon in (self._mon_override, self._mon_detection_age,
-                    self._mon_link, self._mon_radius, self._mon_ceiling,
-                    self._mon_descent_rate, self._mon_tilt):
+                    self._mon_link, self._mon_threads, self._mon_radius,
+                    self._mon_ceiling, self._mon_descent_rate, self._mon_tilt):
             act, name, why = mon(now, detection_age_s, phase)
             if act > worst:
                 worst, monitor, detail = act, name, why
@@ -416,12 +436,70 @@ class SafetySupervisor:
         because a switch was flipped."""
         return self._latch_state() != 'in livrare'
 
+    def _set_abort(self, reason, passive=False):
+        self.abort_reason = reason
+        self.abort_passive = passive
+        self.abort.set()
+
+    def _clear_abort(self):
+        self.abort.clear()
+        self.abort_reason = None
+        self.abort_passive = False
+
+    def _cere_mod(self, mode):
+        """Comanda de mod a supervizorului: prin coada URGENT cand vehiculul
+        o are (faza 2); vehiculele simulate din teste nu o au."""
+        try:
+            return self.v.request_mode(mode, urgent=True)
+        except TypeError:
+            return self.v.request_mode(mode)
+
+    def set_thread_heartbeats(self, max_s=None, **heartbeats):
+        """Heartbeat-urile firelor de supravegheat: detectie=, mav_io=,
+        principal=. Un fir fara heartbeat dat nu e supravegheat."""
+        if max_s is not None:
+            self.heartbeat_max_s = float(max_s)
+        for nume, hb in heartbeats.items():
+            if hb is None:
+                self.heartbeats.pop(nume, None)
+            else:
+                self.heartbeats[nume] = hb
+
+    def _fire_stagnate(self, now):
+        """[(nume, varsta)] pentru firele cu heartbeat-ul stagnat. Un fir
+        care nu a batut niciodata nu e inca pornit - nu e mort."""
+        rele = []
+        for nume, hb in self.heartbeats.items():
+            age = hb.age(now)
+            if age is not None and age > self.heartbeat_max_s:
+                rele.append((nume, age))
+        return rele
+
+    def _mon_threads(self, now, age, phase):
+        """Faza 3: un fir mort inseamna sursa lui pierduta. Detectia
+        moarta = detectie pierduta (BRAKE, in fazele in care detectia
+        conteaza); I/O mort = legatura pierduta (BRAKE, aceleasi faze);
+        firul principal mort = nimeni nu mai comanda: BRAKE, in tot
+        segmentul autonom."""
+        for nume, varsta in self._fire_stagnate(now):
+            if nume == 'detectie' and phase in DETECTION_MONITORED_PHASES:
+                return (Action.BRAKE, 'thread_detectie',
+                        f"firul de detectie fara heartbeat de {varsta:.1f} s")
+            if nume == 'mav_io' and phase in self.link_phases:
+                return (Action.BRAKE, 'thread_mav_io',
+                        f"firul I/O fara heartbeat de {varsta:.1f} s")
+            if nume == 'principal' and phase in self.autonomous_phases:
+                return (Action.BRAKE, 'thread_principal',
+                        f"firul principal fara heartbeat de {varsta:.1f} s")
+        return Action.NONE, None, ''
+
     def _trigger(self, now, action, monitor, detail, phase):
         self.latched = action
         self._mode_confirmed = None
         if action == Action.OVERRIDE:
             self.passive = True
         self.latched_monitor = monitor
+        self._set_abort(f"{monitor}: {detail}", passive=False)
         self._emit(now, monitor, action, detail, phase)
         self._want_mode = Action.MODES[action]
         # The mode the FC was in when we decided. While unconfirmed we
@@ -501,7 +579,7 @@ class SafetySupervisor:
         # ar declara mode_fail fara sa fi emis vreun octet. Cand legatura
         # revine, comanda pleaca si numaratoarea e intacta.
         self._mode_req_t = now
-        if self.v.request_mode(self._want_mode) is False:
+        if self._cere_mod(self._want_mode) is False:
             return
         self._mode_req_n += 1
 
@@ -745,6 +823,8 @@ class ExtNavSupervisor(SafetySupervisor):
                 self.latched = Action.NONE
                 self.latched_monitor = None
                 self.passive = False
+                self._clear_abort()
+                self._exit_direct_done = False
                 self.armed = False
             else:
                 return self.latched
@@ -762,7 +842,7 @@ class ExtNavSupervisor(SafetySupervisor):
 
         worst, monitor, detail = Action.NONE, None, ''
         for mon in (self._mon_override, self._mon_link, self._mon_ekf,
-                    self._mon_radius, self._mon_ceiling,
+                    self._mon_threads, self._mon_radius, self._mon_ceiling,
                     self._mon_descent_rate, self._mon_tilt):
             act, name, why = mon(now, None, phase)
             if act > worst:
@@ -772,13 +852,48 @@ class ExtNavSupervisor(SafetySupervisor):
             return Action.EXIT
         return Action.NONE
 
+    def _mon_threads(self, now, age, phase):
+        """Faza 3, pe ExtNav: orice fir mort dupa ENGAGE e EXIT - un fir
+        mort e o defectiune, nu o fereastra ratata. Firul principal mort
+        nu mai poate executa EXIT-ul: supervizorul il face singur, direct
+        (_exit_direct)."""
+        if phase not in self.ekf_phases:
+            return Action.NONE, None, ''
+        for nume, varsta in self._fire_stagnate(now):
+            return (Action.EXIT, f"thread_{nume}",
+                    f"firul {nume} fara heartbeat de {varsta:.1f} s")
+        return Action.NONE, None, ''
+
     def _trigger_exit(self, now, monitor, detail, phase):
         self.latched = Action.EXIT
         self.latched_monitor = monitor
         self.passive = monitor == 'pilot_override'
+        self._set_abort(f"{monitor}: {detail}", passive=False)
         self._emit(now, monitor, Action.EXIT, detail, phase)
+        if monitor == 'thread_principal':
+            self._exit_direct(now, phase)
         if self.on_exit is not None:
             self.on_exit(f"{monitor}: {detail}")
+
+    def _exit_direct(self, now, phase):
+        """EXIT-ul ordonat, facut de supervizor cand masina de stari nu
+        mai poate (firul principal mort): setul EKF 1 inapoi, apoi LOITER,
+        amandoua prin URGENT, o singura data. Fara ALT_HOLD de rezerva:
+        aici nu mai e nimeni sa confirme modurile."""
+        if getattr(self, '_exit_direct_done', False):
+            return
+        self._exit_direct_done = True
+        ok1 = False
+        fn = getattr(self.v, 'send_ekf_source_set', None)
+        if fn is not None:
+            try:
+                ok1 = fn(1, urgent=True)
+            except TypeError:
+                ok1 = fn(1)
+        ok2 = self._cere_mod(MODE_LOITER)
+        self._emit(now, 'exit_direct', Action.EXIT,
+                   f"masina de stari nu raspunde: SRC1 ({ok1}) si LOITER "
+                   f"({ok2}) cerute direct, prin URGENT", phase)
 
     def _mon_ekf(self, now, age, phase):
         """Brief §6: the EKF must hold a valid horizontal position while
