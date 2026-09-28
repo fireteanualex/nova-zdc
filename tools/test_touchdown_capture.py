@@ -90,7 +90,7 @@ def test_cadrul_de_dinaintea_ON_GROUND():
     cap.update(106.1)
     d, ok, why = cap.done[0]
     assert ok, why
-    img = cv2.imread(os.path.join(d, 'touchdown.png'), cv2.IMREAD_UNCHANGED)
+    img = cv2.imread(os.path.join(d, os.path.basename(d) + '.png'), cv2.IMREAD_UNCHANGED)
     t = t_din(img)
     assert t <= 105.05 and 105.05 - t < 1 / 30.0 + 1e-3, t
     ref = [f for tt, f in ring.buf if abs(tt - t) < 1e-3][0]       # t in ms, in pixels
@@ -188,8 +188,9 @@ def test_centrul_culoarea_si_adnotarea():
     cap.on_contact(contact(2.0))
     cap.update(9.0)
     d = cap.done[0][0]
-    img = cv2.imread(os.path.join(d, 'touchdown.png'), cv2.IMREAD_UNCHANGED)
-    ann = cv2.imread(os.path.join(d, 'touchdown_annotated.png'), cv2.IMREAD_UNCHANGED)
+    img = cv2.imread(os.path.join(d, os.path.basename(d) + '.png'), cv2.IMREAD_UNCHANGED)
+    ann = cv2.imread(os.path.join(d, os.path.basename(d) + '_annotated.png'),
+                     cv2.IMREAD_UNCHANGED)
     meta = json.load(open(os.path.join(d, 'meta.json')))
     assert img.ndim == 3 and meta['image']['color'] is True
     diff = np.any(img != ann, axis=2)
@@ -270,7 +271,7 @@ def test_PC_preia_ce_scrie_Pi():
     text = '\n'.join(lines)
     assert rc == 0, text
     pachet = [dp for dp, _, fsn in os.walk(os.path.join(local, 'handover'))
-              if 'README.txt' in fsn and os.path.basename(dp).startswith('attempt_')]
+              if 'README.txt' in fsn and os.path.basename(dp).startswith('Handoff')]
     assert pachet, text
     readme = open(os.path.join(pachet[0], 'README.txt')).read()
     assert '123456' in readme and 'negru' in readme, readme[:400]
@@ -334,7 +335,51 @@ def test_deploy_nu_sterge_capturile_de_pe_Pi():
     return "rsync --delete cu scoring/ exclus"
 
 
+def test_numerotarea_Handoff_si_calea_plata():
+    """28.09.2026: o captura = scoring/Handoff<n>-touchdown/, cu imaginea
+    Handoff<n>-touchdown.png. n continua peste porniri de la cel mai mare
+    index existent (si o captura incompleta isi pastreaza numarul);
+    directoarele cu alt nume (formatul vechi pe data/sesiune) sunt ignorate."""
+    root = tempfile.mkdtemp()
+    os.makedirs(os.path.join(root, '20260927', 's20260927-140312', 'attempt_1'))
+    cap = tc.TouchdownCapture(root, ring_cu(10.0, 20.0), camera_info=cam,
+                              threaded=False, clock=lambda: 0.0)
+    cap.on_contact(contact(12.0))
+    cap.on_contact(contact(16.0))
+    cap.update(40.0)
+    nume = sorted(os.path.basename(d) for d, ok, _ in cap.done if ok)
+    assert nume == ['Handoff1-touchdown', 'Handoff2-touchdown'], nume
+    d = os.path.join(root, 'Handoff2-touchdown')
+    for f in ('Handoff2-touchdown.png', 'Handoff2-touchdown_annotated.png',
+              'meta.json', 'MANIFEST.sha256'):
+        assert os.path.isfile(os.path.join(d, f)), f
+    meta = json.load(open(os.path.join(d, 'meta.json')))
+    assert meta['handoff'] == 2 and meta['name'] == 'Handoff2-touchdown', meta
+    assert meta['attempt'] == 2 and meta['image']['file'] == 'Handoff2-touchdown.png'
+    assert meta['format'] == 'nova-scoring-2' and meta['session'] == cap.session
+    # o pornire noua continua numerotarea; una incompleta (Handoff5, fara
+    # manifest) isi pastreaza numarul
+    os.makedirs(os.path.join(root, 'Handoff5-touchdown'))
+    cap2 = tc.TouchdownCapture(root, ring_cu(10.0, 14.0), camera_info=cam,
+                               threaded=False, clock=lambda: 0.0)
+    cap2.on_contact(contact(12.0))
+    cap2.update(20.0)
+    assert os.path.basename(cap2.done[0][0]) == 'Handoff6-touchdown', cap2.done
+    json6 = json.load(open(os.path.join(root, 'Handoff6-touchdown', 'meta.json')))
+    assert json6['attempt'] == 1 and json6['handoff'] == 6
+    ev = []
+    cap3 = tc.TouchdownCapture(root, ring_cu(10.0, 14.0), threaded=False,
+                               clock=lambda: 0.0, on_event=lambda n, i: ev.append((n, i)))
+    cap3.on_contact(contact(12.0))
+    cap3.update(20.0)
+    cap3.update(20.0)
+    assert ev[-1][0] == 'capture_saved' and ev[-1][1]['name'] == 'Handoff7-touchdown', ev
+    assert tc.last_index(os.path.join(root, 'nu-exista')) == 0
+    return "Handoff1, Handoff2 intr-o pornire; dupa Handoff5 incomplet -> Handoff6, Handoff7"
+
+
 TESTS = [
+    ('numerotarea Handoff si calea plata', test_numerotarea_Handoff_si_calea_plata),
     ('deploy nu sterge capturile de pe Pi', test_deploy_nu_sterge_capturile_de_pe_Pi),
     ('piesele capturii: metadate, culoare, ora FC',
      test_piesele_capturii_metadate_culoare_ora_FC),

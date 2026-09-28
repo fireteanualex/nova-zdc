@@ -11,26 +11,32 @@ library + the system OpenSSH client (`ssh`). numpy/OpenCV are optional.
     python3 tools/fetch_scoring.py fetch --session s20260927-140312 --fc-log 00000042.BIN
     python3 tools/fetch_scoring.py verify data/scoring_pc/handover/20260927_cursa1
 
-Contract: docs/SCORING_FORMAT.md. An attempt is complete only when it has
-MANIFEST.sha256 (written last on the Pi). Incomplete attempts are listed and
-ignored.
+Contract: docs/SCORING_FORMAT.md. On the Pi each touchdown is one flat
+directory, ~/nova-zdc/scoring/Handoff<n>-touchdown/, complete only when it
+has MANIFEST.sha256 (written last). Incomplete ones are listed and ignored.
 
 Local layout (root: --local, default <repo>/data/scoring_pc):
 
-    pi/<date>/<session>/attempt_<n>/      verified copy, byte-identical to the Pi
-    .partial/<date>/<session>/attempt_<n>/ download in progress (never trusted)
-    carantina/<date>/<session>/attempt_<n>/ failed sha256 check + CARANTINA.txt
-    handover/<date>_<cursa>/               the package handed to the jury
-        README.txt                         race summary
-        MANIFEST_HANDOVER.sha256           every file of the package (incl. fc/)
-        fc/<log>.bin                       FC DataFlash log(s), via --fc-log
-        attempt_<n>/                       Pi files + README.txt (+ regenerated
-                                           annotated copy, if the Pi had none)
+    Handoff<n>-touchdown/                 verified copy, byte-identical to the Pi
+        Handoff<n>-touchdown.png          the touchdown image
+    .partial/Handoff<n>-touchdown/        download in progress (never trusted)
+    carantina/Handoff<n>-touchdown/       failed sha256 check + CARANTINA.txt
+    handover/<date>_<cursa>/              the package handed to the jury, one
+                                          per Pi session (date/session come
+                                          from each capture's meta.json)
+        README.txt                        race summary
+        MANIFEST_HANDOVER.sha256          every file of the package (incl. fc/)
+        fc/<log>.bin                      FC DataFlash log(s), via --fc-log
+        Handoff<n>-touchdown/             Pi files + README.txt (+ regenerated
+                                          annotated copy, if the Pi had none)
 
-An attempt counts as received only once pi/.../attempt_<n>/ exists, and that
-directory appears only by an atomic rename after every file matched the
-manifest. So a second fetch downloads nothing, and an interrupted or corrupt
-download is never mistaken for a received one.
+A capture counts as received only once Handoff<n>-touchdown/ exists locally,
+and that directory appears only by an atomic rename after every file matched
+the manifest. So a second fetch downloads nothing, and an interrupted or
+corrupt download is never mistaken for a received one. If the Pi restarts
+its numbering (scoring/ emptied), a new Handoff<n> would carry the name of
+one already received: the remote manifest's sha256 is compared with the
+local one and a mismatch is reported, never overwritten.
 
 Nothing is ever written or deleted on the Pi: the only remote commands are
 `find`, `tar -c` to stdout and `cat` (all read-only).
@@ -70,7 +76,11 @@ NO_ROOT_MARK = '__NOVA_NO_ROOT__'
 
 NAME_DATE = re.compile(r'^\d{8}$')
 NAME_SESSION = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
-NAME_ATTEMPT = re.compile(r'^attempt_(\d+)$')
+NAME_HANDOFF = re.compile(r'^Handoff(\d+)-touchdown$')
+#: `sha256sum` output for a remote manifest (absolute or relative path).
+SUM_LINE = re.compile(r'^([0-9a-fA-F]{64}) [ *](?:.*/)?(Handoff\d+-touchdown)/'
+                      + re.escape('MANIFEST.sha256') + r'$')
+UNKNOWN_KEY = 'necunoscut/necunoscut'
 MANIFEST_LINE = re.compile(r'^([0-9a-fA-F]{64}) [ *](.+)$')
 
 #: How long a verification failure is left alone in --watch before the
@@ -114,58 +124,64 @@ class PngError(Exception):
 
 # --- attempts ---------------------------------------------------------------
 
-class AttemptRef(collections.namedtuple('AttemptRef', 'date session n complete')):
+class AttemptRef(collections.namedtuple('AttemptRef', 'n complete manifest_sha')):
+    """One touchdown capture. `manifest_sha`: sha256 of its MANIFEST.sha256
+    as seen at the source (None when unknown or incomplete)."""
     __slots__ = ()
+
+    def __new__(cls, n, complete, manifest_sha=None):
+        return super().__new__(cls, n, complete, manifest_sha)
 
     @property
     def name(self):
-        return f"attempt_{self.n}"
-
-    @property
-    def key(self):
-        return f"{self.date}/{self.session}"
+        return f"Handoff{self.n}-touchdown"
 
     @property
     def rel(self):
-        return f"{self.date}/{self.session}/{self.name}"
-
-
-def _valid_names(date, session, attempt):
-    m = NAME_ATTEMPT.match(attempt)
-    if NAME_DATE.match(date) and NAME_SESSION.match(session) and m:
-        return int(m.group(1))
-    return None
+        return self.name
 
 
 def _sorted_refs(refs):
-    return sorted(refs, key=lambda r: (r.date, r.session, r.n))
+    return sorted(refs, key=lambda r: r.n)
+
+
+def handoff_n(name):
+    m = NAME_HANDOFF.match(name)
+    return int(m.group(1)) if m else None
 
 
 def parse_find_listing(text):
-    """Parse `find ROOT -mindepth 3 -maxdepth 4 -printf '%y %P\\n'`.
+    """Parse the Pi listing: `find ROOT -mindepth 1 -maxdepth 2 -printf
+    '%y %P\\n'` followed by `sha256sum` of every Handoff*/MANIFEST.sha256.
 
-    Returns (refs, ignored): attempt directories at depth 3, complete when a
-    MANIFEST.sha256 file sits at depth 4. Unexpected names are ignored (and
-    reported), which also keeps every path used later free of shell syntax."""
-    found = {}
-    ignored = []
+    Returns (refs, ignored): Handoff<n>-touchdown directories at depth 1,
+    complete when their MANIFEST.sha256 is listed. Other names at depth 1
+    are ignored (and reported), which also keeps every path used later free
+    of shell syntax."""
+    found, sums, ignored = {}, {}, []
     for line in text.splitlines():
         line = line.rstrip('\r')
         if not line.strip():
             continue
+        m = SUM_LINE.match(line)
+        if m:
+            n = handoff_n(m.group(2))
+            if n is not None:
+                sums[n] = m.group(1).lower()
+            continue
         kind, _, rel = line.partition(' ')
         parts = rel.split('/')
-        if len(parts) == 3 and kind == 'd':
-            n = _valid_names(*parts)
+        if len(parts) == 1:
+            n = handoff_n(parts[0])
             if n is None:
                 ignored.append(rel)
             else:
-                found.setdefault((parts[0], parts[1], n), False)
-        elif len(parts) == 4 and parts[3] == MANIFEST and kind == 'f':
-            n = _valid_names(*parts[:3])
+                found.setdefault(n, False)
+        elif len(parts) == 2 and parts[1] == MANIFEST and kind == 'f':
+            n = handoff_n(parts[0])
             if n is not None:
-                found[(parts[0], parts[1], n)] = True
-    refs = [AttemptRef(d, s, n, c) for (d, s, n), c in found.items()]
+                found[n] = True
+    refs = [AttemptRef(n, c, sums.get(n) if c else None) for n, c in found.items()]
     return _sorted_refs(refs), ignored
 
 
@@ -571,28 +587,21 @@ class LocalSource(object):
         if not os.path.isdir(self.root):
             raise TransportError(f"nu exista directorul sursa {self.root}")
         refs, self.ignored = [], []
-        for date in sorted(os.listdir(self.root)):
-            dp = os.path.join(self.root, date)
-            if not os.path.isdir(dp):
+        for name in sorted(os.listdir(self.root)):
+            ap = os.path.join(self.root, name)
+            if not os.path.isdir(ap):
                 continue
-            for session in sorted(os.listdir(dp)):
-                sp = os.path.join(dp, session)
-                if not os.path.isdir(sp):
-                    continue
-                for att in sorted(os.listdir(sp)):
-                    ap = os.path.join(sp, att)
-                    if not os.path.isdir(ap):
-                        continue
-                    n = _valid_names(date, session, att)
-                    if n is None:
-                        self.ignored.append(f"{date}/{session}/{att}")
-                        continue
-                    refs.append(AttemptRef(date, session, n,
-                                           os.path.isfile(os.path.join(ap, MANIFEST))))
+            n = handoff_n(name)
+            if n is None:
+                self.ignored.append(name)
+                continue
+            man = os.path.join(ap, MANIFEST)
+            complete = os.path.isfile(man)
+            refs.append(AttemptRef(n, complete, sha256_file(man) if complete else None))
         return _sorted_refs(refs)
 
     def download(self, ref, dest):
-        src = os.path.join(self.root, ref.date, ref.session, ref.name)
+        src = os.path.join(self.root, ref.name)
         try:
             shutil.copytree(src, dest)
         except (OSError, shutil.Error) as e:
@@ -695,15 +704,16 @@ class SshSource(object):
 
     def list_cmd(self):
         r = self.root_expr
-        return (f"if [ -d {r} ]; then find {r} -mindepth 3 -maxdepth 4 "
-                f"-printf '%y %P\\n'; else echo {NO_ROOT_MARK}; fi")
+        return (f"if [ -d {r} ]; then find {r} -mindepth 1 -maxdepth 2 "
+                f"-printf '%y %P\\n'; find {r} -mindepth 2 -maxdepth 2 "
+                f"-name {MANIFEST} -exec sha256sum {{}} +; "
+                f"else echo {NO_ROOT_MARK}; fi")
 
     def attempt_expr(self, ref):
-        return f"{self.root_expr}/{shlex.quote(ref.rel)}"
+        return f"{self.root_expr}/{shlex.quote(ref.name)}"
 
     def tar_cmd(self, ref):
-        return (f"tar -C {self.root_expr}/{shlex.quote(ref.key)} -cf - "
-                f"{shlex.quote(ref.name)}")
+        return f"tar -C {self.root_expr} -cf - {shlex.quote(ref.name)}"
 
     def list_attempts(self):
         rc, out, err = self._run(self.list_cmd(), self.timeout_list)
@@ -761,31 +771,43 @@ class SshSource(object):
 class Store(object):
     def __init__(self, local_root=DEFAULT_LOCAL, handover_root=None):
         self.root = local_root
-        self.mirror_root = os.path.join(local_root, 'pi')
+        self.mirror_root = local_root
         self.partial_root = os.path.join(local_root, '.partial')
         self.quar_root = os.path.join(local_root, 'carantina')
         self.handover_root = handover_root or os.path.join(local_root, 'handover')
 
-    def _p(self, base, ref):
-        return os.path.join(base, ref.date, ref.session, ref.name)
-
     def mirror(self, ref):
-        return self._p(self.mirror_root, ref)
+        return os.path.join(self.mirror_root, ref.name)
 
     def partial(self, ref):
-        return self._p(self.partial_root, ref)
+        return os.path.join(self.partial_root, ref.name)
 
     def quarantine(self, ref):
-        return self._p(self.quar_root, ref)
+        return os.path.join(self.quar_root, ref.name)
 
     def is_received(self, ref):
         return os.path.isfile(os.path.join(self.mirror(ref), MANIFEST))
+
+    def conflict(self, ref):
+        """The source's Handoff<n> is not the one received under that name
+        (the Pi restarted its numbering)."""
+        if not (ref.manifest_sha and self.is_received(ref)):
+            return False
+        return sha256_file(os.path.join(self.mirror(ref), MANIFEST)) != ref.manifest_sha
 
     def local_attempts(self):
         if not os.path.isdir(self.mirror_root):
             return []
         refs = LocalSource(self.mirror_root).list_attempts()
         return [r for r in refs if r.complete]
+
+    def session_key(self, ref):
+        """'<date>/<session>' of a received capture, from its meta.json."""
+        meta, _err = load_meta(self.mirror(ref))
+        date, session = str(meta.get('date', '')), str(meta.get('session', ''))
+        if NAME_DATE.match(date) and NAME_SESSION.match(session):
+            return f"{date}/{session}"
+        return UNKNOWN_KEY
 
 
 def accept_attempt(source, ref, store):
@@ -888,14 +910,15 @@ def attempt_readme(ref, meta, meta_err, verdict, regenerated):
     L = [
         "NOVA - ZDC 2026 - imaginea de touchdown (regula 8.3.3), predare conform 6.2.1.30",
         "",
-        f"Data: {ref.date}   Sesiune Pi: {ref.session}   Incercarea: {ref.n}",
+        f"{ref.name}   Data: {meta.get('date', '?')}   Sesiune Pi: "
+        f"{meta.get('session', '?')}   Incercarea in sesiune: {meta.get('attempt', '?')}",
         "",
-        "touchdown.png",
+        f"{ref.name}.png",
         "  Imaginea de touchdown pentru 8.3.3: cadrul camerei de aterizare facut in",
         "  momentul in care FC-ul (ArduPilot) a raportat ON_GROUND, adica la contactul",
         "  cu solul. Nerotita, nedecupata, nemodificata, la rezolutia fluxului",
         f"  ({size_txt}{color_txt}).",
-        "touchdown_annotated.png",
+        f"{ref.name}_annotated.png",
         "  Copie cu o cruce fina in centrul imaginii (x = w // 2, y = h // 2).",
     ]
     if regenerated:
@@ -950,10 +973,10 @@ def race_readme(folder, key, race_dir):
         f"Cursa: {folder}",
         f"Sesiune Pi: {key}",
         "",
-        "Incercari (imaginea de touchdown 8.3.3 + README in fiecare attempt_<n>/):",
+        "Capturi (imaginea de touchdown 8.3.3 + README in fiecare Handoff<n>-touchdown/):",
     ]
-    atts = sorted((d for d in os.listdir(race_dir) if NAME_ATTEMPT.match(d)),
-                  key=lambda d: int(NAME_ATTEMPT.match(d).group(1)))
+    atts = sorted((d for d in os.listdir(race_dir) if handoff_n(d) is not None),
+                  key=handoff_n)
     for a in atts:
         meta, _ = load_meta(os.path.join(race_dir, a))
         ms = _get(meta, 'sync', 'fc_time_boot_ms_contact')
@@ -974,7 +997,7 @@ def race_readme(folder, key, race_dir):
         "  MANIFEST_HANDOVER.sha256 acopera fiecare fisier din acest folder:",
         "    Linux:   sha256sum -c MANIFEST_HANDOVER.sha256",
         "    Windows: python tools\\fetch_scoring.py verify <acest folder>",
-        "  attempt_<n>/MANIFEST.sha256 e manifestul Pi-ului, neschimbat.",
+        "  Handoff<n>-touchdown/MANIFEST.sha256 e manifestul Pi-ului, neschimbat.",
         "",
     ]
     return '\n'.join(L)
@@ -997,16 +1020,17 @@ def build_attempt_package(ref, src_dir, race_dir, out):
     os.makedirs(race_dir, exist_ok=True)
     shutil.copytree(src_dir, tmp)
     meta, meta_err = load_meta(tmp)
-    img = os.path.join(tmp, 'touchdown.png')
-    ann = os.path.join(tmp, 'touchdown_annotated.png')
+    img_name, ann_name = f"{ref.name}.png", f"{ref.name}_annotated.png"
+    img = os.path.join(tmp, img_name)
+    ann = os.path.join(tmp, ann_name)
     regenerated = False
     if not os.path.isfile(img):
-        verdict = {'class': None, 'error': 'touchdown.png lipseste',
+        verdict = {'class': None, 'error': f'{img_name} lipseste',
                    'backend': backend_name()}
     else:
         if not os.path.isfile(ann):
             regenerated, msg = annotate_center(img, ann)
-            out(f"  touchdown_annotated.png lipsea: {msg}")
+            out(f"  {ann_name} lipsea: {msg}")
         verdict = center_verdict(img)
     write_text_if_changed(os.path.join(tmp, README),
                           attempt_readme(ref, meta, meta_err, verdict, regenerated))
@@ -1014,7 +1038,7 @@ def build_attempt_package(ref, src_dir, race_dir, out):
     pi_cls = _get(meta, 'center', 'class')
     out(f"  centru {ref.rel}: PC {verdict_line(verdict)} | Pi {pi_cls or 'lipseste'}")
     reasons = verdict_warnings(verdict, meta)
-    if not os.path.isfile(os.path.join(final, 'touchdown.png')):
+    if not os.path.isfile(os.path.join(final, img_name)):
         reasons.insert(0, "IMAGINEA DE TOUCHDOWN LIPSESTE")
     if reasons:
         _banner(out, ref.rel, reasons)
@@ -1105,9 +1129,10 @@ def update_handover(store, target_key, cursa, fc_logs, rename, out):
     Returns (changed_any, errors)."""
     by_key = collections.defaultdict(list)
     for ref in store.local_attempts():
-        by_key[ref.key].append(ref)
+        by_key[store.session_key(ref)].append(ref)
     if target_key is None and by_key:
-        target_key = max(by_key)
+        known = [k for k in by_key if k != UNKNOWN_KEY]
+        target_key = max(known) if known else UNKNOWN_KEY
     index = _load_index(store)
     errors, changed_any = [], False
     for key in sorted(by_key):
@@ -1179,35 +1204,34 @@ def resolve_session(opt, keys):
     return hits[0]
 
 
-def _only_session(refs, key, opt):
-    if not opt:
-        return refs
-    return [r for r in refs if r.key == key]
-
-
 def cmd_list(source, store, session_opt, out):
     refs = source.list_attempts()
-    key = resolve_session(session_opt, {r.key for r in refs})
-    refs = _only_session(refs, key, session_opt)
+    local = {r.name: store.session_key(r) for r in store.local_attempts()}
+    key = resolve_session(session_opt, set(local.values()))
+    if key is not None:
+        refs = [r for r in refs if local.get(r.name) == key]
     out(f"Sursa: {source.describe()}")
+    out(f"Local: {store.root}")
     if not refs:
-        out("  nicio incercare")
+        out("  nicio captura")
     todo = 0
     for r in refs:
         remote = 'completa  ' if r.complete else 'INCOMPLETA (fara MANIFEST.sha256, ignorata)'
-        if store.is_received(r):
-            local = 'primita'
+        if r.complete and store.conflict(r):
+            state = 'CONFLICT: alt continut decat copia locala (vezi fetch)'
+        elif store.is_received(r):
+            state = f"primita ({local.get(r.name, UNKNOWN_KEY)})"
         elif os.path.isdir(store.quarantine(r)):
-            local = 'CARANTINA (sha256 gresit la ultima descarcare)'
+            state = 'CARANTINA (sha256 gresit la ultima descarcare)'
         else:
-            local = '-'
+            state = '-'
         if r.complete and not store.is_received(r):
             todo += 1
-        out(f"  {r.rel:<40} {remote}  {local if r.complete else ''}".rstrip())
+        out(f"  {r.name:<24} {remote}  {state if r.complete else ''}".rstrip())
     for x in source.ignored:
         out(f"  ignorat (nume neasteptat): {x}")
     n_c = sum(1 for r in refs if r.complete)
-    out(f"{len(refs)} incercari: {n_c} complete, {len(refs) - n_c} incomplete; "
+    out(f"{len(refs)} capturi: {n_c} complete, {len(refs) - n_c} incomplete; "
         f"{todo} de adus cu fetch")
     return 0
 
@@ -1216,6 +1240,7 @@ class WatchState(object):
     def __init__(self):
         self.cycle = 0
         self.seen_incomplete = set()
+        self.seen_conflict = set()
         self.failed_at = {}
         self.link_down = None
 
@@ -1225,15 +1250,21 @@ def fetch_once(source, store, opts, out, state=None, now=time.monotonic):
     TransportError propagates (after packaging what did arrive)."""
     state = state or WatchState()
     refs = source.list_attempts()
-    key = resolve_session(opts.session, {r.key for r in refs}
-                          | {r.key for r in store.local_attempts()})
-    refs = _only_session(refs, key, opts.session)
     bad, new, link_err = [], [], None
     for ref in refs:
         if not ref.complete:
             if ref.rel not in state.seen_incomplete:
                 state.seen_incomplete.add(ref.rel)
                 out(f"  incompleta (fara MANIFEST.sha256), ignorata: {ref.rel}")
+            continue
+        if store.conflict(ref):
+            bad.append(ref)
+            if ref.rel not in state.seen_conflict:
+                state.seen_conflict.add(ref.rel)
+                out(f"  EROARE {ref.rel}: pe Pi are ALT continut decat copia locala "
+                    f"(numerotarea a reinceput pe Pi?). Nu suprascriu nimic; muta "
+                    f"{store.mirror(ref)} in alta parte si reia fetch ca s-o aduc "
+                    f"pe cea noua.")
             continue
         if store.is_received(ref):
             continue
@@ -1260,6 +1291,8 @@ def fetch_once(source, store, opts, out, state=None, now=time.monotonic):
             for p in problems[:20]:
                 out(f"      {p}")
             out(f"      copia e in carantina: {store.quarantine(ref)}")
+    key = resolve_session(opts.session, {store.session_key(r)
+                                         for r in store.local_attempts()})
     changed, errors = update_handover(store, key, opts.cursa, opts.fc_log or [],
                                       rename=bool(opts.session), out=out)
     for e in errors:
@@ -1313,8 +1346,8 @@ def cmd_verify(path, out):
         for p in problems:
             out(f"    {p}")
         fails += bool(problems)
-        dirs = [os.path.join(path, d) for d in sorted(os.listdir(path))
-                if NAME_ATTEMPT.match(d)]
+        dirs = [os.path.join(path, d) for d in sorted(os.listdir(path), key=str)
+                if handoff_n(d) is not None]
     elif os.path.isfile(os.path.join(path, MANIFEST)):
         dirs = [path]
     else:
@@ -1344,7 +1377,8 @@ def build_parser():
     common.add_argument('--handover', default=None,
                         help="radacina pachetelor de predare (implicit <local>/handover)")
     common.add_argument('--session', default=None,
-                        help="doar aceasta sesiune (sNNNNNNNN-NNNNNN sau DATA/SESIUNE)")
+                        help="sesiunea Pi (sNNNNNNNN-NNNNNN sau DATA/SESIUNE) careia "
+                             "i se aplica --cursa / --fc-log; list: doar capturile ei")
     common.add_argument('--ssh', default='ssh', help="executabilul ssh")
     common.add_argument('--identity', default=None, metavar='CHEIE',
                         help="cheia privata ssh (ssh -i), daca nu e cea implicita")
@@ -1357,9 +1391,9 @@ def build_parser():
         description="Aduce capturile de touchdown de pe Pi si face pachetul de predare.")
     sub = p.add_subparsers(dest='cmd')
     sub.required = True
-    sub.add_parser('list', parents=[common], help="incercarile de pe Pi")
+    sub.add_parser('list', parents=[common], help="capturile de pe Pi")
     f = sub.add_parser('fetch', parents=[common],
-                       help="descarca incercarile complete lipsa + pachetul de predare")
+                       help="descarca capturile complete lipsa + pachetul de predare")
     f.add_argument('--watch', type=float, default=None, metavar='N',
                    help="repeta la fiecare N secunde (Ctrl-C opreste)")
     f.add_argument('--cursa', default=None,

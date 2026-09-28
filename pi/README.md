@@ -489,8 +489,10 @@ Ce vezi în log, dacă merge:
 ```
 
 La COMPLETE EKF-ul revine pe setul 1 și modul trece în LOITER. Captura de
-scoring se aduce pe PC cu `tools/fetch_scoring.py` (`--watch` o ia pe
-fiecare nouă).
+scoring e în `~/nova-zdc/scoring/Handoff<n>-touchdown/Handoff<n>-touchdown.png`
+(n crește la fiecare touchdown, peste porniri) și se aduce pe PC cu
+`tools/fetch_scoring.py`, în `data/scoring_pc/Handoff<n>-touchdown/`
+(`--watch` o ia pe fiecare nouă).
 
 **Prima încercare, pe iarbă sau pământ moale, la `alt_riseup` mic.**
 

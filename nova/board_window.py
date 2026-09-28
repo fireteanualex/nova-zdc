@@ -197,7 +197,7 @@ class OsdMesaje:
         if name == 'throttle_low_ground':
             return "THROTTLE LA MINIM pe sol: risc de dezarmare", GALBEN
         if name == 'capture_saved':
-            return f"CAPTURA salvata ({g('center', '?')})", VERDE
+            return f"CAPTURA {g('name', '')} salvata ({g('center', '?')})", VERDE
         if name == 'capture_failed':
             return f"CAPTURA ESUATA: {g('reason')}", ROSU
         if name == 'handover_accept':

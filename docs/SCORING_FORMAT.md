@@ -1,36 +1,43 @@
 # Formatul capturii de touchdown (8.3.3, 6.2.1.30)
 
 Scris de Pi (nova/touchdown_capture.py), citit de PC (tools/fetch_scoring.py).
-O încercare e **completă** doar dacă are `MANIFEST.sha256` — manifestul se
+O captură e **completă** doar dacă are `MANIFEST.sha256` — manifestul se
 scrie ultimul, atomic (fișier temporar, fsync, redenumire), după toate
 celelalte fișiere.
 
 ## Structura pe Pi
 
-    ~/nova-zdc/scoring/<YYYYMMDD>/<sesiune>/attempt_<n>/
-        touchdown.png              cadrul de touchdown: nerotit, nedecupat, nemodificat,
-                                   rezoluția fluxului; color (BGR) sau gri
-        touchdown_annotated.png    copie cu o cruce fină în centrul imaginii
-        burst/<seq>_<t_ms>.jpg     seria din ring buffer, JPEG calitate 95
+    ~/nova-zdc/scoring/Handoff<n>-touchdown/
+        Handoff<n>-touchdown.png            cadrul de touchdown: nerotit, nedecupat,
+                                            nemodificat, rezoluția fluxului; color
+                                            (BGR) sau gri
+        Handoff<n>-touchdown_annotated.png  copie cu o cruce fină în centrul imaginii
+        burst/<seq>_<t_ms>.jpg              seria din ring buffer, JPEG calitate 95
         meta.json
-        MANIFEST.sha256            ultimul
+        MANIFEST.sha256                     ultimul
 
-- `<sesiune>`: `s<YYYYmmdd-HHMMSS>` de la pornirea aplicației (unică pe proces).
-- `<n>`: 1, 2, 3... în sesiune.
+- `<n>`: 1, 2, 3... pe Pi, **peste porniri** (din 28.09.2026): continuă de la
+  cel mai mare `Handoff<k>-touchdown` existent în `scoring/`, inclusiv unul
+  incomplet. Cât timp `scoring/` e păstrat, un număr nu se refolosește.
+- Data și sesiunea (`s<YYYYmmdd-HHMMSS>`, de la pornirea aplicației) nu mai
+  sunt în cale, ci în `meta.json`.
+- Formatul vechi (`<YYYYMMDD>/<sesiune>/attempt_<n>/`, `nova-scoring-1`) nu mai
+  e scris și nu e citit de PC.
 
 ## MANIFEST.sha256
 
 Format `sha256sum`: o linie pe fișier, `<hex sha256><2 spații><cale relativă>`,
 căi cu `/` (ex. `burst/0007_123456789.jpg`), sortate. Conține **toate**
-fișierele din `attempt_<n>/` în afară de manifestul însuși (deci și
+fișierele din `Handoff<n>-touchdown/` în afară de manifestul însuși (deci și
 `meta.json`). Se verifică cu `sha256sum -c MANIFEST.sha256` din director.
 
-## meta.json (`"format": "nova-scoring-1"`)
+## meta.json (`"format": "nova-scoring-2"`)
 
 | Cheie | Tip | Ce e |
 |---|---|---|
-| `format` | str | `"nova-scoring-1"` |
-| `date`, `session`, `attempt` | str, str, int | ca în cale |
+| `format` | str | `"nova-scoring-2"` |
+| `handoff`, `name` | int, str | `<n>` și `Handoff<n>-touchdown`, ca în cale |
+| `date`, `session`, `attempt` | str, str, int | data, sesiunea Pi și a câta captură din sesiune |
 | `sync.t_capture` | float | timpul capturii cadrului principal, ceasul Pi (time.monotonic, s) |
 | `sync.t_on_ground_rx` | float | când a primit Pi-ul `ON_GROUND` (același ceas) |
 | `sync.fc_time_boot_ms_contact` | int/null | `time_boot_ms` al FC-ului la `ON_GROUND` (se aliniază cu logul DataFlash) |
@@ -41,7 +48,7 @@ fișierele din `attempt_<n>/` în afară de manifestul însuși (deci și
 | `last_detection.lateral_m` | float/null | offsetul ei lateral |
 | `camera.preset`, `camera.sensor_mode`, `camera.scaler_crop`, `camera.calibration` | str, [w,h], [x,y,w,h], str | geometria |
 | `camera.ExposureTime`, `camera.AnalogueGain`, `camera.LensPosition` | num/null | metadatele cadrului principal |
-| `image.file`, `image.size`, `image.color` | str, [w,h], bool | |
+| `image.file`, `image.annotated`, `image.size`, `image.color` | str, str, [w,h], bool | |
 | `center.class` | str | `"negru"` / `"alb"` / `"ambiguu"` — **doar informativ** |
 | `center.mean`, `center.min`, `center.max`, `center.patch_px` | float, int, int, int | pe planul de gri, fereastra 5×5 din centru |
 | `burst.files`, `burst.t_from`, `burst.t_to` | int, float, float | |
@@ -55,9 +62,13 @@ max − min < 60; altfel `ambiguu`. Decizia finală e a omului.
 ## Pe PC: `tools/fetch_scoring.py`
 
 `list` / `fetch [--watch N] [--cursa NUME] [--fc-log X.BIN]` / `verify DIR`.
-Copia verificată a fiecărei încercări stă în `data/scoring_pc/pi/...`, identică
-octet cu octet cu cea de pe Pi (manifestul ei rămâne verificabil); pachetul de
-predare în `data/scoring_pc/handover/<YYYYMMDD>_<cursa>/`, cu `README.txt` și
+Copia verificată a fiecărei capturi stă în `data/scoring_pc/Handoff<n>-touchdown/`
+(imaginea: `data/scoring_pc/Handoff<n>-touchdown/Handoff<n>-touchdown.png`),
+identică octet cu octet cu cea de pe Pi (manifestul ei rămâne verificabil).
+Dacă Pi-ul reîncepe numerotarea (`scoring/` golit), PC-ul compară sha256-ul
+manifestului de pe Pi cu cel local și raportează conflictul, fără să
+suprascrie. Pachetul de predare, câte unul pe sesiune Pi, e în
+`data/scoring_pc/handover/<YYYYMMDD>_<cursa>/`, cu `README.txt` și
 `MANIFEST_HANDOVER.sha256` peste tot (inclusiv logul FC, în `fc/`). `verify`
-înlocuiește `sha256sum -c` pe Windows. O încercare cu hash greșit merge în
+înlocuiește `sha256sum -c` pe Windows. O captură cu hash greșit merge în
 `carantina/` și nu intră în pachet.

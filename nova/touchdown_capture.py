@@ -8,16 +8,23 @@ The touchdown capture for rule 8.3.3, written on the Pi (27.09.2026).
     ...at exit:                                 cap.stop()
 
 The file format is the contract with the PC (tools/fetch_scoring.py):
-docs/SCORING_FORMAT.md. In short, per attempt:
+docs/SCORING_FORMAT.md. In short, one flat directory per touchdown:
 
-    <root>/<YYYYMMDD>/<session>/attempt_<n>/
-        touchdown.png            the frame, untouched (stream size, no
-                                 rotation, no crop), colour when the camera
-                                 kept that frame's chroma, else gray
-        touchdown_annotated.png  a copy with a thin cross at the centre
-        burst/<seq>_<t_ms>.jpg   the ring buffer around the contact
-        meta.json                sync with the FC log, h_ref, camera, centre
-        MANIFEST.sha256          LAST: an attempt without it is incomplete
+    <root>/Handoff<n>-touchdown/
+        Handoff<n>-touchdown.png            the frame, untouched (stream
+                                            size, no rotation, no crop),
+                                            colour when the camera kept
+                                            that frame's chroma, else gray
+        Handoff<n>-touchdown_annotated.png  a copy with a thin cross at
+                                            the centre
+        burst/<seq>_<t_ms>.jpg              the ring buffer around contact
+        meta.json                           sync with the FC log, h_ref,
+                                            camera, centre, date/session
+        MANIFEST.sha256                     LAST: without it, incomplete
+
+<n> counts touchdowns on this Pi across runs (1, 2, 3...): it continues
+from the highest Handoff<k>-touchdown already in <root>, so a number is
+never reused while <root> is kept.
 
 Rules that make it trustworthy:
 - The frame is the newest one captured BEFORE the Pi received ON_GROUND
@@ -39,12 +46,30 @@ import hashlib
 import json
 import os
 import queue
+import re
 import threading
 import time
 
 import numpy as np
 
-FORMAT = 'nova-scoring-1'
+FORMAT = 'nova-scoring-2'
+#: Directory (and image base) name of touchdown n.
+NAME_RE = re.compile(r'^Handoff(\d+)-touchdown$')
+
+
+def handoff_name(n):
+    return f"Handoff{n}-touchdown"
+
+
+def last_index(root):
+    """Highest n of a Handoff<n>-touchdown directory in root (0 if none).
+    Incomplete ones count too: their number is taken."""
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return 0
+    ns = [int(m.group(1)) for m in map(NAME_RE.match, names) if m]
+    return max(ns, default=0)
 #: The burst: from the start of the touchdown descent (the frames at ~1 m,
 #: marker whole and centred) or contact - BURST_BEFORE_S, whichever is
 #: earlier, to contact + BURST_AFTER_S. Limited by what the ring holds.
@@ -139,7 +164,8 @@ class TouchdownCapture:
         now = datetime.datetime.now()
         self.date = now.strftime('%Y%m%d')
         self.session = session or now.strftime('s%Y%m%d-%H%M%S')
-        self.n_attempts = 0
+        self.n_attempts = 0         # touchdowns in this run (meta 'attempt')
+        self.next_index = last_index(root) + 1
         self.pending = []           # contacts waiting for their burst
         self.done = []              # (attempt dir, ok, reason) - for tests
         self._events = []
@@ -160,7 +186,12 @@ class TouchdownCapture:
         frames = self._frames()
         before = [(t, f) for t, f in frames if t <= t_rx]
         self.n_attempts += 1
-        job = {'n': self.n_attempts, 'info': dict(info), 't_rx': t_rx,
+        n = self.next_index
+        while os.path.exists(os.path.join(self.root, handoff_name(n))):
+            n += 1                      # something else created it meanwhile
+        self.next_index = n + 1
+        job = {'n': self.n_attempts, 'index': n, 'name': handoff_name(n),
+               'info': dict(info), 't_rx': t_rx,
                'main': before[-1] if before else None,
                'burst_from': min(t_rx - BURST_BEFORE_S,
                                  info.get('td_start_t') or t_rx),
@@ -234,15 +265,16 @@ class TouchdownCapture:
             self._run(j)
 
     def _run(self, j):
-        d = os.path.join(self.root, self.date, self.session, f"attempt_{j['n']}")
+        d = os.path.join(self.root, j['name'])
         try:
             meta = self._write(j, d)
             ok, reason = True, ''
             ev = ('capture_saved', {'dir': d, 'center': meta['center']['class'],
-                                    'attempt': j['n']})
+                                    'attempt': j['n'], 'name': j['name']})
         except Exception as e:                              # noqa: BLE001
             ok, reason = False, f"{type(e).__name__}: {e}"
-            ev = ('capture_failed', {'dir': d, 'reason': reason, 'attempt': j['n']})
+            ev = ('capture_failed', {'dir': d, 'reason': reason, 'attempt': j['n'],
+                                     'name': j['name']})
         self.done.append((d, ok, reason))
         with self._events_lock:
             self._events.append(ev)
@@ -261,10 +293,11 @@ class TouchdownCapture:
         ok, png = cv2.imencode('.png', img)
         if not ok:
             raise RuntimeError("PNG-ul nu s-a putut codifica")
-        hashes['touchdown.png'] = write_atomic(os.path.join(d, 'touchdown.png'), png.tobytes())
+        img_name = f"{j['name']}.png"
+        ann_name = f"{j['name']}_annotated.png"
+        hashes[img_name] = write_atomic(os.path.join(d, img_name), png.tobytes())
         ok, ann = cv2.imencode('.png', annotate(img))
-        hashes['touchdown_annotated.png'] = write_atomic(
-            os.path.join(d, 'touchdown_annotated.png'), ann.tobytes())
+        hashes[ann_name] = write_atomic(os.path.join(d, ann_name), ann.tobytes())
         g = gray if gray.ndim == 2 else cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
         center = classify_center(g)
         files = 0
@@ -278,8 +311,8 @@ class TouchdownCapture:
             files += 1
         info, fm, cam = j['info'], j.get('frame_meta') or {}, j['camera']
         meta = {
-            'format': FORMAT, 'date': self.date, 'session': self.session,
-            'attempt': j['n'],
+            'format': FORMAT, 'handoff': j['index'], 'name': j['name'],
+            'date': self.date, 'session': self.session, 'attempt': j['n'],
             'sync': {'t_capture': t_main,
                      't_on_ground_rx': j['t_rx'],
                      'fc_time_boot_ms_contact': info.get('fc_time_boot_ms'),
@@ -295,7 +328,7 @@ class TouchdownCapture:
                        'ExposureTime': fm.get('ExposureTime'),
                        'AnalogueGain': fm.get('AnalogueGain'),
                        'LensPosition': fm.get('LensPosition')},
-            'image': {'file': 'touchdown.png', 'size': [int(img.shape[1]), int(img.shape[0])],
+            'image': {'file': img_name, 'annotated': ann_name, 'size': [int(img.shape[1]), int(img.shape[0])],
                       'color': color},
             'center': center,
             'burst': {'files': files,

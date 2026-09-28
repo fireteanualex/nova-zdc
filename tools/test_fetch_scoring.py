@@ -76,21 +76,23 @@ def write_manifest(d):
 
 def make_attempt(root, n=1, session=SESS, center=10, annotated=True, manifest=True,
                  pi_class='negru', burst=3, png=None):
-    d = os.path.join(root, DATE, session, f"attempt_{n}")
+    name = f"Handoff{n}-touchdown"
+    d = os.path.join(root, name)
     os.makedirs(os.path.join(d, 'burst'))
-    img = os.path.join(d, 'touchdown.png')
+    img = os.path.join(d, f"{name}.png")
     if png is not None:
         with open(img, 'wb') as f:
             f.write(png)
     else:
         write_png(img, center)
     if annotated:
-        shutil.copyfile(img, os.path.join(d, 'touchdown_annotated.png'))
+        shutil.copyfile(img, os.path.join(d, f"{name}_annotated.png"))
     for i in range(burst):
         with open(os.path.join(d, 'burst', f"{i:04d}_{1000 + 33 * i}.jpg"), 'wb') as f:
             f.write(FAKE_JPEG + bytes([n, i]))
     meta = {
-        'format': 'nova-scoring-1', 'date': DATE, 'session': session, 'attempt': n,
+        'format': 'nova-scoring-2', 'handoff': n, 'name': name,
+        'date': DATE, 'session': session, 'attempt': n,
         'sync': {'t_capture': 812.5, 't_on_ground_rx': 812.49,
                  'fc_time_boot_ms_contact': FC_MS + n, 'fc_time_unix_usec': UNIX_US,
                  'pi_time_utc': '2026-09-27T14:03:12.400+00:00'},
@@ -99,7 +101,8 @@ def make_attempt(root, n=1, session=SESS, center=10, annotated=True, manifest=Tr
         'camera': {'preset': 'crop1280', 'sensor_mode': [1536, 864],
                    'scaler_crop': [0, 0, 4608, 2592], 'calibration': 'derivata+scalata',
                    'ExposureTime': 2000, 'AnalogueGain': 1.5, 'LensPosition': 1.63},
-        'image': {'file': 'touchdown.png', 'size': [W, H], 'color': True},
+        'image': {'file': f"{name}.png", 'annotated': f"{name}_annotated.png",
+                  'size': [W, H], 'color': True},
         'center': {'class': pi_class, 'mean': 10.0, 'min': 10, 'max': 10, 'patch_px': 25},
         'burst': {'files': burst, 't_from': 811.0, 't_to': 813.0},
     }
@@ -221,17 +224,17 @@ def test_listare_completa_si_incompleta():
     src, loc = tmp(), tmp()
     make_attempt(src, 1)
     make_attempt(src, 2, manifest=False)
-    os.makedirs(os.path.join(src, DATE, SESS, 'ciudat'))
+    os.makedirs(os.path.join(src, 'ciudat'))
     rc, out = run('list', '--source-dir', src, '--local', loc)
     assert rc == 0, out
-    l1 = [x for x in out.splitlines() if 'attempt_1' in x][0]
-    l2 = [x for x in out.splitlines() if 'attempt_2' in x][0]
+    l1 = [x for x in out.splitlines() if 'Handoff1-touchdown' in x][0]
+    l2 = [x for x in out.splitlines() if 'Handoff2-touchdown' in x][0]
     assert 'completa' in l1 and 'INCOMPLETA' not in l1, l1
     assert 'INCOMPLETA' in l2, l2
     assert 'ignorat' in out and 'ciudat' in out, out
     assert '1 de adus cu fetch' in out, out
     shutil.rmtree(src), shutil.rmtree(loc)
-    return "attempt_1 completa, attempt_2 INCOMPLETA, nume ciudat raportat"
+    return "Handoff1 completa, Handoff2 INCOMPLETA, nume ciudat raportat"
 
 
 @pure_python
@@ -241,16 +244,16 @@ def test_fetch_ignora_incompleta():
     make_attempt(src, 2, manifest=False)
     rc, out = run('fetch', '--source-dir', src, '--local', loc)
     assert rc == 0, out
-    pi = os.path.join(loc, 'pi', DATE, SESS)
-    assert sorted(os.listdir(pi)) == ['attempt_1'], os.listdir(pi)
+    got = sorted(x for x in os.listdir(loc) if x.startswith('Handoff'))
+    assert got == ['Handoff1-touchdown'], got
     race = os.path.join(loc, 'handover', f"{DATE}_{SESS}")
-    assert os.path.isdir(os.path.join(race, 'attempt_1'))
-    assert not os.path.exists(os.path.join(race, 'attempt_2'))
-    assert 'incompleta' in out and 'attempt_2' in out, out
-    # once the Pi finishes attempt_2 it is picked up
-    write_manifest(os.path.join(src, DATE, SESS, 'attempt_2'))
+    assert os.path.isdir(os.path.join(race, 'Handoff1-touchdown'))
+    assert not os.path.exists(os.path.join(race, 'Handoff2-touchdown'))
+    assert 'incompleta' in out and 'Handoff2-touchdown' in out, out
+    # once the Pi finishes Handoff2 it is picked up
+    write_manifest(os.path.join(src, 'Handoff2-touchdown'))
     rc, out = run('fetch', '--source-dir', src, '--local', loc)
-    assert rc == 0 and os.path.isdir(os.path.join(race, 'attempt_2')), out
+    assert rc == 0 and os.path.isdir(os.path.join(race, 'Handoff2-touchdown')), out
     shutil.rmtree(src), shutil.rmtree(loc)
     return "incompleta ignorata, preluata dupa ce apare manifestul"
 
@@ -266,10 +269,10 @@ def test_sha256_gresit_carantina():
     assert rc == 1, (rc, out)
     assert 'sha256 diferit: burst/0001_1033.jpg' in out, out
     assert 'NU e primita' in out
-    assert not os.path.exists(os.path.join(loc, 'pi', DATE, SESS, 'attempt_1'))
+    assert not os.path.exists(os.path.join(loc, 'Handoff1-touchdown'))
     race = os.path.join(loc, 'handover', f"{DATE}_{SESS}")
-    assert not os.path.exists(os.path.join(race, 'attempt_1'))
-    q = os.path.join(loc, 'carantina', DATE, SESS, 'attempt_1')
+    assert not os.path.exists(os.path.join(race, 'Handoff1-touchdown'))
+    q = os.path.join(loc, 'carantina', 'Handoff1-touchdown')
     assert os.path.isfile(os.path.join(q, fs.QUARANTINE_NOTE))
     assert 'NU E PRIMITA' in open(os.path.join(q, fs.QUARANTINE_NOTE)).read()
     rc, out = run('list', '--source-dir', src, '--local', loc)
@@ -284,8 +287,8 @@ def test_sha256_gresit_carantina():
     os.remove(extra)
     rc, out = run('fetch', '--source-dir', src, '--local', loc)
     assert rc == 0, out
-    assert os.path.isdir(os.path.join(race, 'attempt_1')) and not os.path.exists(q)
-    assert not os.listdir(os.path.join(loc, '.partial', DATE, SESS))
+    assert os.path.isdir(os.path.join(race, 'Handoff1-touchdown')) and not os.path.exists(q)
+    assert not os.listdir(os.path.join(loc, '.partial'))
     shutil.rmtree(src), shutil.rmtree(loc)
     return "hash gresit si fisier in plus -> rc 1, carantina, nepredat; reparat -> primit"
 
@@ -313,8 +316,9 @@ def test_pachet_de_predare_si_readme():
     rc, out = run('fetch', '--source-dir', src, '--local', loc, '--cursa', 'cursa 1')
     assert rc == 0, out
     race = os.path.join(loc, 'handover', f"{DATE}_cursa_1")
-    a = os.path.join(race, 'attempt_1')
-    for f in ('touchdown.png', 'touchdown_annotated.png', 'meta.json', fs.MANIFEST,
+    a = os.path.join(race, 'Handoff1-touchdown')
+    for f in ('Handoff1-touchdown.png', 'Handoff1-touchdown_annotated.png', 'meta.json',
+              fs.MANIFEST,
               'README.txt', 'burst/0000_1000.jpg'):
         assert os.path.isfile(os.path.join(a, *f.split('/'))), f
     assert open(os.path.join(a, fs.MANIFEST), 'rb').read() == \
@@ -326,14 +330,14 @@ def test_pachet_de_predare_si_readme():
     assert 'Decizia finala apartine omului' in readme
     assert readme.isascii(), "README cu caractere non-ASCII"
     race_txt = open(os.path.join(race, 'README.txt')).read()
-    assert f"Sesiune Pi: {DATE}/{SESS}" in race_txt and 'attempt_1' in race_txt
+    assert f"Sesiune Pi: {DATE}/{SESS}" in race_txt and 'Handoff1-touchdown' in race_txt
     man = open(os.path.join(race, fs.HANDOVER_MANIFEST)).read()
-    assert 'attempt_1/README.txt' in man and 'README.txt' in man
+    assert 'Handoff1-touchdown/README.txt' in man and 'README.txt' in man
     rc, vout = run('verify', race)
     assert rc == 0, vout
     assert fs.load_meta(a)[0]['sync']['fc_time_boot_ms_contact'] == FC_MS + 1
     shutil.rmtree(src), shutil.rmtree(loc)
-    return "handover/20260927_cursa_1/attempt_1: fisierele Pi + README (ms FC, UTC, verdict); verify OK"
+    return "handover/20260927_cursa_1/Handoff1-touchdown: fisierele Pi + README (ms FC, UTC, verdict); verify OK"
 
 
 @pure_python
@@ -352,7 +356,8 @@ def test_fc_log_in_pachet_si_manifest():
     h = fs.sha256_file(binp)
     man = open(os.path.join(race, fs.HANDOVER_MANIFEST)).read()
     assert f"{h}  fc/00000042.BIN\n" in man, man
-    assert 'attempt_1/MANIFEST.sha256' in man and 'attempt_2/touchdown.png' in man
+    assert 'Handoff1-touchdown/MANIFEST.sha256' in man
+    assert 'Handoff2-touchdown/Handoff2-touchdown.png' in man
     assert 'fc/00000042.BIN' in open(os.path.join(race, 'README.txt')).read()
     assert run('verify', race)[0] == 0
     before = snapshot(loc)
@@ -387,12 +392,12 @@ def test_adnotata_regenerata_cand_lipseste():
             rc, out = run('fetch', '--source-dir', src, '--local', loc)
             assert rc == 0, out
             assert 'touchdown_annotated.png lipsea: regenerata' in out, out
-            assert not os.path.exists(os.path.join(loc, 'pi', DATE, SESS, 'attempt_1',
-                                                   'touchdown_annotated.png'))
-            a = os.path.join(loc, 'handover', f"{DATE}_{SESS}", 'attempt_1')
+            assert not os.path.exists(os.path.join(loc, 'Handoff1-touchdown',
+                                                   'Handoff1-touchdown_annotated.png'))
+            a = os.path.join(loc, 'handover', f"{DATE}_{SESS}", 'Handoff1-touchdown')
             fs.set_backend(False)
-            ann = fs.decode_png(os.path.join(a, 'touchdown_annotated.png'))
-            org = fs.decode_png(os.path.join(a, 'touchdown.png'))
+            ann = fs.decode_png(os.path.join(a, 'Handoff1-touchdown_annotated.png'))
+            org = fs.decode_png(os.path.join(a, 'Handoff1-touchdown.png'))
             cx, cy = W // 2, H // 2
             for x, y in fs.cross_pixels(W, H):
                 assert ann.rows[y][3 * x:3 * x + 3] == b'\xff\x00\x00', (x, y)
@@ -401,7 +406,7 @@ def test_adnotata_regenerata_cand_lipseste():
                     org.rows[y][3 * (cx - 2):3 * (cx + 3)], "crucea acopera centrul"
             assert 'REGENERATA PE PC' in open(os.path.join(a, 'README.txt')).read()
             race = os.path.dirname(a)
-            assert 'attempt_1/touchdown_annotated.png' in open(
+            assert 'Handoff1-touchdown/Handoff1-touchdown_annotated.png' in open(
                 os.path.join(race, fs.HANDOVER_MANIFEST)).read()
             rc, vout = run('verify', race)
             assert rc == 0 and 'in plus (ale PC-ului)' in vout, vout
@@ -421,7 +426,7 @@ def test_centru_ambiguu_avertisment_vizibil():
     assert rc == 0, out
     assert '#' * 40 in out and 'ATENTIE' in out and 'AMBIGUU' in out, out
     assert 'decizia finala e a omului' in out, out
-    readme = open(os.path.join(loc, 'handover', f"{DATE}_{SESS}", 'attempt_1',
+    readme = open(os.path.join(loc, 'handover', f"{DATE}_{SESS}", 'Handoff1-touchdown',
                                'README.txt')).read()
     assert 'PC: ambiguu' in readme and 'ATENTIE: centrul e AMBIGUU' in readme
     # undecodable image: no crash, "verdict indisponibil" banner
@@ -470,17 +475,21 @@ class FakePi(object):
             root = self.path(toks[3])
             if not os.path.isdir(root):
                 return 0, (fs.NO_ROOT_MARK + '\n').encode(), b''
-            lines = []
+            assert "-exec sha256sum {} +" in cmd, cmd
+            lines, sums = [], []
             for dp, dn, fns in os.walk(root):
                 rel = os.path.relpath(dp, root).replace(os.sep, '/')
                 depth = 0 if rel == '.' else rel.count('/') + 1
                 for n in dn:
-                    if depth + 1 in (3, 4):
+                    if depth + 1 in (1, 2):
                         lines.append(f"d {n if rel == '.' else rel + '/' + n}")
                 for n in fns:
-                    if depth + 1 in (3, 4):
+                    if depth + 1 in (1, 2):
                         lines.append(f"f {n if rel == '.' else rel + '/' + n}")
-            return 0, ('\n'.join(lines) + '\n').encode(), b''
+                    if depth + 1 == 2 and n == fs.MANIFEST:
+                        p = os.path.join(dp, n)
+                        sums.append(f"{fs.sha256_file(p)}  {p}")
+            return 0, ('\n'.join(lines + sums) + '\n').encode(), b''
         if toks[0] == 'tar':
             assert toks[1] == '-C' and toks[3:5] == ['-cf', '-'], toks
             if self.tar_missing:
@@ -514,9 +523,9 @@ def test_ssh_comenzile_si_transferul():
     rc, out = run('fetch', '--local', loc, runner=pi)
     assert rc == 0, out
     tar_cmds = [c[-1] for c in pi.calls if c[-1].startswith('tar')]
-    assert tar_cmds == [f'tar -C "$HOME"/nova-zdc/scoring/{DATE}/{SESS} -cf - attempt_1'], tar_cmds
+    assert tar_cmds == ['tar -C "$HOME"/nova-zdc/scoring -cf - Handoff1-touchdown'], tar_cmds
     assert fs.remote_path_expr('~/my scoring') == '"$HOME"/\'my scoring\''
-    a = os.path.join(loc, 'pi', DATE, SESS, 'attempt_1')
+    a = os.path.join(loc, 'Handoff1-touchdown')
     assert fs.verify_dir(a)[0] == [] and os.path.isfile(os.path.join(a, 'burst', '0002_1066.jpg'))
     # quoting of odd roots, other hosts and extra ssh args
     assert fs.remote_path_expr('/srv/nova data/it\'s') == "'/srv/nova data/it'\"'\"'s'"
@@ -544,7 +553,7 @@ def test_ssh_comenzile_si_transferul():
     assert rc == 3 and 'OpenSSH Client' in out, out
     # missing remote root -> empty list, not an error
     rc, out = run('list', '--local', loc, '--remote-root', '~/nimic', runner=pi)
-    assert rc == 0 and 'nicio incercare' in out, out
+    assert rc == 0 and 'nicio captura' in out, out
     shutil.rmtree(home), shutil.rmtree(loc)
     return f"{len(pi.calls)} apeluri ssh, doar find/tar -c/cat; ~ prin \"$HOME\"; BatchMode; '--' inainte de host"
 
@@ -587,7 +596,8 @@ def test_watch_reincearca_si_ctrl_c():
     assert 'No route to host' in out and 'legatura revenita' in out, out
     assert 'oprit (Ctrl-C)' in out and sleeps == [2.0] * 5, (sleeps, out)
     race = os.path.join(loc, 'handover', f"{DATE}_{SESS}")
-    assert sorted(os.listdir(race)) == sorted(['attempt_1', 'attempt_2', 'README.txt',
+    assert sorted(os.listdir(race)) == sorted(['Handoff1-touchdown', 'Handoff2-touchdown',
+                                               'README.txt',
                                                fs.HANDOVER_MANIFEST]), os.listdir(race)
     assert run('verify', race)[0] == 0
     # a single fetch with the link down: rc 2, message, no traceback
@@ -606,7 +616,7 @@ def test_numele_cursei_si_sesiuni_multiple():
     hr = os.path.join(loc, 'handover')
     assert os.path.isdir(os.path.join(hr, f"{DATE}_s20260927-100000")), os.listdir(hr)
     # new session arrives while --cursa is given: only the new one takes the name
-    make_attempt(src, 1, session='s20260927-140000')
+    make_attempt(src, 2, session='s20260927-140000')
     rc, out = run('fetch', '--source-dir', src, '--local', loc, '--cursa', 'cursa2')
     assert rc == 0, out
     got = sorted(x for x in os.listdir(hr) if not x.startswith('_'))
@@ -629,7 +639,38 @@ def test_numele_cursei_si_sesiuni_multiple():
     return "cursa noua -> doar sesiunea noua; redenumire doar cu --session; coliziune -> sufix sesiune"
 
 
+@pure_python
+def test_numerotarea_reluata_pe_Pi_e_conflict_nu_suprascriere():
+    """Daca scoring/ e golit pe Pi, numerotarea reincepe si un Handoff1 nou
+    poarta numele unuia deja primit. PC-ul compara sha256 al manifestului
+    de pe Pi cu cel local: raporteaza, rc 1, nu suprascrie; dupa ce copia
+    veche e mutata, o aduce pe cea noua. Aceeasi verificare si prin ssh."""
+    src, loc = tmp(), tmp()
+    make_attempt(src, 1, session='s20260927-100000')
+    assert run('fetch', '--source-dir', src, '--local', loc)[0] == 0
+    vechi = open(os.path.join(loc, 'Handoff1-touchdown', 'meta.json')).read()
+    shutil.rmtree(os.path.join(src, 'Handoff1-touchdown'))
+    make_attempt(src, 1, session='s20260928-090000')
+    rc, out = run('fetch', '--source-dir', src, '--local', loc)
+    assert rc == 1 and 'ALT continut' in out and 'Nu suprascriu' in out, out
+    assert open(os.path.join(loc, 'Handoff1-touchdown', 'meta.json')).read() == vechi
+    rc, out = run('list', '--source-dir', src, '--local', loc)
+    assert 'CONFLICT' in out, out
+    # prin ssh: sha256 vine din listare
+    home = tmp()
+    shutil.copytree(src, os.path.join(home, 'nova-zdc', 'scoring'))
+    rc, out = run('fetch', '--local', loc, runner=FakePi(home))
+    assert rc == 1 and 'ALT continut' in out, out
+    os.replace(os.path.join(loc, 'Handoff1-touchdown'), os.path.join(tmp(), 'vechi'))
+    rc, out = run('fetch', '--source-dir', src, '--local', loc)
+    assert rc == 0 and 'primita: Handoff1-touchdown' in out, out
+    assert 's20260928-090000' in open(os.path.join(loc, 'Handoff1-touchdown', 'meta.json')).read()
+    return "Handoff1 refolosit pe Pi -> CONFLICT, rc 1, copia locala neatinsa (director si ssh)"
+
+
 TESTS = [
+    ('numerotarea reluata pe Pi -> conflict, nu suprascriere',
+     test_numerotarea_reluata_pe_Pi_e_conflict_nu_suprascriere),
     ('PNG in Python pur, toate filtrele', test_png_python_pur_toate_filtrele),
     ('clasificarea centrului pe ambele cai', test_clasificarea_centrului_ambele_cai),
     ('list: completa si incompleta', test_listare_completa_si_incompleta),
