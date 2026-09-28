@@ -693,6 +693,34 @@ def test_G4_totul_trece_da_zero():
             f"-> cod de iesire diferit de 0, cum trebuie")
 
 
+def test_preflightul_de_cursa_verifica_fisierul_firmware_ului():
+    """Modul de cursa trimitea preflight-ului config/nova_flight.parm (4.7+)
+    fix, desi placa ruleaza 4.5.7 si config/nova.json cere
+    nova_flight_4.5.parm: numele diferite ar fi picat preflight-ul, sau
+    ar fi verificat alt set decat cel scris pe FC."""
+    import argparse
+    import nova_pi
+    import preflight_check as pf
+    vazut = {}
+
+    def fals(args, **kw):
+        vazut['parm'] = args.parm
+        return []
+    orig = pf.run_checks
+    pf.run_checks = fals
+    try:
+        nova_pi.run_preflight(argparse.Namespace(
+            config=None, conn='/dev/null', baud=921600, no_mavlink=True))
+    finally:
+        pf.run_checks = orig
+    assert vazut['parm'] is None, vazut
+    from nova import config as nova_config
+    cfg = nova_config.load(None)
+    ales = nova_config.resolve(cfg, 'flight_parm')
+    assert ales.endswith('nova_flight_4.5.parm'), ales
+    return "parm None -> flight_parm din config: nova_flight_4.5.parm"
+
+
 def test_G4_NEGATIV_fps_mic_si_capac_pe_obiectiv():
     """Doua moduri de esec care trec orice test de 'camera se deschide'."""
     class Lenta:
@@ -2150,6 +2178,8 @@ def test_modul_combinat_zbor_cu_fereastra():
 
 
 TESTS = [
+    ('preflight-ul de cursa verifica fisierul firmware-ului',
+     test_preflightul_de_cursa_verifica_fisierul_firmware_ului),
     ('rotatia de afisare pune nasul sus',
      test_rotatia_de_afisare_pune_nasul_sus),
     ('fereastra de bord chiar primeste cadre',
