@@ -34,11 +34,15 @@ from .rc import HANDOVER_SETTLE_S
 
 # --- PRAGURI DE ACCEPTARE. Se transcriu in Safety Case. -------------------
 
-#: Fereastra de altitudine la handover. Plafonul de 12 m e mai strict decat
-#: regulamentul (20 m), deliberat: la 20 m markerul are 22 px, prea putin
-#: pentru detectie 4x4 fiabila; la 12 m are 37 px.
+#: Fereastra de altitudine la handover. Plafonul e cel din regulament,
+#: 20 m (decizia echipei, 28.09.2026; era 12 m). At 20 m the marker is only
+#: ~21 px (480 mm) or ~15 px (336 mm) on crop1280 (fx ~865), i.e. 2.4-3.5 px
+#: per module for a 6-module 4x4 marker - below the ~5 px/module where
+#: decoding is reliable. That fails SAFE: GATE_SEARCH finds no detection in
+#: its window, GATE_FAIL, the vehicle stays in LOITER with the pilot.
+#: The floor used onboard comes from config/nova.json (handover_alt_min_m).
 HANDOVER_ALT_MIN_M = 5.0
-HANDOVER_ALT_MAX_M = 12.0
+HANDOVER_ALT_MAX_M = 20.0
 
 #: Raza in care markerul trebuie sa fie, la handover.
 HANDOVER_DIST_MAX_M = 6.5

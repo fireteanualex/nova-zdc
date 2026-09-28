@@ -383,7 +383,7 @@ controlul în LOITER. Pregătește-te pentru urcare înainte de primul zbor.
 Ce face vehiculul:
 
 ```
-pilotul aduce la 1–12 m deasupra markerului, LOITER (cu GPS), manșe libere ~1 s
+pilotul aduce la 3–20 m deasupra markerului, LOITER (cu GPS), manșe libere ~1 s
 pilotul ridică AUX (8) → poarta (E0, manșe, altitudine) + GATE_SEARCH:
                          o detecție a markerului în ≤ 5 s (un retry);
                          fără → GATE_FAIL, rămâne LOITER, STATUSTEXT
@@ -459,7 +459,8 @@ Apoi, la manșe:
    o dată manual pe marker. Dacă vehiculul nu aterizează curat singur,
    ghidarea nu are ce repara.
 2. Decolezi și aduci vehiculul la **3–8 m deasupra markerului** (prima
-   dată jos, apoi mai sus — brief §9). Fereastra porții e 1–12 m.
+   dată jos, apoi mai sus — brief §9). Fereastra porții e 3–20 m; peste
+   ~12 m markerul are prea puțini pixeli și poarta poate refuza (GATE_FAIL).
 3. Lateral, cu **markerul în cadru**: nu mai există rază fixă — dacă se
    vede, e în rază. Mai aproape de verticală e mai bine (mai puțină
    înclinare la MOVE).

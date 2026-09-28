@@ -191,7 +191,8 @@ def test_pragul_de_altitudine_din_config_ajunge_in_poarta():
     from config/nova.json (`handover_alt_min_m`) through tools/nova_pi.py,
     the gate code itself keeps 5 m. Checked here on the real files: the
     key is a number, the app passes it as `alt_min_m`, and a gate built
-    with it accepts low but still refuses above the 12 m ceiling."""
+    with it accepts from the floor up to the 20 m ceiling and refuses
+    outside it (team, 28.09.2026: 3-20 m)."""
     import json
     import os
     here = os.path.dirname(os.path.abspath(__file__))
@@ -205,7 +206,9 @@ def test_pragul_de_altitudine_din_config_ajunge_in_poarta():
     assert "cfg.get('handover_alt_min_m')" in src and "alt_min_m" in src, \
         "nova_pi.py nu mai duce handover_alt_min_m in poarta"
     assert HANDOVER_ALT_MIN_M == 5.0, "implicitul din cod trebuie sa ramana 5 m"
-    for alt, expect in ((2.0, True), (float(floor), True),
+    assert HANDOVER_ALT_MAX_M == 20.0, "plafonul portii e 20 m (regulamentul)"
+    for alt, expect in ((float(floor) - 0.5, False), (float(floor), True),
+                        (HANDOVER_ALT_MAX_M, True),
                         (HANDOVER_ALT_MAX_M + 0.5, False)):
         v = StubVehicle(alt)
         ov = OverrideMonitor(v)
@@ -216,7 +219,8 @@ def test_pragul_de_altitudine_din_config_ajunge_in_poarta():
         settle(gate)
         ok, why = gate.check(SETTLED, **GOOD)
         assert ok is expect, f"la {alt} m: {ok} ({why})"
-    return f"config {floor:g} m: accepta la 2 m, refuza peste {HANDOVER_ALT_MAX_M:.0f} m"
+    return (f"config {floor:g} m: accepta {floor:g}-{HANDOVER_ALT_MAX_M:.0f} m, "
+            f"refuza in afara")
 
 
 def test_refuz_prea_departe():

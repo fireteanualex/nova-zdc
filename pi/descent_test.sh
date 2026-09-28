@@ -18,7 +18,7 @@
 # CE FACE VEHICULUL, PAS CU PAS
 # ===========================================================================
 #
-#   pilotul aduce vehiculul la 5-12 m deasupra markerului, in LOITER
+#   pilotul aduce vehiculul la 3-20 m deasupra markerului, in LOITER
 #   pilotul ridica AUX (can. 8)   -> poarta valideaza si ACCEPTA sau REFUZA
 #   companion-ul cere LAND        -> asteapta confirmarea FC-ului
 #   coborare EXTNAV (din 27.09.2026) -> camera = pozitie EKF, GUIDED in trepte
@@ -326,7 +326,7 @@ cat <<FIN
   =========================================================================
 
    Ce faci tu, pilotul:
-     1. decolezi si aduci vehiculul la 1-12 m DEASUPRA markerului, cu
+     1. decolezi si aduci vehiculul la 3-20 m DEASUPRA markerului, cu
         markerul in cadrul camerei, in LOITER (cu GPS)
      2. manse libere, in neutru, ~1 s (poarta masoara in fereastra asta)
      3. ridici comutatorul de pe canalul RC $AUX_CH

@@ -29,8 +29,8 @@
   "_guidance": "Ce ghidare zboara bordul (reproiectarea din 27.09.2026, claude-markdown/REPROIECTARE_EXTNAV.md): 'extnav' = camera devine sursa de pozitie a EKF3 (VISION_POSITION_ESTIMATE, markerul = origine), GUIDED in trepte h/2 pana la 1 m, apoi LAND vertical; PLND ramane 0, nu se trimit LANDING_TARGET / DISTANCE_SENSOR. 'plnd' = calea veche (LAND + precision landing), pastrata pentru un zbor de comparatie. Cere parametrii din config/nova_flight_4.5.parm (VISO_TYPE 1 cu REBOOT, EK3_SRC2_POSXY 6, EK3_SRC_OPTIONS 0).",
   "guidance": "extnav",
 
-  "_handover_alt_min_m": "Altitudinea minima la care poarta accepta handover-ul, m (decizia echipei, 27.09.2026: 1 m, brief D6). Fara cheie: 5 m pe calea plnd, 1 m pe extnav. Plafonul de 12 m ramane. Pe extnav estimatorul refuza oricum sub 0.3 m.",
-  "handover_alt_min_m": 1.0,
+  "_handover_alt_min_m": "Altitudinea minima la care poarta accepta handover-ul, m (decizia echipei, 28.09.2026: 3 m; era 1 m). Fara cheie: 5 m pe calea plnd, 3 m pe extnav. Plafonul e 20 m (nova/handover.py, regulamentul). Pe extnav estimatorul refuza oricum sub 0.3 m.",
+  "handover_alt_min_m": 3.0,
 
   "_extnav_tol": "Toleranta laterala ExtNav tol(h) = max(extnav_tol_min_m, extnav_tol_frac * h), in m (iesirea din MOVE, CENTER_CHECK, FINAL_ALIGN; si fazele noi de touchdown). Brief-ul: 0.15 / 0.10. Zborurile reusite din 27.09.2026 au avut unghiurile de 1.5x prea mari (calibrarea scalata pentru alt mod de senzor), deci toleranta lor REALA a fost 0.10 m / 0.0667 h. Dupa corectia geometriei (62808e9) valorile de aici reproduc exact ce a zburat; se revine la brief doar dupa zbor validat.",
   "extnav_tol_min_m": 0.10,

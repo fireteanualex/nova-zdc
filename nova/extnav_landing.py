@@ -6,7 +6,7 @@ PLND machine in nova/state_machine.py stays for the simulator.
 
     IDLE
      |-AUX8 up-> GATE_SEARCH   pilot in LOITER; we command NOTHING. The gate
-     |                         (E0, sticks, 1-12 m) decides once settled;
+     |                         (E0, sticks, 3-20 m) decides once settled;
      |                         ONE estimate in a window of <= 5 s opens the
      |                         segment (team decision 27.09.2026; two
      |                         consistent ones with gate_detections=2);

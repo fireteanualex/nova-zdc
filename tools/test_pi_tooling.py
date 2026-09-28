@@ -2050,15 +2050,15 @@ def test_ExtNav_cablajul_de_bord():
     # supervizorul citeste vehiculul prin vederea lui (faza 3), nu fatada
     assert sup.v is not v and sup.v._v is v
     assert gate.dist_max_m is None and gate.detection_max_age_s is None
-    assert gate.alt_min_m == 0.0 and gate.alt_max_m == 12.0
+    assert gate.alt_min_m == 0.0 and gate.alt_max_m == 20.0
     assert tuple(sm.ekf.faze) == SRC2_PHASES and sm.cfg.aux_channel == 8
-    # fara cheia de altitudine: 1 m (D6), nu 5
+    # fara cheia de altitudine: 3 m (echipa, 28.09), nu 5
     with contextlib.redirect_stdout(io.StringIO()):
         gate2, _, _, _ = nova_pi.cablaj_extnav(
             a, cfg, v, OverrideMonitor(v), {}, 8, 1500, lambda r: None,
             lambda n, i: None)
-    assert gate2.alt_min_m == 1.0
-    return "extnav din config; fara authority/LT/PLND; EKF manager; poarta 1-12 m fara raza"
+    assert gate2.alt_min_m == 3.0
+    return "extnav din config; fara authority/LT/PLND; EKF manager; poarta 3-20 m fara raza"
 
 
 def test_fereastra_OSD_720x480_fara_rotire():

@@ -209,7 +209,7 @@ Simptom → cauză probabilă → ce faci. Referințele `§` sunt la `CLAUDE.md`
 |---|---|---|
 | `HANDOVER REFUZAT: autonomie dezactivată` | `autonomy_enabled=false` (E0) | **așteptat** până trece E2. Se schimbă cu un commit, nu din linia de comandă |
 | `REFUZAT: canalul 3 la ... PWM de trim` | throttle-ul nu se auto-centrează (§8) | ține throttle-ul **nemișcat** în fereastra de așezare; nu la trim |
-| `REFUZAT: altitudine ...` | în afara 5–12 m | mai strict decât regulamentul, deliberat: la 20 m markerul are 22 px |
+| `REFUZAT: altitudine ...` | în afara 3–20 m (`handover_alt_min_m` în config, plafonul 20 m) | coboară sub 20 m / urcă peste 3 m; peste ~12 m markerul are prea puțini pixeli și poarta poate refuza |
 | `REFUZAT: marker nedetectat` | markerul nu e văzut în ultimele 0.3 s | apropie-te; verifică lumina |
 | Handover-ul nu pornește deloc | se cere pe **frontul crescător** al AUX (§8) | lasă comutatorul jos, apoi sus |
 | Secvența se oprește singură | supervizorul a comandat ceva | citește logul: `detection_age`, `link_age`, `geofence_radius`, `tilt` |

@@ -31,7 +31,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from nova.handover import HandoverGate  # noqa: E402
+from nova.handover import HANDOVER_ALT_MAX_M, HandoverGate  # noqa: E402
 from nova.rc import OverrideMonitor  # noqa: E402
 from nova.safety import Action, SafetySupervisor  # noqa: E402
 from nova.state_machine import (AUX_HIGH_PWM,  # noqa: E402
@@ -403,7 +403,7 @@ def test_fara_aux_nu_porneste_nimic():
 
 
 def test_refuz_altitudine_ajunge_in_REJECT():
-    v, det, sm, events, args = build(alt=14.0)
+    v, det, sm, events, args = build(alt=HANDOVER_ALT_MAX_M + 2.0)
     run(v, det, sm, args, seconds=6.0)
     assert sm.state == State.REJECT, f"stare {sm.state}"
     rej = [i for n, i in events if n == 'handover_reject']
@@ -414,7 +414,7 @@ def test_refuz_altitudine_ajunge_in_REJECT():
 
 def test_reject_se_elibereaza_doar_cu_AUX_jos():
     """Refuzul ramane afisat pana cand pilotul lasa comutatorul jos."""
-    v, det, sm, events, args = build(alt=14.0)
+    v, det, sm, events, args = build(alt=HANDOVER_ALT_MAX_M + 2.0)
     run(v, det, sm, args, seconds=6.0)
     assert sm.state == State.REJECT
     run(v, det, sm, args, seconds=3.0)
@@ -427,7 +427,7 @@ def test_reject_se_elibereaza_doar_cu_AUX_jos():
 
 def test_frontul_crescator_nu_starea():
     """Un comutator lasat sus nu trebuie sa reporneasca secventa la nesfarsit."""
-    v, det, sm, events, args = build(alt=14.0)
+    v, det, sm, events, args = build(alt=HANDOVER_ALT_MAX_M + 2.0)
     run(v, det, sm, args, seconds=6.0)
     n1 = len([1 for n, _ in events if n == 'handover_reject'])
     run(v, det, sm, args, seconds=6.0)
@@ -602,7 +602,7 @@ def test_AUX_jos_in_afara_segmentului_nu_face_nimic():
     from nova.safety import AUTONOMOUS_PHASES
     assert set(PILOT_ABORT_PHASES) == set(AUTONOMOUS_PHASES), (
         "fazele abortabile de pilot trebuie sa fie exact cele autonome")
-    v, det, sm, events, args = build(alt=14.0)       # refuzat pe altitudine
+    v, det, sm, events, args = build(alt=HANDOVER_ALT_MAX_M + 2.0)       # refuzat pe altitudine
     run(v, det, sm, args, seconds=3.0)
     assert sm.state == State.REJECT
     v.set_aux(1000)

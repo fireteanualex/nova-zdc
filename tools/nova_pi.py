@@ -291,7 +291,7 @@ def cablaj_extnav(a, cfg, vehicle, override, gate_kw, canal, prag,
     source manager is instantiated HERE - it is the central piece now
     (open item 36 closed on the onboard path)."""
     if 'alt_min_m' not in gate_kw:
-        gate_kw = dict(gate_kw, alt_min_m=1.0)          # brief D6: 1-12 m
+        gate_kw = dict(gate_kw, alt_min_m=3.0)          # team, 28.09: 3-20 m
     gate = HandoverGate(vehicle, override, on_reject=signal_reject,
                         dist_max_m=None, detection_max_age_s=None,
                         **gate_kw, monitor=a.monitor_motiv or a.monitor)
@@ -308,7 +308,7 @@ def cablaj_extnav(a, cfg, vehicle, override, gate_kw, canal, prag,
     sm.attach_supervisor(sup)
     print("[bord] ghidare EXTNAV: camera -> VISION_POSITION_ESTIMATE -> EKF3 "
           "SRC2; GUIDED in trepte h/2 pana la 1 m; LAND vertical. PLND 0.")
-    print(f"[bord] poarta: {gate_kw.get('alt_min_m', 1.0):.1f}-12 m, fara "
+    print(f"[bord] poarta: {gate.alt_min_m:.1f}-{gate.alt_max_m:.0f} m, fara "
           f"raza; segmentul porneste la o detectie in <= 5 s (un retry)")
     if a.no_ascent:
         print("[bord] --no-ascent: fara efect pe extnav (secventa se "
