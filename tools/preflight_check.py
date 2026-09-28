@@ -116,7 +116,11 @@ def _module_origin(mod):
     eroare (`_ARRAY_API not found`) nu seamana deloc cu cauza. Calea o arata
     dintr-o privire."""
     cale = os.path.realpath(getattr(mod, '__file__', '') or '')
-    in_venv = bool(cale) and cale.startswith(
+    # Outside a venv sys.prefix is /usr, so every apt module under
+    # /usr/lib would match the prefix test and be labelled VENV.
+    activ = os.path.realpath(sys.prefix) != os.path.realpath(
+        getattr(sys, 'base_prefix', sys.prefix))
+    in_venv = activ and bool(cale) and cale.startswith(
         os.path.realpath(sys.prefix) + os.sep)
     return ('VENV' if in_venv else 'sistem'), cale
 

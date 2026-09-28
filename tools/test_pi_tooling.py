@@ -721,6 +721,31 @@ def test_preflightul_de_cursa_verifica_fisierul_firmware_ului():
     return "parm None -> flight_parm din config: nova_flight_4.5.parm"
 
 
+def test_preflight_fara_venv_nu_eticheteaza_apt_ca_venv():
+    """Rulat cu python3 de sistem (sys.prefix = /usr), preflight-ul spunea
+    "numpy vine din venv (/usr/lib/python3/dist-packages/...)": prefixul
+    /usr prindea si modulele din apt. Pe Pi, 28.09.2026, cu mesajul gresit
+    langa cauza reala (pymavlink lipsa: nu rula in ~/nova-venv)."""
+    import types
+    import preflight_check as pf
+    mod = types.SimpleNamespace(
+        __file__='/usr/lib/python3/dist-packages/numpy/__init__.py')
+    vechi = (sys.prefix, getattr(sys, 'base_prefix', sys.prefix))
+    try:
+        sys.prefix = sys.base_prefix = '/usr'
+        unde, _ = pf._module_origin(mod)
+        assert unde == 'sistem', unde
+        sys.prefix = '/home/nova/nova-venv'
+        venv = types.SimpleNamespace(
+            __file__='/home/nova/nova-venv/lib/python3.13/site-packages/'
+                     'numpy/__init__.py')
+        assert pf._module_origin(venv)[0] == 'VENV'
+        assert pf._module_origin(mod)[0] == 'sistem'
+    finally:
+        sys.prefix, sys.base_prefix = vechi
+    return "fara venv: apt = sistem; in venv: doar site-packages din venv = VENV"
+
+
 def test_G4_NEGATIV_fps_mic_si_capac_pe_obiectiv():
     """Doua moduri de esec care trec orice test de 'camera se deschide'."""
     class Lenta:
@@ -2178,6 +2203,8 @@ def test_modul_combinat_zbor_cu_fereastra():
 
 
 TESTS = [
+    ('preflight fara venv nu eticheteaza apt ca venv',
+     test_preflight_fara_venv_nu_eticheteaza_apt_ca_venv),
     ('preflight-ul de cursa verifica fisierul firmware-ului',
      test_preflightul_de_cursa_verifica_fisierul_firmware_ului),
     ('rotatia de afisare pune nasul sus',
