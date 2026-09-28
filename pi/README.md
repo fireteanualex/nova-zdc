@@ -5,7 +5,10 @@ ajungi la un Pi care, pornit, arată pe ecran ce vede camera, cu markerul
 detectat, și care citește telemetria de la Pixhawk — fără să comande nimic.
 
 > **Calibrarea e deja în repo.** `config/camera_pi.yaml` — ChArUco, 60 de
-> poze, `fy = 1038.7 px`, HFOV 96.0° / VFOV 63.9°.
+> poze, câmp întreg 2304x1296, `fy = 1038.7 px`, HFOV 96.0° / VFOV 63.9°.
+> Presetul zburat e `crop1280` (`config/nova.json: camera_preset`): modul
+> decupat 1536x864 → 1280x720, calibrarea derivată la `fx ≈ 865 px`.
+> Celelalte: `crop1536`, `full1280`, `trackerv2`; `--preset` le alege.
 >
 > **Are `rms = 0.829 px`.** Pragul `MAX_REPROJ_ERR_PX` e **0.85**, ridicat
 > de la 0.5 prin decizia echipei (23.09.2026) — deci calibrarea trece, pe
@@ -353,9 +356,7 @@ Mai trebuie, pe emițător (elementul deschis 20, lipsesc deliberat din
 | `range_m` față de ruletă | comparat manual | sub 5% (E2) |
 | HEARTBEAT de la FC | linia de stare | fără întreruperi |
 
-Latența e singura cifră pe care simularea **nu** o poate da: desktopul nu e
-Pi 4, iar în Gazebo se măsoară întârzierea de coadă, nu timpul de calcul
-(§5.56). Asta e prima măsurătoare care valorează ceva și se face numai aici.
+Latența se măsoară numai pe Pi: desktopul nu e Pi 4 (§5.56).
 
 Lasă-l să meargă 10–15 minute și uită-te dacă FPS-ul scade — pe Pi 4 fără
 răcire, throttling-ul termic apare după câteva minute, nu imediat.
@@ -367,17 +368,17 @@ răcire, throttling-ul termic apare după câteva minute, nu imediat.
 ```bash
 pi/descent_test.sh --check          # doar precondițiile, nu zboară nimic
 pi/descent_test.sh                  # briefing + confirmare + rulare
-pi/descent_test.sh --full-sequence  # și urcarea la 5 m (15.2.7)
 ```
 
 Verifică, în ordine, și **refuză** dacă ceva lipsește: E0, calibrarea,
 `FLTMODE_CH`, `RC8_OPTION`, heartbeat-ul, preflight-ul întreg. Apoi arată
 un briefing și cere să scrii `ZBOR` — un `y` se apasă din reflex.
 
-**Implicit nu urcă după contact.** Secvența se încheie pe sol și ArduPilot
-dezarmează singur. O urcare automată imediat după primul touchdown e exact
-genul de surpriză care te face să tragi de manșe. `--full-sequence` o
-pornește, după ce coborârea a mers o dată.
+**Pe ExtNav urcă singur după contact** (15.2.7): vehiculul stă pe marker
+`touchdown_hold_s` fără să dezarmeze, apoi decolează la `alt_riseup`
+deasupra markerului (`config/nova.json`), confirmă centrarea și predă
+controlul în LOITER. Pregătește-te pentru urcare înainte de primul zbor.
+`--full-sequence` nu are efect pe ExtNav.
 
 Ce face vehiculul:
 
@@ -391,8 +392,13 @@ ENGAGE                 → EKF pe setul 2 (camera = poziție, fără GNSS),
 MOVE / CENTER_CHECK    → deasupra markerului; centrarea cere o detecție
                          PROASPĂTĂ, nu doar EKF-ul
 DESCEND în trepte      → h/2 până la 1 m (8 → 4 → 2 → 1)
-FINAL_ALIGN la 1 m     → yaw aliniat, captura de scoring
-LAND                   → vertical (PLND 0) → contact → ArduPilot dezarmează
+FINAL_ALIGN la 1 m     → yaw aliniat
+TOUCHDOWN_DESCENT      → coborâre verticală lentă (touchdown_speed)
+CONTACT / GROUND_HOLD  → pe sol, ARMAT, touchdown_hold_s; captura de
+                         scoring se scrie pe Pi, în scoring/
+RISEUP                 → decolare la h_ref + alt_riseup
+HOVER_CONFIRM          → detecție proaspătă, centrat; cel mult o corecție
+COMPLETE               → setul 1 înapoi, apoi LOITER: pilotul preia
 
 AUX (8) JOS, oricând după ENGAGE → EXIT: setul 1 înapoi (cu ACK), apoi
                          LOITER (ALT_HOLD dacă e refuzat). THROTTLE LA MIJLOC
@@ -401,7 +407,7 @@ AUX (8) JOS, oricând după ENGAGE → EXIT: setul 1 înapoi (cu ACK), apoi
 
 Ghidarea e **ExtNav** din 27.09.2026 (`config/nova.json: guidance`;
 `REPROIECTARE_EXTNAV.md`). Calea veche cu PLND rămâne în cod
-(`guidance: "plnd"`) pentru un zbor de comparație; simulatorul e pe ea.
+(`guidance: "plnd"`) pentru un zbor de comparație.
 Nu se trimit `LANDING_TARGET` / `DISTANCE_SENSOR`, PLND rămâne 0 permanent.
 
 Ieșirile, independente: comutatorul AUX (prin companion: SRC1, apoi
@@ -450,8 +456,8 @@ cd ~/nova-zdc && pi/descent_test.sh
 Apoi, la manșe:
 
 1. **Un LAND manual întâi.** Înainte de orice coborâre autonomă, aterizează
-   o dată manual pe marker. Dacă vehiculul nu aterizează curat singur, PLND
-   nu are ce repara.
+   o dată manual pe marker. Dacă vehiculul nu aterizează curat singur,
+   ghidarea nu are ce repara.
 2. Decolezi și aduci vehiculul la **3–8 m deasupra markerului** (prima
    dată jos, apoi mai sus — brief §9). Fereastra porții e 1–12 m.
 3. Lateral, cu **markerul în cadru**: nu mai există rază fixă — dacă se
@@ -460,7 +466,7 @@ Apoi, la manșe:
 4. **LOITER**, manșe libere, ~1 s. Poarta măsoară amplitudinea în fereastra
    asta — dacă tremuri, refuză.
 5. Ridici comutatorul de pe **canalul 8**. Ori ACCEPT și pornește, ori REJECT cu motiv.
-6. **Mâna pe comutatorul de mod** până se termină. ~30 s.
+6. **Mâna pe comutatorul de mod** până la LOITER, după urcare. ~45 s.
 
 Ce vezi în log, dacă merge:
 
@@ -473,15 +479,19 @@ Ce vezi în log, dacă merge:
 >> CENTER_CHECK -> DESCEND   (centrat (0.28 m < 0.72); cobor la 3.60 m)
    ... CENTER_CHECK / DESCEND pana la 1 m ...
 >> CENTER_CHECK -> FINAL_ALIGN   (centrat (0.09 m) la 1.05 m)
->> FINAL_ALIGN -> LAND   (centrat 0.08 m, 2 s)
->> LAND -> TOUCHDOWN   (ON_GROUND; FC-ul dezarmeaza)
+>> FINAL_ALIGN -> TOUCHDOWN_DESCENT
+>> TOUCHDOWN_DESCENT -> CONTACT   (ON_GROUND)
+>> CONTACT -> GROUND_HOLD
+>> GROUND_HOLD -> RISEUP
+>> RISEUP -> HOVER_CONFIRM
+>> HOVER_CONFIRM -> COMPLETE
 ```
 
-Se oprește aici și ArduPilot dezarmează; la dezarmare EKF-ul revine pe
-setul 1.
+La COMPLETE EKF-ul revine pe setul 1 și modul trece în LOITER. Captura de
+scoring se aduce pe PC cu `tools/fetch_scoring.py` (`--watch` o ia pe
+fiecare nouă).
 
-**Prima încercare, pe iarbă sau pământ moale.** Eroarea în simulare e sub
-1 cm, dar asta e simulare — pe hardware nu ai încă nicio cifră.
+**Prima încercare, pe iarbă sau pământ moale, la `alt_riseup` mic.**
 
 ### Abort, în ordinea încrederii
 
@@ -494,21 +504,20 @@ setul 1.
 
 Prima e singura care funcționează dacă Pi-ul e mort, blocat sau
 deconectat. Scriptul refuză să pornească fără ea. **Mâna pe comutator tot
-segmentul** — durează ~30 s, nu e un moment în care să te uiți la ecran.
+segmentul** — nu e un moment în care să te uiți la ecran.
 
-> **Geofence-ul din firmware nu e activ.** `nova/fence.py` e validat în
-> SITL dar nu e cablat în nicio aplicație (element deschis 35). Rămân
-> monitoarele de rază și plafon din supervizor — care depind de Pi. Pentru
-> o probă de test, într-un spațiu deschis, cu pilot pe comutator, e
-> acceptabil; pentru cursă nu.
+> **Geofence-ul din firmware nu e activ.** Rămân monitoarele de rază și
+> plafon din supervizor — care depind de Pi. Pentru o probă de test, într-un
+> spațiu deschis, cu pilot pe comutator, e acceptabil; pentru cursă nu.
 
 ---
 
 ## De la monitor la coborâre
 
-Monitorul nu comandă nimic: `config/nova.json: autonomy_enabled` e **false**,
-iar poarta de handover refuză orice cerere înainte de orice altă condiție
-(§5.16). Nu există activare din linia de comandă sau din mediu — deliberat.
+Cu `config/nova.json: autonomy_enabled` **false**, monitorul nu comandă
+nimic: poarta de handover refuză orice cerere înainte de orice altă condiție
+(§5.16). Garda e deschisă din 27.09.2026; pașii de mai jos sunt ordinea de
+urmat dacă o închizi din nou (camera schimbată, recalibrare). Nu există activare din linia de comandă sau din mediu — deliberat.
 
 Ca să ajungi la coborârea autonomă, ordinea e:
 
@@ -517,14 +526,12 @@ Ca să ajungi la coborârea autonomă, ordinea e:
    ```bash
    tools/run_e2.py --help
    ```
-   Măsoară eroarea de distanță față de ruletă și latența pe Pi. Fără ea,
-   cifrele din simulare sunt pregătire, nu înlocuitor.
+   Măsoară eroarea de distanță față de ruletă și latența pe Pi.
 
 2. **Verifică că nimic nu atârnă în conul camerei.** Zona liniștită a
    markerului e 60 mm — sub un modul ArUco — și nu iartă umbre, murdărie
-   sau o piesă care intră puțin în cadru. În Gazebo, corpul unui gimbal
-   tăia un colț al markerului și rupea detecția sub 1 m, cu centrarea
-   perfectă (§5.46).
+   sau o piesă care intră puțin în cadru: un colț tăiat al markerului rupe
+   detecția sub 1 m, chiar cu centrarea perfectă (§5.46).
 
 3. **Abia apoi** ridici garda, în fișierul versionat, cu commit care citează
    raportul E2:
@@ -536,8 +543,7 @@ Ca să ajungi la coborârea autonomă, ordinea e:
    ```
 
 Pasul 3 editează un fișier și nu exportă o variabilă, pentru că o gardă
-care se poate ridica dintr-un `export` se ridică din greșeală. Un test
-verifică explicit că fișierul din repo e în starea închisă.
+care se poate ridica dintr-un `export` se ridică din greșeală.
 
 ---
 

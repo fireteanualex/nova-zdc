@@ -34,7 +34,7 @@ K, DIST, WH = syn.imx708()
 W, H = WH
 MARKER_M = 0.48
 
-#: Praguri (PROMPT_RUNDA4_AUTONOM, sectiunea F3)
+#: Praguri de acceptare pentru compararea detectoarelor
 MAX_CORNER_PX = 1.0
 MAX_DIST_REL_INTRE = 0.01
 MAX_DIST_REL_ADEVAR = 0.02

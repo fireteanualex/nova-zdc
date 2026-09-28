@@ -263,7 +263,7 @@ def _recovery_errors(cal):
 
 
 def _check_recovered(cal, eticheta):
-    """Pragurile din PROMPT_RUNDA4_AUTONOM: fx/fy sub 1%, cx/cy sub 1% din
+    """Pragurile de acceptare: fx/fy sub 1%, cx/cy sub 1% din
     latime, k1 sub 10%, RMS sub 0.3 px."""
     e = _recovery_errors(cal)
     assert abs(e['fx']) < 0.01, f"{eticheta}: fx {e['fx']:+.2%} (prag 1%)"

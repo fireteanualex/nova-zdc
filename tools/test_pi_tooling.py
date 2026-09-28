@@ -8,8 +8,8 @@ Suita offline pentru uneltele de Pi (runda 5: G1-G4).
 Ruleaza pe desktop, fara Pi si fara FC. Ce se poate verifica aici e logica:
 gardurile de pornire, bariera de comanda, structura datelor, codurile de
 iesire, matematica rezumatelor. Ce NU se poate - camera reala, temperatura
-reala, systemd care chiar porneste ceva - e marcat explicit in
-RAPORT_RUNDA5.md, nu simulat cu un test care trece.
+reala, systemd care chiar porneste ceva - se verifica pe Pi (pi/README.md),
+nu se simuleaza cu un test care trece.
 
 Fiecare unealta are cel putin un caz NEGATIV. Un test care nu poate esua nu
 e test (§5.11).

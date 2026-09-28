@@ -201,8 +201,8 @@ class Band:
 #: exista in PROFIL_RAPID si cere intai masuratoarea de franare (§6/D1).
 PROFIL_IMPLICIT = (
     Band('sus', 8.0,
-         # -30%: treapta din procedura de diagnostic (pasul 2,
-         # docs/DIAGNOSTIC_OSCILATIE.md). Suficient de mare cat sa se vada
+         # -30%: treapta din procedura de diagnostic a oscilatiei
+         # (pasul 2). Suficient de mare cat sa se vada
          # pe o singura rulare, suficient de mica sa nu strice altceva.
          PSC_NE_POS_P=0.70,     # estimarea e zgomotoasa: nu urmari zgomotul
          PSC_NE_VEL_D=0.60,     # D amplifica cel mai tare

@@ -176,7 +176,7 @@ def test_benzi_si_tinte():
     rulare(s, fc, 3, 'DESCEND_TRACK', 12.0, latency=0.05)
     assert s.band.nume == 'sus', s.band
     # multiplicator: 0.70 * originalul 1.0 (pasul 2 din procedura de
-    # diagnostic, docs/DIAGNOSTIC_OSCILATIE.md)
+    # diagnostic a oscilatiei)
     assert abs(fc.reale['PSC_NE_POS_P'] - 0.70) < 1e-6, fc.reale
     # D: 0.60 * 0.25
     assert abs(fc.reale['PSC_NE_VEL_D'] - 0.15) < 1e-6, fc.reale

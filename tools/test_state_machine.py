@@ -487,7 +487,7 @@ def test_B7_comutatorul_gasit_sus_la_pornire_nu_e_front():
 
 
 def test_B3_pilotul_in_ACQUIRE_incheie_secventa():
-    """26.09.2026 seara (B3, docs/PRECISION_LANDING.md §9). In ACQUIRE
+    """26.09.2026 seara (B3). In ACQUIRE
     LAND se retrimitea la 0.2 s peste orice mod pus intre timp de pilot.
     Acum un mod diferit de cel de la ACCEPT incheie secventa, cu PLND 0."""
     from nova.vehicle import MODE_STABILIZE

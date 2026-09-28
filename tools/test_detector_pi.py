@@ -434,7 +434,7 @@ def test_calibrare_salvare_incarcare_refuz():
 
 
 # --- regresie pentru adaugirile cerute de F2 si F3 ---------------------------
-# PROMPT_RUNDA4_AUTONOM cere sa nu se atinga nova/detector_pi.py, cu motivul
+# Runda 4 cerea sa nu se atinga nova/detector_pi.py, cu motivul
 # ca o regresie n-ar putea fi verificata. Cele doua adaugiri (meta pe
 # CameraCalibration, last_corners pe ArucoMarkerDetector) au fost necesare
 # pentru F2 si F3; testele de mai jos exista tocmai ca sa acopere motivul.
