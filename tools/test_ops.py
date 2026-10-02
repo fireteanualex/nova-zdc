@@ -505,8 +505,8 @@ def test_H5_sesiune_completa():
     open(os.path.join(tmp, 'frames', 'ring_000000001000500.png'), 'wb').write(b'\x89PNG')
 
     continut = bytes(range(256)) * 12          # 3072 octeti
-    fc = FakeFC(continut, params={'PLND_ENABLED': 0.0, 'WP_RFND_USE': 0.0,
-                                  'ARMING_SKIPCHK': 32768.0})
+    fc = FakeFC(continut, params={'PLND_ENABLED': 0.0, 'WPNAV_RFND_USE': 0.0,
+                                  'ARMING_CHECK': 1011198.0})
     a = _collect_args(tmp)
     ses, manifest, raport, _ = cs.collect(a, connect=lambda: fc)
 
@@ -523,7 +523,7 @@ def test_H5_sesiune_completa():
     assert manifest['git']['commit'], "hash-ul commit-ului lipseste"
     assert 'dirty' in manifest['git']
     assert manifest['software']['python']
-    assert manifest['fc']['parametri']['ARMING_SKIPCHK'] == 32768.0
+    assert manifest['fc']['parametri']['ARMING_CHECK'] == 1011198.0
     assert 'time_boot_ms' in manifest['sincronizare']
 
     # parametrul care nu exista pe firmware se noteaza ca lipsa, nu se omite

@@ -21,6 +21,8 @@ ArduPilot, nu din memorie - CLAUDE.md §5.4):
     RNGFND1_MAX    m      RNGFND1_MAX_CM  cm    x 100
     RNGFND1_GNDCLR m      RNGFND1_GNDCLEAR cm   x 100, intreg
     ARMING_SKIPCHK        (NU se genereaza)     decizia echipei, mai jos
+    PSC_NE_POS_P          PSC_POSXY_P           -   (not in the parm file:
+    PSC_NE_VEL_D          PSC_VELXY_D           -    nova/authority.py, runtime)
 
 DE CE GENERAT SI NU SCRIS DE MANA. Un 1.5 copiat in WPNAV_ACCEL ar fi
 1.5 cm/s/s, adica practic zero corectie laterala - si ar trece orice audit
@@ -67,6 +69,15 @@ REDENUMIRI = {
     'WP_SPD': ('WPNAV_SPEED', lambda v: _intreg(v * 100.0)),
     'WP_SPD_DN': ('WPNAV_SPEED_DN', lambda v: _intreg(v * 100.0)),
     'LAND_SPD_MS': ('LAND_SPEED', lambda v: _intreg(v * 100.0)),
+    # Not in nova_flight.parm: the gains nova/authority.py modulates at run
+    # time. Listed here so the 4.7+ -> 4.5.7 renames live in ONE table
+    # (tools/test_authority.py checks the runtime profile against it).
+    # Pure renames, same unitless gain: master AC_PosControl.cpp:108-114
+    # and :307-313 say "Previously _POSXY_P" / "Previously _VELXY_D";
+    # Copter-4.5.7 AC_PosControl.cpp:234-239 and :255-260, same @Range
+    # for the D gain (0.00 1.00) and the same defaults (:24-67).
+    'PSC_NE_POS_P': ('PSC_POSXY_P', lambda v: v),
+    'PSC_NE_VEL_D': ('PSC_VELXY_D', lambda v: v),
 }
 
 
@@ -93,6 +104,7 @@ def _fmt(v):
 def genereaza():
     linii = [
         "# NOVA - ZDC 2026 - configuratie VEHICUL REAL, ArduCopter 4.5.7",
+        "# Flight controller: CUAV X7+, no hardware safety switch.",
         "#",
         "# GENERAT de tools/make_parm_45.py din config/nova_flight.parm.",
         "# NU EDITA DE MANA: modifica sursa si regenereaza. Un test pica daca",
@@ -108,6 +120,10 @@ def genereaza():
         "# Verificare prin citire inapoi:",
         "#   python3 tools/check_params.py --conn /dev/serial0 --baud 921600 \\",
         "#       --parm config/nova_flight_4.5.parm",
+        "#",
+        "# BRD_SAFETY_DEFLT needs a REBOOT after writing (--write --reboot).",
+        "# SERIALx_BAUD / SERIALx_OPTIONS are set by hand by the team: not in",
+        "# this file, and check_params ignores them if they ever appear.",
         "",
     ]
     for nume, val in citeste(SURSA):

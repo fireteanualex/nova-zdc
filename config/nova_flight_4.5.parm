@@ -1,4 +1,5 @@
 # NOVA - ZDC 2026 - configuratie VEHICUL REAL, ArduCopter 4.5.7
+# Flight controller: CUAV X7+, no hardware safety switch.
 #
 # GENERAT de tools/make_parm_45.py din config/nova_flight.parm.
 # NU EDITA DE MANA: modifica sursa si regenereaza. Un test pica daca
@@ -14,6 +15,10 @@
 # Verificare prin citire inapoi:
 #   python3 tools/check_params.py --conn /dev/serial0 --baud 921600 \
 #       --parm config/nova_flight_4.5.parm
+#
+# BRD_SAFETY_DEFLT needs a REBOOT after writing (--write --reboot).
+# SERIALx_BAUD / SERIALx_OPTIONS are set by hand by the team: not in
+# this file, and check_params ignores them if they ever appear.
 
 FRAME_CLASS,1
 FRAME_TYPE,1
@@ -58,5 +63,6 @@ WPNAV_SPEED_DN,50
 # LAND_SPD_MS,0.5 pe 4.7+
 LAND_SPEED,50
 SERIAL2_PROTOCOL,2
-SERIAL2_BAUD,921
 BRD_SER2_RTSCTS,0
+BRD_SAFETY_DEFLT,0
+BRD_SAFETYOPTION,0

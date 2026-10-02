@@ -45,16 +45,24 @@ defectiune.
 
 NUMELE PARAMETRILOR - VERIFICATE IN SURSA, NU DIN MEMORIE
 
-Trei dintre numele "evidente" nu exista pe ArduCopter 4.8 (§5.4):
+The board runs ArduCopter 4.5.7 (CUAV X7+), so the managed names are the
+4.5.7 ones, in 4.5.7 UNITS (cm/s, cm/s/s). The module was first written
+for 4.8 names; these are the same parameters, translated with the table in
+tools/make_parm_45.py (REDENUMIRI) - tools/test_authority.py checks the
+profile below against that table, value by value:
 
-    WPNAV_ACCEL   -> WP_ACC          obiectul AC_WPNav are prefixul WP_,
-                                     iar numele scurt e "ACC"
-    PSC_POSXY_P   -> PSC_NE_POS_P    subgrupul s-a redenumit XY -> NE
-    PSC_VELXY_D   -> PSC_NE_VEL_D    idem
+    4.7+ / 4.8 name   Copter-4.5.7 name   unit change
+    PSC_NE_POS_P      PSC_POSXY_P         none (gain) AC_PosControl.cpp:234-239
+    PSC_NE_VEL_D      PSC_VELXY_D         none (gain) AC_PosControl.cpp:255-260
+    WP_ACC            WPNAV_ACCEL         m/s/s -> cm/s/s  AC_WPNav.cpp:54-61
+    WP_SPD_DN         WPNAV_SPEED_DN      m/s -> cm/s      AC_WPNav.cpp:45-52
+    LAND_SPD_MS       LAND_SPEED          m/s -> cm/s, AP_Int16
+                                          ArduCopter/Parameters.cpp:191-198
+    PLND_LAG          PLND_LAG            none (s)   AC_PrecLand.cpp:121-127
 
-Un `PARAM_SET` pe numele vechi nu produce eroare si nu produce
-`PARAM_VALUE`: pur si simplu nu face nimic. Verificarea de la pasul 1 de
-mai sus prinde asta la prima armare, nu in zbor.
+Un `PARAM_SET` pe un nume care nu exista pe firmware nu produce eroare si
+nu produce `PARAM_VALUE`: pur si simplu nu face nimic. Verificarea de la
+pasul 1 de mai sus prinde asta la prima armare, nu in zbor.
 """
 
 import time
@@ -79,15 +87,21 @@ BAND_HYSTERESIS_M = 0.5
 #: fara masuratoarea de distanta de franare ceruta de §6/15.2.9: la 0.5 m/s
 #: franarea consuma 1.00 m, iar componenta de reactie creste liniar cu
 #: viteza. Se ridica prin `allow_fast_descent=True`, dupa D1.
-DESCENT_VALIDATED_MS = 0.5
+#: The cap is applied in the FC unit of the 4.5.7 speed parameters (cm/s).
+DESCENT_VALIDATED_CMS = 50
+DESCENT_VALIDATED_MS = DESCENT_VALIDATED_CMS / 100.0
+
+#: The two descent speeds the cap applies to (cm/s on 4.5.7).
+DESCENT_SPEEDS = ('WPNAV_SPEED_DN', 'LAND_SPEED')
 
 #: PLND_LAG: domeniul din sursa (AC_PrecLand.cpp: @Range 0.02 0.250).
 PLND_LAG_MIN_S = 0.02
 PLND_LAG_MAX_S = 0.25
 
-#: WP_ACC: @Range 0.50 5.00 m/s/s.
-WP_ACC_MIN = 0.5
-WP_ACC_MAX = 5.0
+#: WPNAV_ACCEL: @Range 50 500 cm/s/s (Copter-4.5.7 AC_WPNav.cpp:57-58;
+#: the 4.7+ WP_ACC 0.50-5.00 m/s/s, the same physical range).
+WPNAV_ACCEL_MIN = 50.0
+WPNAV_ACCEL_MAX = 500.0
 
 #: Cat asteptam un PARAM_VALUE la citirea initiala, inainte de a recere.
 READ_TIMEOUT_S = 1.0
@@ -129,7 +143,8 @@ class Spec:
               cunoastem reglajul acestui airframe, iar o valoare absoluta
               luata de pe alt vehicul ar fi un numar inventat. Un factor de
               1.0 inseamna "nominal", indiferent cat e nominalul.
-      'abs' - tinta = valoarea benzii, ca atare (viteze in m/s, lag in s).
+      'abs' - tinta = valoarea benzii, ca atare, in unitatea FC-ului
+              (4.5.7: viteze in cm/s, lag in s).
       'lag' - caz special: vine din latenta MASURATA a detectorului.
     """
 
@@ -151,18 +166,19 @@ class Spec:
         return v
 
 
-#: Parametrii gestionati. Numele sunt cele REALE de pe 4.8 - vezi docstring.
+#: Parametrii gestionati. Numele sunt cele REALE de pe Copter-4.5.7, cu
+#: limitele in unitatea lor (cm/s, cm/s/s) - vezi docstring.
 MANAGED = (
-    Spec('PSC_NE_POS_P', 'mul', 0.1, 5.0,
+    Spec('PSC_POSXY_P', 'mul', 0.1, 5.0,
          'castig P pozitie orizontala; sus zgomotul de estimare domina'),
-    Spec('PSC_NE_VEL_D', 'mul', 0.0, 1.0,
+    Spec('PSC_VELXY_D', 'mul', 0.0, 1.0,
          'castig D viteza orizontala; D amplifica zgomotul, deci sus e mic'),
-    Spec('WP_ACC', 'mul', WP_ACC_MIN, WP_ACC_MAX,
-         'acceleratie laterala; jos, langa sol, o vrem mica'),
-    Spec('WP_SPD_DN', 'abs', 0.1, 5.0,
-         'viteza de coborare a controlerului de pozitie'),
-    Spec('LAND_SPD_MS', 'abs', 0.1, 5.0,
-         'viteza de coborare in LAND sub LAND_ALT_LOW_M'),
+    Spec('WPNAV_ACCEL', 'mul', WPNAV_ACCEL_MIN, WPNAV_ACCEL_MAX,
+         'acceleratie laterala, cm/s/s; jos, langa sol, o vrem mica'),
+    Spec('WPNAV_SPEED_DN', 'abs', 10.0, 500.0,
+         'viteza de coborare a controlerului de pozitie, cm/s'),
+    Spec('LAND_SPEED', 'abs', 10.0, 500.0,
+         'viteza de coborare in LAND sub LAND_ALT_LOW, cm/s'),
     Spec('PLND_LAG', 'lag', PLND_LAG_MIN_S, PLND_LAG_MAX_S,
          'latenta masurata captura->publicare a detectorului'),
 )
@@ -196,37 +212,38 @@ class Band:
 #: niciun factor nu iese din [0.6, 1.4] - si ca sa exprime relatia fizica din
 #: §5.23, nu ca sa optimizeze ceva. Reglajul fin vine dupa E2, cu date.
 #:
-#: Vitezele de coborare sunt toate <= DESCENT_VALIDATED_MS: profilul livrat
-#: NU coboara mai repede decat ce s-a validat deja. Treapta mai rapida de sus
-#: exista in PROFIL_RAPID si cere intai masuratoarea de franare (§6/D1).
+#: Vitezele de coborare sunt toate <= DESCENT_VALIDATED_CMS (0.5 m/s):
+#: profilul livrat NU coboara mai repede decat ce s-a validat deja. Treapta
+#: mai rapida de sus exista in PROFIL_RAPID si cere intai masuratoarea de
+#: franare (§6/D1).
 PROFIL_IMPLICIT = (
     Band('sus', 8.0,
          # -30%: treapta din procedura de diagnostic a oscilatiei
          # (pasul 2). Suficient de mare cat sa se vada
          # pe o singura rulare, suficient de mica sa nu strice altceva.
-         PSC_NE_POS_P=0.70,     # estimarea e zgomotoasa: nu urmari zgomotul
-         PSC_NE_VEL_D=0.60,     # D amplifica cel mai tare
-         WP_ACC=1.00,
-         WP_SPD_DN=0.5,
-         LAND_SPD_MS=0.5),
+         PSC_POSXY_P=0.70,      # estimarea e zgomotoasa: nu urmari zgomotul
+         PSC_VELXY_D=0.60,      # D amplifica cel mai tare
+         WPNAV_ACCEL=1.00,      # factor (mul), not cm/s/s
+         WPNAV_SPEED_DN=50,     # cm/s = 0.5 m/s
+         LAND_SPEED=50),
     Band('mijloc', 3.0,
-         PSC_NE_POS_P=1.00,     # nominal
-         PSC_NE_VEL_D=1.00,
-         WP_ACC=1.00,
-         WP_SPD_DN=0.5,
-         LAND_SPD_MS=0.5),
+         PSC_POSXY_P=1.00,      # nominal
+         PSC_VELXY_D=1.00,
+         WPNAV_ACCEL=1.00,
+         WPNAV_SPEED_DN=50,
+         LAND_SPEED=50),
     Band('jos', 0.5,
-         PSC_NE_POS_P=1.25,     # 900 px la 0.5 m: estimarea merita urmarita
-         PSC_NE_VEL_D=1.10,
-         WP_ACC=0.70,           # langa sol, acceleratii laterale mici
-         WP_SPD_DN=0.35,
-         LAND_SPD_MS=0.35),
+         PSC_POSXY_P=1.25,      # 900 px la 0.5 m: estimarea merita urmarita
+         PSC_VELXY_D=1.10,
+         WPNAV_ACCEL=0.70,      # langa sol, acceleratii laterale mici
+         WPNAV_SPEED_DN=35,     # cm/s = 0.35 m/s
+         LAND_SPEED=35),
     Band('contact', 0.0,
-         PSC_NE_POS_P=1.25,
-         PSC_NE_VEL_D=1.10,
-         WP_ACC=0.50,           # autoritatea laterala scoasa din joc
-         WP_SPD_DN=0.35,
-         LAND_SPD_MS=0.35),
+         PSC_POSXY_P=1.25,
+         PSC_VELXY_D=1.10,
+         WPNAV_ACCEL=0.50,      # autoritatea laterala scoasa din joc
+         WPNAV_SPEED_DN=35,
+         LAND_SPEED=35),
 )
 
 #: Profilul agresiv (I5). Difera de cel implicit **numai pe coloana de
@@ -236,10 +253,14 @@ PROFIL_IMPLICIT = (
 #:
 #: | banda | AGL | viteza | ce se schimba fata de nominal |
 #: |---|---|---|---|
-#: | sus     | > 8 m     | 1.5 m/s | `PSC_NE_POS_P` x0.70, `PSC_NE_VEL_D` x0.60 |
-#: | mijloc  | 8 - 3 m   | 0.8 m/s | `PSC_NE_POS_P` nominal |
-#: | jos     | 3 - 0.5 m | 0.3 m/s | `WP_ACC` limitat la 0.70 |
-#: | contact | < 0.5 m   | 0.2 m/s | `WP_ACC` la podea, fara autoritate laterala |
+#: | sus     | > 8 m     | 1.5 m/s | `PSC_POSXY_P` x0.70, `PSC_VELXY_D` x0.60 |
+#: | mijloc  | 8 - 3 m   | 0.8 m/s | `PSC_POSXY_P` nominal |
+#: | jos     | 3 - 0.5 m | 0.3 m/s | `WPNAV_ACCEL` limitat la x0.70 |
+#: | contact | < 0.5 m   | 0.2 m/s | `WPNAV_ACCEL` la podea, fara autoritate laterala |
+#:
+#: Speeds are written in cm/s (4.5.7): 1.5 m/s = 150. NB: 0.2 m/s (20 cm/s)
+#: is below the documented LAND_SPEED @Range 30-200 cm/s - as it was below
+#: the 4.7+ LAND_SPD_MS @Range 0.3-2 m/s; unchanged by the translation.
 #:
 #: Ultima banda NU e cea care opreste corectiile laterale - aia e
 #: `FINAL_DESCENT` din masina de stari (§8, sub 0.4 m). Aici doar se scoate
@@ -251,14 +272,14 @@ PROFIL_IMPLICIT = (
 #: reactie masurat (0.48 s) inseamna 0.72 m, iar pragul sub care garantia
 #: de hover nu mai tine urca odata cu viteza.
 PROFIL_RAPID = (
-    Band('sus', 8.0, PSC_NE_POS_P=0.70, PSC_NE_VEL_D=0.60, WP_ACC=1.00,
-         WP_SPD_DN=1.5, LAND_SPD_MS=1.5),
-    Band('mijloc', 3.0, PSC_NE_POS_P=1.00, PSC_NE_VEL_D=1.00, WP_ACC=1.00,
-         WP_SPD_DN=0.8, LAND_SPD_MS=0.8),
-    Band('jos', 0.5, PSC_NE_POS_P=1.25, PSC_NE_VEL_D=1.10, WP_ACC=0.70,
-         WP_SPD_DN=0.3, LAND_SPD_MS=0.3),
-    Band('contact', 0.0, PSC_NE_POS_P=1.25, PSC_NE_VEL_D=1.10, WP_ACC=0.50,
-         WP_SPD_DN=0.2, LAND_SPD_MS=0.2),
+    Band('sus', 8.0, PSC_POSXY_P=0.70, PSC_VELXY_D=0.60, WPNAV_ACCEL=1.00,
+         WPNAV_SPEED_DN=150, LAND_SPEED=150),
+    Band('mijloc', 3.0, PSC_POSXY_P=1.00, PSC_VELXY_D=1.00, WPNAV_ACCEL=1.00,
+         WPNAV_SPEED_DN=80, LAND_SPEED=80),
+    Band('jos', 0.5, PSC_POSXY_P=1.25, PSC_VELXY_D=1.10, WPNAV_ACCEL=0.70,
+         WPNAV_SPEED_DN=30, LAND_SPEED=30),
+    Band('contact', 0.0, PSC_POSXY_P=1.25, PSC_VELXY_D=1.10, WPNAV_ACCEL=0.50,
+         WPNAV_SPEED_DN=20, LAND_SPEED=20),
 )
 
 
@@ -508,12 +529,12 @@ class AuthorityScheduler:
             if spec.mode == 'mul':
                 val *= self.original[name]
         val = spec.clamp(val)
-        if spec.mode == 'abs' and name in ('WP_SPD_DN', 'LAND_SPD_MS'):
+        if spec.mode == 'abs' and name in DESCENT_SPEEDS:
             if not self.allow_fast_descent:
                 # §6/15.2.9: distanta de franare creste cu viteza, si e
                 # masurata doar la 0.5 m/s. Peste, garantia de hover se
-                # pierde mai sus decat stim noi.
-                val = min(val, DESCENT_VALIDATED_MS)
+                # pierde mai sus decat stim noi. Cap in cm/s (4.5.7).
+                val = min(val, DESCENT_VALIDATED_CMS)
         return val
 
     def _apply_step(self, now, agl_m):

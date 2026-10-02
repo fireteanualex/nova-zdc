@@ -1217,7 +1217,10 @@ def test_bitii_de_armare_sunt_cei_din_ArduPilot():
     for bit in din_sursa:
         assert cp.BITI_ARMARE[bit] == asteptat[bit], (
             f"bitul {bit} ({din_sursa[bit]}): {cp.BITI_ARMARE[bit]!r}")
-    assert cp.BITMASKS['ARMING_CHECK'] is cp.BITMASKS['ARMING_SKIPCHK']
+    assert cp.BITMASKS['ARMING_CHECK'] is cp.BITI_ARMARE
+    # the 4.7+ inverse mask is not described any more: the board runs 4.5.7
+    # and no tool run against it carries a 4.7+ name (test_params_x7.py)
+    assert 'ARMING_SKIPCHK' not in cp.BITMASKS
     # valoarea de pe vehicul: masca generata inainte, fara bitul 12
     d = cp.describe_mask('ARMING_CHECK', 1011198)
     stinse = d.split('STINS  :')[1]
@@ -1860,7 +1863,8 @@ def test_setup_uart_cauta_ambele_directoare_de_boot():
 
 
 def test_parametrii_de_telemetrie_sunt_in_fisierul_de_zbor():
-    """TELEM2 pe Pixhawk 6C = SERIAL2, verificat in hwdef, nu presupus.
+    """TELEM2 pe CUAV X7+ = SERIAL2 (Copter-4.5.7 CUAV-X7/hwdef.dat:24,
+    :144 "USART6 is telem2"), verificat in hwdef, nu presupus.
 
     Si controlul de flux se pune pe 0 EXPLICIT: implicitul pe ChibiOS e 2
     (Auto), iar auto-detectia cu RTS/CTS nelegate depinde de ce se intampla
@@ -1877,18 +1881,29 @@ def test_parametrii_de_telemetrie_sunt_in_fisierul_de_zbor():
 
     assert valori.get('SERIAL2_PROTOCOL') == '2', (
         f"SERIAL2_PROTOCOL trebuie 2 (MAVLink2): {valori.get('SERIAL2_PROTOCOL')}")
-    assert valori.get('SERIAL2_BAUD') == '921', (
-        f"SERIAL2_BAUD e in mii: 921 = 921600, nu {valori.get('SERIAL2_BAUD')}")
+    # SERIALx_BAUD / SERIALx_OPTIONS are set by hand by the team (user
+    # decision, 02.10.2026): in NEITHER parm file.
+    import re as _re
+    for nume_fisier in ('nova_flight.parm', 'nova_flight_4.5.parm'):
+        nume = [n for n, _, _ in parse_parm(
+            os.path.join(REPO, 'config', nume_fisier))]
+        de_mana = [n for n in nume
+                   if _re.match(r'^SERIAL\d+_(BAUD|OPTIONS)$', n)]
+        assert not de_mana, (
+            f"{nume_fisier}: {de_mana} - setati de mana de echipa, nu se "
+            f"scriu si nu se verifica din fisier")
     assert valori.get('BRD_SER2_RTSCTS') == '0', (
         "BRD_SER2_RTSCTS trebuie 0 explicit; implicitul 2 (Auto) cu RTS/CTS "
         "nelegate da o legatura care pare moarta intr-un sens")
 
-    # baud-ul din parm trebuie sa fie acelasi cu cel din aplicatie
+    # the Pi side still opens the port at 921600; the hand-set SERIAL2_BAUD
+    # on the FC must match it (921)
     pi_src = open(os.path.join(REPO, 'tools', 'nova_pi.py')).read()
     assert '921600' in pi_src, (
         "nova_pi.py nu mai foloseste 921600: parametrul de pe FC si "
         "aplicatia ar vorbi la viteze diferite")
-    return "SERIAL2 = TELEM2 pe 6C, 921600, fara control de flux"
+    return ("SERIAL2 = TELEM2 pe X7+, fara control de flux; "
+            "SERIAL2_BAUD setat de mana, nu in fisiere")
 
 
 # --- pornirea automata in modul de zbor (teren fara retea) ----------------

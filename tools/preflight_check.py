@@ -34,8 +34,12 @@ Ce verifica, si de ce fiecare:
               inapoi din metadate. Focus-ul in special: cu PDAF lasat sa
               caute, detectia moare exact in coborare.
   mavlink     heartbeat de la FC pe /dev/serial0.
-  parametri   tools/check_params.py pe config/nova_flight.parm, adica §5.10
-              ca pas obligatoriu, nu ca sugestie.
+  parametri   tools/check_params.py pe fisierul din config/nova.json
+              (`flight_parm`, azi config/nova_flight_4.5.parm), adica §5.10
+              ca pas obligatoriu, nu ca sugestie. On the CUAV X7+ this
+              includes BRD_SAFETY_DEFLT 0 / BRD_SAFETYOPTION 0 (no hardware
+              safety switch); SERIALx_BAUD / SERIALx_OPTIONS are hand-set and
+              ignored by check_params (HAND_SET), not checked here either.
 
 Verificarile care nu au ce cauta aici: orice armeaza, misca sau comanda
 ceva. Preflight-ul citeste.
@@ -60,7 +64,9 @@ from nova import config as nova_config                      # noqa: E402
 from nova_service import StartupRefusal, check_calibration   # noqa: E402
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FLIGHT_PARM = os.path.join(REPO_ROOT, 'config', 'nova_flight.parm')
+#: Default only for a direct check_params() call; run_checks() takes the
+#: file from config/nova.json (`flight_parm`). The board runs 4.5.7.
+FLIGHT_PARM = os.path.join(REPO_ROOT, 'config', 'nova_flight_4.5.parm')
 
 #: Camera: cate cadre masuram si cat de mult poate scadea rata.
 #: 0.80 x 30 = 24 fps. Sub asta, bucla de detectie nu mai tine pasul cu

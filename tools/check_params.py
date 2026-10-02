@@ -34,10 +34,18 @@ Dupa scriere FC-ul trebuie REPORNIT: driverul de telemetru si backend-ul de
 precision landing se creeaza o singura data, la boot, din RNGFND1_TYPE si
 PLND_TYPE (init_precland() pe 4.5.7). Fara repornire, un PLND_TYPE proaspat
 scris nu are niciun efect, iar LANDING_TARGET e ignorat fara niciun mesaj.
+On the CUAV X7+ the same holds for BRD_SAFETY_DEFLT (@RebootRequired,
+Copter-4.5.7 AP_BoardConfig.cpp:169): safety is only forced off at boot.
+
+HAND-SET PARAMETERS. SERIALx_BAUD and SERIALx_OPTIONS are set by hand on the
+FC by the team (user decision, 02.10.2026). If such a name appears in a parm
+file anyway, it is neither written (--write) nor counted as a mismatch: it
+is listed as "setat de mana, ignorat". See HAND_SET.
 """
 
 import argparse
 import os
+import re
 import sys
 import time
 
@@ -76,7 +84,19 @@ BITMASKS = {
         1: 'cerc centrat pe HOME (FENCE_RADIUS)',
         2: 'cercuri/poligoane de incluziune-excluziune',
     },
-    'ARMING_SKIPCHK': BITI_ARMARE,
+    # The 4.7+ inverse mask (ARMING_SKIPCHK) is no longer described here:
+    # the board runs 4.5.7, where it does not exist, and no tool that runs
+    # against the board may carry a 4.7+ name (tools/test_params_x7.py).
+    # Copter-4.5.7 AP_BoardConfig.cpp:234-239 (@Bitmask), enum in
+    # AP_BoardConfig.h:110-115. CUAV X7+ without a safety switch: ALL OFF
+    # (config/nova_flight.parm). Bit 3 on = every disarm turns safety back
+    # on and, without a button, the vehicle cannot re-arm.
+    'BRD_SAFETYOPTION': {
+        0: 'butonul poate STINGE siguranta (ActiveForSafetyDisable)',
+        1: 'butonul poate APRINDE siguranta (ActiveForSafetyEnable)',
+        2: 'butonul activ si armat (ActiveWhenArmed)',
+        3: 'siguranta APRINSA la fiecare dezarmare',
+    },
     # AP_NavEKF_Source.h: FUSE_ALL_VELOCITIES = 1 << 0. Aprins, EKF-ul
     # fuzioneaza vitezele din TOATE seturile - viteza GPS din setul 1 ar
     # intra pe setul 2 "fara GNSS" (15.2.5). Trebuie STINS.
@@ -86,6 +106,31 @@ BITMASKS = {
     # 4.5/4.6: aceiasi biti, sens INVERS - aprins = verificarea se FACE
     'ARMING_CHECK': BITI_ARMARE,
 }
+
+
+#: Parameters the team sets BY HAND on the FC (user decision, 02.10.2026):
+#: the serial port speed and options. Never written and never compared by
+#: this tool, whatever parm file it is given - a defensive guard, since the
+#: repo files no longer contain them (tools/test_params_x7.py checks both).
+#: The Pi opens the port at --baud (default 921600); the two must match.
+HAND_SET = re.compile(r'^SERIAL\d+_(BAUD|OPTIONS)$')
+
+
+def is_hand_set(name):
+    return bool(HAND_SET.match(name))
+
+
+def split_hand_set(wanted):
+    """(de_verificat, setati_de_mana) din lista lui parse_parm."""
+    keep = [w for w in wanted if not is_hand_set(w[0])]
+    manual = [w for w in wanted if is_hand_set(w[0])]
+    return keep, manual
+
+
+def print_hand_set(manual, parm):
+    for name, want, line_no in manual:
+        print(f"  {name:<20} setat de mana, ignorat "
+              f"({parm}:{line_no} cere {want:g}; nu se scrie, nu se compara)")
 
 
 def parse_parm(path):
@@ -163,6 +208,8 @@ def write_params(m, wanted, tries=3):
     il converteste la tipul stocat al parametrului."""
     out = []
     for name, want, _line in wanted:
+        if is_hand_set(name):
+            continue                     # HAND_SET: never written
         got = read_param(m, name)
         if got is not None and close_enough(want, got):
             out.append((name, want, got))
@@ -177,6 +224,34 @@ def write_params(m, wanted, tries=3):
                 break
         out.append((name, want, got))
     return out
+
+
+def verify_params(m, wanted, parm):
+    """Citire inapoi pe fiecare. (ok, nepotriviri, inexistenti, de_mana).
+
+    Numele din HAND_SET nu se compara: apar in `de_mana`, nu in
+    nepotriviri, oricare ar fi valoarea lor pe FC."""
+    wanted, manual = split_hand_set(wanted)
+    missing, mismatch, ok = [], [], []
+    for name, want, line_no in wanted:
+        got = read_param(m, name)
+        if got is None:
+            missing.append((name, want, line_no))
+            status = "LIPSESTE  <-- numele nu exista pe acest firmware"
+            shown = "-"
+        elif close_enough(want, got):
+            ok.append(name)
+            status = "ok"
+            shown = f"{got:g}"
+        else:
+            mismatch.append((name, want, got, line_no))
+            status = "NU SE POTRIVESTE"
+            shown = f"{got:g}"
+        print(f"  {name:<20} cerut {want:<10g} citit {shown:<12} {status}")
+        if name in BITMASKS and got is not None:
+            print(describe_mask(name, int(got)))
+    print_hand_set(manual, parm)
+    return ok, mismatch, missing, manual
 
 
 def main():
@@ -197,6 +272,10 @@ def main():
 
     wanted = parse_parm(args.parm)
     print(f"[check_params] {len(wanted)} parametri din {args.parm}")
+    de_mana = split_hand_set(wanted)[1]
+    if de_mana:
+        print(f"[check_params] {len(de_mana)} setati de mana, ignorati: "
+              f"{', '.join(n for n, _, _ in de_mana)}")
     print(f"[check_params] conectare la {args.conn} ...")
     kwargs = {'baud': args.baud} if args.baud else {}
     m = mavutil.mavlink_connection(args.conn, **kwargs)
@@ -212,14 +291,15 @@ def main():
             print("[check_params] REFUZ: vehiculul e ARMAT. Parametrii nu se "
                   "scriu in zbor sau cu motoarele armate.")
             return 2
-        print(f"[check_params] scriu {len(wanted)} parametri din {args.parm} "
-              f"PE NUME, cu citire inapoi.")
+        print(f"[check_params] scriu {len(wanted) - len(de_mana)} parametri "
+              f"din {args.parm} PE NUME, cu citire inapoi.")
         if not args.yes:
             r = input("  Vehicul dezarmat, elice demontate? Scrie DA: ")
             if r.strip() != 'DA':
                 print("  anulat.")
                 return 1
-        rez = write_params(m, wanted)
+        rez = write_params(m, wanted)        # skips HAND_SET itself
+        print_hand_set(de_mana, args.parm)
         esuate = [(n, w, g) for n, w, g in rez
                   if g is None or not close_enough(w, g)]
         print(f"  {len(rez) - len(esuate)}/{len(rez)} scrisi si confirmati.")
@@ -231,8 +311,8 @@ def main():
                   "ca --parm corespunde versiunii (4.5 vs 4.7+).")
             return 1
         if args.reboot:
-            print("\n  Repornesc FC-ul: telemetrul si precision landing se "
-                  "initializeaza doar la boot.")
+            print("\n  Repornesc FC-ul: telemetrul, precision landing si "
+                  "BRD_SAFETY_DEFLT se aplica doar la boot.")
             m.mav.command_long_send(
                 m.target_system, m.target_component,
                 mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
@@ -240,29 +320,12 @@ def main():
             print("  Asteapta ~15 s, apoi ruleaza din nou FARA --write, ca "
                   "citirea inapoi sa se faca dupa boot.")
             return 0
-        print("\n  REPORNESTE FC-ul acum (sau da --reboot): telemetrul si "
-              "precision landing se initializeaza doar la boot. Apoi ruleaza "
-              "din nou fara --write.")
+        print("\n  REPORNESTE FC-ul acum (sau da --reboot): telemetrul, "
+              "precision landing si BRD_SAFETY_DEFLT se aplica doar la boot. "
+              "Apoi ruleaza din nou fara --write.")
         return 0
 
-    missing, mismatch, ok = [], [], []
-    for name, want, line_no in wanted:
-        got = read_param(m, name)
-        if got is None:
-            missing.append((name, want, line_no))
-            status = "LIPSESTE  <-- numele nu exista pe acest firmware"
-            shown = "-"
-        elif close_enough(want, got):
-            ok.append(name)
-            status = "ok"
-            shown = f"{got:g}"
-        else:
-            mismatch.append((name, want, got, line_no))
-            status = "NU SE POTRIVESTE"
-            shown = f"{got:g}"
-        print(f"  {name:<20} cerut {want:<10g} citit {shown:<12} {status}")
-        if name in BITMASKS and got is not None:
-            print(describe_mask(name, int(got)))
+    ok, mismatch, missing, _ = verify_params(m, wanted, args.parm)
 
     print(f"\n  {len(ok)} ok | {len(mismatch)} nepotriviri | "
           f"{len(missing)} inexistenti")

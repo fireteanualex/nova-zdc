@@ -1,4 +1,9 @@
-# NOVA - ZDC 2026 - configuratie VEHICUL REAL (Pixhawk 6C)
+# NOVA - ZDC 2026 - configuratie VEHICUL REAL (CUAV X7+)
+#
+# Flight controller: CUAV X7+ (firmware target CUAV-X7; it runs 4.5.7, so load
+# the generated config/nova_flight_4.5.parm), no hardware safety switch.
+# Before the X7+ the vehicle used a Pixhawk 6C; that board is history -
+# nothing below depends on it.
 #
 # ===========================================================================
 # CERE ArduCopter 4.7.0 SAU MAI NOU
@@ -149,6 +154,10 @@ FS_THR_ENABLE,1
 # 2. BATT_MONITOR, BATT_CAPACITY, BATT_LOW_VOLT, BATT_FS_LOW_ACT
 #    2x 6S LiPo 4000 mAh, 25.2 V max (§2). Senzorul de curent si divizorul
 #    depind de placa de putere, care nu e finalizata (§7 pozitia 3).
+#    On the CUAV X7+ the firmware default is BATT_MONITOR 8 = DroneCAN
+#    (Copter-4.5.7 hwdef/CUAV-X7/defaults.parm:12, with CAN_P1_DRIVER 1).
+#    Without a CAN power module connected, ARMING_CHECK bit 8 (battery)
+#    fails arming with "Battery 1 unhealthy". Still the team's decision.
 #
 # 3. MOT_SPOOL_TIM_DN
 #    §5.6: fereastra intre land_complete si GROUND_IDLE e cea in care
@@ -161,7 +170,7 @@ FS_THR_ENABLE,1
 #    castigurile NU se copiaza de pe o axa pe alta. Reglaj dupa asamblare.
 #
 # 5. ~~SERIALn pentru legatura cu Pi-ul~~ - adaugat mai jos, pentru
-#    Pixhawk 6C / TELEM2.
+#    CUAV X7+ / TELEM2 (SERIAL2).
 
 # WP_ACC 1.5 - acelasi motiv ca in nova_sitl.parm si aceeasi derivare: e o
 # constrangere a CAMEREI (VFOV si dimensiunea markerului), nu a simularii.
@@ -232,32 +241,42 @@ LAND_SPD_MS,0.5
 # LAND_ALT_LOW: de revazut (brief §7); nu se seteaza pana nu e decis.
 
 # ---------------------------------------------------------------------------
-# Legatura cu Raspberry Pi 4, pe TELEM2 (Pixhawk 6C).
+# Link to the Raspberry Pi 4, on TELEM2 of the CUAV X7+.
 #
-# CARE SERIAL E TELEM2, verificat in sursa si nu din memorie (§5.10):
+# WHICH SERIAL IS TELEM2, checked in the Copter-4.5.7 source, not from
+# memory (§5.10):
 #
-#   libraries/AP_HAL_ChibiOS/hwdef/Pixhawk6C/hwdef.dat:36
-#     SERIAL_ORDER OTG1 UART7 UART5 USART1 UART8 USART2 USART3 OTG2
-#                    0     1     2      3     4      5      6     7
-#   iar in acelasi fisier, "# telem2" e deasupra lui UART5.
+#   libraries/AP_HAL_ChibiOS/hwdef/CUAV-X7/hwdef.dat:24
+#     SERIAL_ORDER OTG1 USART2 USART6 USART1 UART4 UART8 UART7 OTG2
+#                    0     1      2      3     4     5     6     7
+#   and hwdef.dat:144 in the same file: "# USART6 is telem2" (pins
+#   :145-148). The X7, X7 Pro, X7+ and X7+ Pro share this one hwdef.
 #
-#   Deci TELEM1 = SERIAL1, TELEM2 = **SERIAL2**. Nu presupune ca numerele
-#   de pe carcasa se potrivesc cu indicii de parametru - pe alte placi nu
-#   se potrivesc.
+#   So TELEM1 = SERIAL1, TELEM2 = **SERIAL2** - the same index as on the
+#   Pixhawk 6C we flew before (there TELEM2 was UART5), so the Pi link stays
+#   on SERIAL2. Do not assume the numbers printed on a case match the
+#   parameter index - on other boards they do not. "USART6 is telem2" is a
+#   hwdef comment: it holds for the standard CUAV X7+ carrier board.
 #
-# Cablaj, 3 fire, NU 5:
-#   Pixhawk TELEM2 pin 2 (TX)  ->  Pi GPIO 15 / pin 10 (RXD)
-#   Pixhawk TELEM2 pin 3 (RX)  ->  Pi GPIO 14 / pin 8  (TXD)
-#   Pixhawk TELEM2 pin 6 (GND) ->  Pi GND    / pin 6
+# Wiring, 3 wires, NOT 5. Standard Pixhawk connector pinout, NOT confirmed
+# for the X7+ carrier: confirm on the board before wiring (CUAV pinout sheet
+# or a multimeter: GND first, then the FC TX idles at ~3.3 V).
+#   FC TELEM2 pin 2 (TX)  ->  Pi GPIO 15 / pin 10 (RXD)
+#   FC TELEM2 pin 3 (RX)  ->  Pi GPIO 14 / pin 8  (TXD)
+#   FC TELEM2 pin 6 (GND) ->  Pi GND    / pin 6
 #
 #   TX si RX se INCRUCISEAZA. Pinul de 5 V al lui TELEM2 NU se leaga la Pi:
 #   Pi-ul are alimentarea lui, iar doua surse legate impreuna se bat.
 #   Nivelurile sunt 3.3 V pe ambele capete, deci nu trebuie convertor.
 SERIAL2_PROTOCOL,2
-SERIAL2_BAUD,921
+# SERIALx_BAUD and SERIALx_OPTIONS are set by hand by the team (user
+# decision, 02.10.2026): never written and never checked from this file.
+# The Pi side opens the port at --baud (default 921600); the two must match.
 
 # Controlul de flux: implicit 2 = AUTO pe placile ChibiOS
-# (AP_BoardConfig.cpp:70, BOARD_SER2_RTSCTS_DEFAULT 2). Auto-detectia
+# (Copter-4.5.7 AP_BoardConfig.cpp:131, default 2 written literally; the
+# X7 defines USART6_RTS/CTS, hwdef.dat:147-148, so the parameter exists
+# there). Auto-detectia
 # testeaza daca bufferul de iesire se umple la pornire - cu RTS/CTS
 # nelegate, cum e cablajul de 3 fire de mai sus, rezultatul depinde de ce
 # se intampla sa fie pe pini in acel moment.
@@ -266,3 +285,30 @@ SERIAL2_BAUD,921
 # sens, fara niciun mesaj de eroare nicaieri - exact clasa de esec din
 # §5.10, unde "nu a dat eroare" nu inseamna "e configurat".
 BRD_SER2_RTSCTS,0
+
+# ---------------------------------------------------------------------------
+# Hardware safety switch: NONE on this vehicle (CUAV X7+).
+#
+# The X7 hwdef has a safety input (CUAV-X7/hwdef.dat:300-303:
+# HAL_HAVE_SAFETY_SWITCH 1, PE10 SAFETY_IN), so on Copter-4.5.7 the
+# defaults are BRD_SAFETY_DEFLT 1 and BRD_SAFETYOPTION 3
+# (AP_BoardConfig.cpp:46-49 and :66-68). With DEFLT 1 and no button the
+# outputs stay blocked and arming fails on "Hardware safety switch"
+# (AP_Arming.cpp:744-756, ARMING_CHECK bit 11).
+#
+# BRD_SAFETY_DEFLT 0: safety starts OFF at boot (board_drivers.cpp:34-49
+# forces it off). @RebootRequired (AP_BoardConfig.cpp:165-171): REBOOT the
+# FC after writing it, then read it back.
+BRD_SAFETY_DEFLT,0
+# BRD_SAFETYOPTION 0: no button may toggle safety (AP_BoardConfig.cpp:
+# 234-239, filter at :505-526, DroneCAN button too). With the default 3 a
+# button on the GPS module, held 1 s on the ground, would turn safety back
+# ON and arming would fail on bit 11 until reboot or a MAVLink command.
+# Bit 3 ("Force safety on when the aircraft disarms") must stay OFF: with
+# it, every disarm re-enables safety (AP_Arming.cpp:1847-1853) and without
+# a button the vehicle cannot re-arm - that would break the touchdown
+# sequence if a disarm ever happened on the marker.
+BRD_SAFETYOPTION,0
+# BRD_SAFETY_MASK stays at its default 0 and is not written (irrelevant
+# with safety off). ARMING_CHECK bit 11 stays ON, set by the team: with
+# BRD_SAFETY_DEFLT 0 it passes, and it still catches safety switched back on.
