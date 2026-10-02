@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # NOVA - ZDC 2026
-# UART-ul de pe GPIO 14/15, pentru legatura cu Pixhawk 6C / TELEM2.
+# UART-ul de pe GPIO 14/15, pentru legatura cu CUAV X7+ / TELEM2.
 #
 #   sudo pi/setup_uart.sh --check     # ce e acum, fara sa schimbe nimic
 #   sudo pi/setup_uart.sh             # configureaza (idempotent)
@@ -23,7 +23,7 @@
 # Pi 4 se scaleaza cu incarcarea si cu temperatura. La 921600 baud asta
 # inseamna o legatura care merge cateva minute si apoi incepe sa dea
 # caractere gresite - iar simptomul arata ca un cablu prost sau ca un
-# Pixhawk defect, nu ca o problema de configurare.
+# FC defect, nu ca o problema de configurare.
 #
 # Deci: `dtoverlay=disable-bt` muta PL011 inapoi pe GPIO 14/15, si de acolo
 # `/dev/serial0` devine `ttyAMA0`. Asta e ce verifica --check.

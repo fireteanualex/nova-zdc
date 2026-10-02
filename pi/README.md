@@ -1,8 +1,8 @@
-# Bring-up pe Raspberry Pi 4 + Pixhawk 6C
+# Bring-up pe Raspberry Pi 4 + CUAV X7+
 
 Scris pentru **primul test pe hardware**, nu pentru cursă. Scopul e să
 ajungi la un Pi care, pornit, arată pe ecran ce vede camera, cu markerul
-detectat, și care citește telemetria de la Pixhawk — fără să comande nimic.
+detectat, și care citește telemetria de la FC (CUAV X7+) — fără să comande nimic.
 
 > **Calibrarea e deja în repo.** `config/camera_pi.yaml` — ChArUco, 60 de
 > poze, câmp întreg 2304x1296, `fy = 1038.7 px`, HFOV 96.0° / VFOV 63.9°.
@@ -65,7 +65,7 @@ neutrului".
 
 ## Cablajul — 3 fire, nu 5
 
-| Pixhawk 6C TELEM2 | | Raspberry Pi 4 |
+| CUAV X7+ TELEM2 | | Raspberry Pi 4 |
 |---|---|---|
 | pin 2 — TX | → | pin 10 — GPIO 15 (RXD) |
 | pin 3 — RX | → | pin 8 — GPIO 14 (TXD) |
@@ -73,6 +73,11 @@ neutrului".
 
 **TX și RX se încrucișează.** Ambele capete sunt 3.3 V, deci nu trebuie
 convertor de nivel.
+
+**Pinii 2 / 3 / 6 sunt pinout-ul standard de conector Pixhawk și NU sunt
+confirmați pentru placa purtătoare a X7+: de confirmat pe placă înainte de
+cablare** (fișa CUAV sau multimetru: GND întâi, apoi TX-ul FC-ului e pinul
+care stă la ~3.3 V în repaus).
 
 **Pinul de 5 V al lui TELEM2 NU se leagă la Pi.** Pi-ul are alimentarea lui;
 două surse legate împreună se bat, iar în cel mai bun caz repornește Pi-ul
@@ -144,26 +149,49 @@ Trebuie să vezi `/dev/serial0 -> /dev/ttyAMA0`.
 > **miniUART** (`ttyS0`), al cărui tact vine din ceasul miezului VPU — care
 > se scalează cu încărcarea și temperatura. La 921600 baud legătura merge
 > câteva minute și apoi începe să dea caractere greșite. Simptomul arată ca
-> un cablu prost sau un Pixhawk defect.
+> un cablu prost sau un FC defect.
 >
 > `dtoverlay=disable-bt` mută PL011 (`ttyAMA0`, ceas propriu) înapoi pe
 > GPIO 14/15. Scriptul face și asta, și scoate consola serială — altfel două
 > programe stau pe același port și pymavlink primește pachete tăiate fără
 > să se plângă.
 
-### 4. Parametrii pe Pixhawk
+### 4. Parametrii pe FC (CUAV X7+)
 
 Din Mission Planner / QGroundControl, sau prin MAVProxy pe USB:
 
 ```
 SERIAL2_PROTOCOL 2      MAVLink2
-SERIAL2_BAUD     921    921600
 BRD_SER2_RTSCTS  0      fara control de flux (RTS/CTS nelegate)
+BRD_SAFETY_DEFLT 0      fara safety switch hardware (cere REBOOT al FC)
+BRD_SAFETYOPTION 0      niciun buton nu poate reactiva siguranta
 ```
 
-`TELEM2 = SERIAL2` pe 6C — verificat în sursă, nu din memorie:
-`hwdef.dat:36` dă `SERIAL_ORDER OTG1 UART7 UART5 ...`, iar `# telem2` e
-deasupra lui `UART5`, care e al treilea, adică indexul 2.
+Primele patru sunt în `config/nova_flight_4.5.parm` (`config/nova.json:
+flight_parm`). `SERIAL2_BAUD` și `SERIALx_OPTIONS` se setează **de mână** pe
+FC (decizia echipei, 02.10.2026): fișierele noastre nu le scriu și
+`check_params.py` le ignorează. Pi-ul deschide portul la `--baud` (implicit
+921600), iar cele două trebuie să coincidă.
+
+`TELEM2 = SERIAL2` pe CUAV X7+ — verificat în sursa Copter-4.5.7, nu din
+memorie: `CUAV-X7/hwdef.dat:24` dă `SERIAL_ORDER OTG1 USART2 USART6 USART1
+UART4 UART8 UART7 OTG2`, iar `hwdef.dat:144` spune `# USART6 is telem2`;
+USART6 e al treilea, adică indexul 2. X7, X7 Pro, X7+ și X7+ Pro au același
+hwdef. Citarea veche, `Pixhawk6C/hwdef.dat:36`, e istorie: indexul era același
+și pe 6C (TELEM2 = UART5). „USART6 is telem2" e un comentariu din hwdef; e
+valabil pentru placa purtătoare standard CUAV X7+.
+
+**Fără safety switch hardware.** X7+ are intrare de siguranță în hwdef
+(`hwdef.dat:300-303`), deci pe 4.5.7 implicitul e `BRD_SAFETY_DEFLT 1`: fără
+buton, ieșirile rămân blocate și armarea pică pe „Hardware safety switch"
+(`ARMING_CHECK` bit 11). După ce scrii `BRD_SAFETY_DEFLT`, **repornește FC-ul**
+și citește-l înapoi. Bitul 3 din `BRD_SAFETYOPTION` trebuie să rămână stins
+(altfel fiecare dezarmare reactivează siguranța). `ARMING_CHECK` rămâne cum
+îl setează echipa (bitul 11 aprins; trece cu siguranța oprită).
+
+**Baterie.** Pe X7 implicitul firmware e `BATT_MONITOR 8` (DroneCAN): fără
+modul de alimentare CAN, armarea pică pe verificarea bateriei. Monitorul de
+baterie rămâne setarea manuală a echipei.
 
 `BRD_SER2_RTSCTS` implicit e **2 (Auto)** pe plăcile ChibiOS. Auto-detecția
 testează dacă bufferul de ieșire se umple la pornire — cu RTS/CTS nelegate,
@@ -173,8 +201,14 @@ Apoi citește-i înapoi, de pe Pi (§5.10 — un parametru nu e setat până nu 
 fost citit înapoi):
 
 ```bash
-tools/check_params.py --conn /dev/serial0 --baud 921600
+tools/check_params.py --conn /dev/serial0 --baud 921600 \
+    --parm config/nova_flight_4.5.parm --write --reboot
+tools/check_params.py --conn /dev/serial0 --baud 921600 \
+    --parm config/nova_flight_4.5.parm
 ```
+
+Prima rulare scrie fișierul din `config/nova.json: flight_parm` și
+repornește FC-ul; a doua, fără `--write`, e citirea înapoi.
 
 ### 5. Calibrarea camerei
 

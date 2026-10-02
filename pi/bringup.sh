@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # NOVA - ZDC 2026
-# Bring-up pe Raspberry Pi 4 + Pixhawk 6C (TELEM2 pe GPIO 14/15).
+# Bring-up pe Raspberry Pi 4 + CUAV X7+ (TELEM2 pe GPIO 14/15).
 #
 #   pi/bringup.sh              # verificari + monitor cu fereastra pe tot ecranul
 #   pi/bringup.sh --check      # doar verificarile, nu porneste nimic
@@ -127,7 +127,7 @@ for mod in ('cv2', 'numpy', 'pymavlink', 'picamera2'):
 EOF
 
 # --- 2. UART-ul ------------------------------------------------------------
-say "UART (GPIO 14/15 -> Pixhawk TELEM2)"
+say "UART (GPIO 14/15 -> TELEM2 pe CUAV X7+)"
 if [[ -e "$CONN" ]]; then
   TINTA="$(readlink -f "$CONN")"
   case "$TINTA" in

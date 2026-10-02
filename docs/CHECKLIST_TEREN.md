@@ -101,6 +101,31 @@ Ce verifică și de ce contează fiecare:
       sau **REFUZAT cu motiv**. Cu `autonomy_enabled=false`, refuzul e
       așteptat și motivul trebuie să fie exact acela.
 - [ ] Geofence încărcat: verifică prin citire înapoi, nu presupune.
+      (Decizia 02.10.2026: **fără fence pe FC** — în cursă vehiculul zboară
+      peste 30 m AGL; plafonul de 30 m există doar în secvența autonomă, în
+      supervizorul companion-ului. Linia de mai sus se aplică doar dacă
+      echipa reintroduce un fence.)
+
+**X7+ fără safety switch:**
+
+FC-ul e CUAV X7+, fără buton de siguranță hardware (detalii în
+`pi/README.md`, pasul 4).
+
+- [ ] Parametrii scriși cu `check_params.py --write --reboot`, apoi **citiți
+      înapoi** după repornire (a doua rulare, fără `--write`):
+      `BRD_SAFETY_DEFLT 0` (cere REBOOT al FC) și `BRD_SAFETYOPTION 0`
+- [ ] **Armarea merge fără buton de siguranță** (nicio eroare „Hardware
+      safety switch" / „Safety Switch"). Dacă pică pe baterie: pe X7
+      implicitul e `BATT_MONITOR 8` (DroneCAN) — fără modul CAN de
+      alimentare, monitorul se setează de mână
+- [ ] `SERIAL2_BAUD` setat de mână pe FC și egal cu `--baud` de pe Pi
+      (fișierele noastre nu îl scriu)
+- [ ] **Comutatorul de RTL manual** (`RCn_OPTION 4` sau `FLTMODEn = 6`,
+      setat de mână): acționează-l și vezi că FC-ul trece în RTL
+- [ ] Funcția kill switch-ului e setată de mână (`RCn_OPTION`: **31**
+      MOTOR_ESTOP oprește ieșirile dar vehiculul rămâne armat și dezarmează
+      abia după `DISARM_DELAY`/2; **81** DISARM dezarmează imediat) — testul
+      „Kill switch" de mai sus rămâne obligatoriu
 
 ### 2.4 Marker
 
