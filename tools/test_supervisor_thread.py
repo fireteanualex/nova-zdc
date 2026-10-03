@@ -28,8 +28,8 @@ from nova.rc import OverrideMonitor                         # noqa: E402
 from nova.safety import (Action, ExtNavSupervisor,          # noqa: E402
                          SafetySupervisor)
 from nova.supervisor_thread import SupervisorThread         # noqa: E402
-from nova.vehicle import (MODE_BRAKE, MODE_LAND, MODE_LOITER,  # noqa: E402
-                          MODE_RTL, Vehicle, VehicleState)
+from nova.vehicle import (MODE_BRAKE, MODE_GUIDED, MODE_LAND,  # noqa: E402
+                          MODE_LOITER, MODE_RTL, Vehicle, VehicleState)
 
 
 class FakeMav:
@@ -80,7 +80,10 @@ def snapshot(**kw):
 
 def build(extnav=False, phase='DESCEND_TRACK', clock=lambda: 100.0):
     v = vehicul()
-    v.state.set(snapshot(), 100.0)
+    # ExtNav holds GUIDED in its guided phases (B1.9: the hand-back's mode
+    # command needs the FC in the mode we hold, on a fresh view)
+    v.state.set(snapshot(mode=MODE_GUIDED) if extnav else snapshot(), 100.0)
+    v.pump()
     view = v.view()
     ov = OverrideMonitor(view)
     if extnav:
@@ -231,8 +234,10 @@ def test_un_fir_mort():
         sup.set_thread_heartbeats(**{nume: hb})
         hb.beat(100.0)
         v.hb_t = 100.5
+        v.state.set(snapshot(mode=MODE_GUIDED), 100.5)   # the I/O thread lives
         assert st.step(100.5) == Action.NONE
         v.hb_t = 101.2
+        v.state.set(snapshot(mode=MODE_GUIDED), 101.2)
         assert st.step(101.2) == Action.EXIT, nume
         assert exits[0].startswith(f"thread_{nume}")
         if nume == 'principal':

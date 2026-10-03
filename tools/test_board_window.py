@@ -345,7 +345,52 @@ def test_deseneaza_din_last_view_amana_dupa_detectie_si_nu_pica():
     return "contur din last_view; desen amanat dupa detectie; eroare de desen izolata"
 
 
+
+def test_OSD_plafon_si_calea_RTL():
+    """B1 (15.2.4): mesajele caii EXIT_RTL pe OSD si inaltimea fata de
+    plafon in linia de stare. `PLAFON <N>m DEPASIT -> RTL` cu N din config
+    (rosu); RTL confirmat; RTL refuzat -> LAND; SRC1 neconfirmat -> LAND;
+    timeout de cadru. Linia: `h 26.3/30 m` doar la mai putin de 5 m de
+    plafon si doar in fazele active (negativ: la 24 m, si in IDLE la 29 m)."""
+    f = bw.OsdMesaje.format
+    t, c = f('exit_rtl', {'ceiling_m': 30.0, 'passive': False})
+    assert t == 'PLAFON 30m DEPASIT -> RTL' and c == bw.ROSU, t
+    t, _ = f('exit_rtl', {'ceiling_m': 8.0, 'passive': False})
+    assert t == 'PLAFON 8m DEPASIT -> RTL', t
+    t, _ = f('exit_rtl', {'ceiling_m': 30.0, 'passive': True})
+    assert 'PASIV' in t and 'RTL' not in t.split(':')[1], t
+    assert f('exit_done', {'kind': 'rtl', 'result': 'rtl', 'mode': 6})[0] == 'RTL confirmat'
+    t, c = f('exit_rtl_land', {'reason': 'rtl_refuzat'})
+    assert t == 'RTL refuzat -> LAND' and c == bw.ROSU
+    t, c = f('exit_rtl_no_ack', {'s': 2.0, 'n': 4})
+    assert 'SRC1 NECONFIRMAT' in t and 'LAND' in t and 'fara RTL' in t and c == bw.ROSU
+    assert f('exit_rtl_land', {'reason': 'src1_neconfirmat'}) == (None, None)
+    assert 'LAND confirmat' in f('exit_done', {'kind': 'rtl', 'result': 'land', 'mode': 9})[0]
+    assert 'NICI RTL' in f('exit_done', {'kind': 'rtl', 'result': 'fail', 'mode': 4})[0]
+    assert 'RTL oricum' in f('exit_rtl_frame', {'ok': False, 'dist_m': 14.0})[0]
+    assert f('exit_rtl_frame', {'ok': True, 'dist_m': 0.4}) == (None, None)
+    # the normal EXIT stays as it was
+    assert f('exit_done', {'mode': 5, 'passive': False})[0] == 'EXIT gata: FC in LOITER'
+    from nova.safety import CEILING_PHASES
+    sup = types.SimpleNamespace(ceiling_phases=CEILING_PHASES, ceiling_agl_m=30.0)
+    veh = types.SimpleNamespace(rel_alt=26.34, alt=20.0)
+    sm = types.SimpleNamespace(state='DESCEND', h_now=lambda: 20.0, last_est=None,
+                               aux_high=lambda: True, n_vpe_sent=0)
+    fe = bw.FereastraBord(DetFals(), PV(), sm=sm, sup=sup, vehicle=veh, log=None)
+    assert 'h 26.3/30 m' in fe.linia_de_stare(100.0), fe.linia_de_stare(100.0)
+    veh.rel_alt = 24.9
+    assert '/30 m' not in fe.linia_de_stare(100.0)
+    veh.rel_alt = 29.0
+    sm.state = 'IDLE'
+    assert '/30 m' not in fe.linia_de_stare(100.0)
+    sm.state = 'GATE_SEARCH'
+    assert 'h 29.0/30 m' in fe.linia_de_stare(100.0)
+    veh.rel_alt = None
+    assert '/30 m' not in fe.linia_de_stare(100.0)
+    return "PLAFON 30m DEPASIT -> RTL, RTL confirmat, RTL refuzat -> LAND; h 26.3/30 m"
+
 TESTS = [
+    ('OSD: plafonul si calea RTL', test_OSD_plafon_si_calea_RTL),
     ('deseneaza din last_view, amana dupa detectie, nu pica',
      test_deseneaza_din_last_view_amana_dupa_detectie_si_nu_pica),
     ('banda ramane vie fara cadre noi', test_banda_ramane_vie_fara_cadre_noi),

@@ -30,7 +30,7 @@ import threading
 import time
 
 from .rc import OverrideMonitor
-from .vehicle import MODE_BRAKE, MODE_LAND, MODE_LOITER, MODE_RTL
+from .vehicle import MODE_BRAKE, MODE_GUIDED, MODE_LAND, MODE_LOITER, MODE_RTL
 
 #: Faza 3 (refactor/threads): heartbeat-ul unui fir (detectie, I/O,
 #: principal) stagnat peste atat = firul e mort sau blocat. Aceeasi
@@ -61,11 +61,19 @@ DETECTION_MAX_MISSES = 5
 DETECTION_HARD_MAX_AGE_S = 1.5
 
 #: 15.2.4 - raza fata de punctul de handover si plafonul deasupra lui.
+#: On ExtNav (B1, 02.10.2026) the ceiling is measured above HOME
+#: (GLOBAL_POSITION_INT.relative_alt), not above the handover point - see
+#: ExtNavSupervisor._mon_ceiling. The PLND path keeps the old meaning.
 GEOFENCE_RADIUS_M = 10.0
 CEILING_AGL_M = 30.0
+#: ExtNav ceiling: consecutive DISTINCT GLOBAL_POSITION_INT samples above
+#: the ceiling before the breach is confirmed (3 at 20 Hz = 0.15 s). One
+#: noisy baro sample does not abort an attempt; three in a row do.
+CEILING_CONFIRM_N = 3
 
 #: Rata de coborare peste care ceva e in neregula. Coborarea normala e
-#: limitata de LAND_SPD_MS (0.5 m/s) si WP_SPD_DN; 2.0 m/s inseamna ca nu mai
+#: limitata de LAND_SPEED (0.5 m/s) si WPNAV_SPEED_DN (ArduCopter 4.5.7 names;
+#: LAND_SPD_MS / WP_SPD_DN are the 4.7+ ones); 2.0 m/s inseamna ca nu mai
 #: comanda controlerul de aterizare. PROVIZORIU.
 MAX_DESCENT_RATE_MS = 2.0
 DESCENT_RATE_HOLD_S = 0.5
@@ -138,9 +146,14 @@ class Action:
     #: restored and read back, then LOITER, then ALT_HOLD; never RTL on
     #: SRC2). The supervisor only asks for it.
     EXIT = 5
+    #: B1 (02.10.2026, rule 15.2.4): the ExtNav ceiling's action. Not a
+    #: mode either: the state machine runs the EXIT_RTL path (SRC1 sent and
+    #: acknowledged, EKF back in the GNSS frame, then RTL; LAND if set 1 is
+    #: never acknowledged or RTL is refused). The supervisor only asks.
+    EXIT_RTL = 6
 
     NAMES = {NONE: 'NONE', BRAKE: 'BRAKE', LOITER: 'LOITER', RTL: 'RTL',
-             OVERRIDE: 'OVERRIDE', EXIT: 'EXIT'}
+             OVERRIDE: 'OVERRIDE', EXIT: 'EXIT', EXIT_RTL: 'EXIT_RTL'}
     MODES = {BRAKE: MODE_BRAKE, LOITER: MODE_LOITER, RTL: MODE_RTL,
              OVERRIDE: MODE_LOITER}
 
@@ -260,6 +273,11 @@ class SafetySupervisor:
         self.abort = threading.Event()
         self.abort_reason = None
         self.abort_passive = False
+        #: B1: WHICH exit the abort asks for. True = EXIT_RTL (the ExtNav
+        #: ceiling), False = the normal EXIT. Written with abort_reason,
+        #: before abort_n / the Event, and cleared with it - the state
+        #: machine reads it after seeing a new abort_n, like the reason.
+        self.abort_rtl = False
         #: Faza 5: de cate ori s-a aprins abort-ul. Masina de stari retine
         #: ultimul numar tratat: un abort vechi, inca neconsumat de
         #: supervizor (firul lui nu a vazut inca incercarea noua), nu
@@ -449,9 +467,10 @@ class SafetySupervisor:
         because a switch was flipped."""
         return self._latch_state() != 'in livrare'
 
-    def _set_abort(self, reason, passive=False):
+    def _set_abort(self, reason, passive=False, rtl=False):
         self.abort_reason = reason
         self.abort_passive = passive
+        self.abort_rtl = bool(rtl)
         self.abort_n += 1
         self.abort.set()
 
@@ -459,6 +478,7 @@ class SafetySupervisor:
         self.abort.clear()
         self.abort_reason = None
         self.abort_passive = False
+        self.abort_rtl = False
 
     def _cere_mod(self, mode):
         """Comanda de mod a supervizorului: prin coada URGENT cand vehiculul
@@ -700,7 +720,8 @@ class SafetySupervisor:
         """Coborare mai rapida decat poate comanda controlerul de aterizare.
 
         Singura parghie a unui companion e schimbarea de mod; limitarea
-        propriu-zisa a vitezei sta in FC (LAND_SPD_MS, WP_SPD_DN). Aici doar
+        propriu-zisa a vitezei sta in FC (LAND_SPEED, WPNAV_SPEED_DN on the
+        4.5.7 board; LAND_SPD_MS / WP_SPD_DN on 4.7+). Aici doar
         oprim coborarea."""
         if phase not in self.autonomous_phases:
             self._descent_since = None
@@ -776,8 +797,20 @@ EXTNAV_ENGAGED_PHASES = ('MOVE', 'CENTER_CHECK', 'DESCEND', 'FINAL_ALIGN',
 #: (2.5 m/s by default, not set in our parameter files). Faster than this,
 #: sustained, is not the takeoff controller any more -> EXIT.
 CLIMB_PHASES = ('RISEUP', 'HOVER_CONFIRM')
+#: B1 (02.10.2026, rule 15.2.4): phases in which the 30 m ceiling above
+#: HOME is enforced - the autonomous procedure, from AUX up (GATE_SEARCH)
+#: to the hand-back. Positive list (§5.25): IDLE, REJECT, GATE_FAIL, EXIT,
+#: EXIT_RTL, COMPLETE, ABORT, DONE and any phase not listed here are NOT
+#: watched - outside the sequence the vehicle is the pilot's and flies
+#: above 30 m in the race (user decision 02.10.2026: no fence on the FC).
+CEILING_PHASES = EXTNAV_PHASES
 MAX_CLIMB_RATE_MS = 3.0
 CLIMB_RATE_HOLD_S = 0.5
+#: B1.9 (G1, 02.10.2026): the supervisor's direct exit commands LOITER only
+#: on a FRESH view showing the FC in GUIDED (the mode the companion holds).
+#: Fresh = the snapshot was published at most this long ago (the I/O
+#: thread publishes every <= 10 ms) and this thread was not stalled.
+HANDBACK_VIEW_MAX_AGE_S = 0.5
 #: EKF_STATUS_REPORT is requested at 5 Hz (vehicle.EKF_HZ). Older than
 #: this, or never received while engaged, the position is unknown - and
 #: unknown is not valid.
@@ -793,25 +826,97 @@ class ExtNavSupervisor(SafetySupervisor):
     restored and read back, LOITER, ALT_HOLD). This class sends NO mode
     command - so the incident class of §5.66 has no path here.
 
+    B1 (02.10.2026, rule 15.2.4): the ceiling is the one monitor with
+    another action. Above `ceiling_agl_m` over HOME (relative_alt) for
+    `ceiling_confirm_n` distinct samples, in CEILING_PHASES, it asks for
+    EXIT_RTL (abort with `abort_rtl`, or on_exit(reason, rtl=True)); the
+    state machine restores SRC1, waits for the EKF to be back in the GNSS
+    frame and asks RTL. Still no mode command from here.
+
         sup = ExtNavSupervisor(vehicle, override=ov, on_exit=sm.request_exit)
         sup.update(now, phase)
     """
 
-    def __init__(self, vehicle, on_exit=None, **kw):
+    def __init__(self, vehicle, on_exit=None,
+                 ceiling_confirm_n=CEILING_CONFIRM_N, **kw):
         super().__init__(vehicle, **kw)
         self.on_exit = on_exit
         self.autonomous_phases = EXTNAV_PHASES
         self.link_phases = EXTNAV_ENGAGED_PHASES
         self.ekf_phases = EXTNAV_ENGAGED_PHASES
         self.gate_phases = ('GATE_SEARCH',)
-        # Radius / ceiling only once the frame is the marker's and the
-        # origin has been re-anchored (see update): in GATE_SEARCH the
-        # vehicle is the pilot's, in ENGAGE the EKF position is being reset.
+        # Radius only once the frame is the marker's and the origin has
+        # been re-anchored (see update): in GATE_SEARCH the vehicle is the
+        # pilot's, in ENGAGE the EKF position is being reset. The ceiling
+        # does not use this origin any more (B1): it is above HOME.
         self.geometry_phases = EXTNAV_ENGAGED_PHASES
+        self.ceiling_phases = CEILING_PHASES
+        self.ceiling_confirm_n = int(ceiling_confirm_n)
+        self._ceil_reset()
         self.ekf_report_max_age_s = EKF_REPORT_MAX_AGE_S
         self._engaged_since = None
         self.max_climb_rate_ms = MAX_CLIMB_RATE_MS
         self._climb_since = None
+        #: B1.9 (G2): this thread's previous update() time, and the sticky
+        #: stall flag (cleared only by a new attempt through the gate)
+        self._last_update_t = None
+        self._stalled = False
+        self.stall_gap_s = None
+
+    def _ceil_reset(self):
+        #: consecutive distinct samples above the ceiling, and the identity
+        #: (n_gpi) of the last sample counted
+        self._ceil_count = 0
+        self._ceil_last_n = None
+        self._ceil_last_h = None
+
+    def _mon_ceiling(self, now, age, phase):
+        """15.2.4 on ExtNav (B1): height above HOME over the ceiling.
+
+        Deterministic: GLOBAL_POSITION_INT.relative_alt (barometric, the
+        FC's own height above home - not the EKF origin, which ENGAGE
+        re-anchors on the marker, and not the handover altitude). Counted
+        on DISTINCT samples (`n_gpi`, the message counter of the vehicle):
+        this thread runs at 200 Hz, the message comes at 20 Hz, and the
+        same sample seen 10 times is still one sample. `ceiling_confirm_n`
+        consecutive samples above -> EXIT_RTL; one at or below resets.
+
+        No sample yet / relative_alt None / a vehicle without the counter:
+        no verdict from THIS monitor, deliberately. A link that stopped
+        delivering is the link monitor's case (link_age, EXIT), not a
+        ceiling breach - and a breach must not be invented from nothing.
+
+        This replaces SafetySupervisor._mon_ceiling (origin-relative, i.e.
+        above the handover point: a handover at 12 m would only have fired
+        at ~42 m above home) on this supervisor; the PLND one is unchanged.
+        """
+        if phase not in self.ceiling_phases:
+            self._ceil_reset()
+            return Action.NONE, None, ''
+        n = getattr(self.v, 'n_gpi', None)
+        h = getattr(self.v, 'rel_alt', None)
+        if n is None or h is None:
+            return Action.NONE, None, ''
+        if n != self._ceil_last_n:
+            self._ceil_last_n = n
+            self._ceil_last_h = h
+            if h > self.ceiling_agl_m:
+                self._ceil_count += 1
+            else:
+                self._ceil_count = 0
+        if self._ceil_count >= self.ceiling_confirm_n:
+            return (Action.EXIT_RTL, 'ceiling_agl',
+                    f"{self._ceil_last_h:.1f} m deasupra home, "
+                    f"{self._ceil_count} esantioane la rand peste plafonul "
+                    f"de {self.ceiling_agl_m:.1f} m")
+        return Action.NONE, None, ''
+
+    def _principal_dead(self, now, phase):
+        """The main thread's heartbeat is stale where the thread monitor
+        watches it. Used by the double-fault rule in update()."""
+        if phase not in self.ekf_phases:
+            return False
+        return any(nume == 'principal' for nume, _ in self._fire_stagnate(now))
 
     def update(self, now=None, detection_age_s=None, phase='IDLE',
                miss_streak=None):
@@ -823,12 +928,29 @@ class ExtNavSupervisor(SafetySupervisor):
         new_attempt = (phase in self.autonomous_phases
                        and self._last_phase not in self.autonomous_phases)
         self._last_phase = phase
+        # B1.9 (G2): our own gap. Above heartbeat_max_s (THREAD_HEARTBEAT_
+        # MAX_S, 1.0 s) this thread - or the whole process - was stalled:
+        # the other threads' heartbeats look old because WE did not run,
+        # and the snapshot may hold old bytes read after the freeze. Sticky
+        # until a new attempt; a gap measured in this very call still
+        # counts for it (it happened before the attempt's first look).
+        if new_attempt:
+            self._stalled = False
+        gap = (None if self._last_update_t is None
+               else now - self._last_update_t)
+        self._last_update_t = now
+        if gap is not None and gap > self.heartbeat_max_s:
+            self._stalled = True
+            self.stall_gap_s = gap
+            self._emit(now, 'stall', Action.NONE,
+                       f"firul supervizorului nu a rulat {gap:.1f} s: fara "
+                       f"comenzi de mod pana la o incercare noua", phase)
         if phase in self.ekf_phases:
             if self._engaged_since is None:
                 self._engaged_since = now
                 # The EKF position has just been RESET onto the marker frame
                 # (the state machine enters MOVE only after observing it).
-                # The radius / ceiling origin captured at arm time was in
+                # The radius origin captured at arm time was in
                 # the previous frame: measured against it, the reset alone
                 # reads as tens of metres and would EXIT at once. Re-anchor
                 # here; from now on the frame is stable.
@@ -845,6 +967,12 @@ class ExtNavSupervisor(SafetySupervisor):
         if self.latched != Action.NONE:
             # EXIT was asked once; the state machine owns it from there.
             # A new attempt through the gate starts clean.
+            # DELIBERATE (B1): nothing escalates over a latched exit. Once
+            # an EXIT is latched for another reason (the pilot is getting
+            # the vehicle back in LOITER), a ceiling breach after it does
+            # NOT turn it into EXIT_RTL: we return here, before any monitor
+            # runs. Same rule as the mode rule of §5.66 - the hand-back
+            # under way is not overruled by a second command of ours.
             if new_attempt:
                 self._emit(now, 'latch_release', self.latched,
                            f"incercare noua ({phase}): EXIT-ul anterior "
@@ -855,6 +983,7 @@ class ExtNavSupervisor(SafetySupervisor):
                 self._clear_abort()
                 self._exit_direct_done = False
                 self.armed = False
+                self._ceil_reset()
             else:
                 return self.latched
 
@@ -864,14 +993,51 @@ class ExtNavSupervisor(SafetySupervisor):
             in_segment = phase in self.autonomous_phases
             if in_segment and not self.armed:
                 self.arm(now, self.v.x, self.v.y, self.v.alt)
+                self._ceil_reset()
             elif not in_segment and self.armed:
                 self.disarm(now, f"faza {phase}")
         if not self.armed:
+            self._ceil_reset()
             return Action.NONE
 
+        # B1.9 (G2): after our own stall, no verdict from stale knowledge -
+        # not "thread dead -> direct exit with LOITER" from heartbeats that
+        # look old only because we slept, not RTL either: a PASSIVE exit
+        # (SRC1 requested by the state machine, no mode command).
+        if self._stalled:
+            self._trigger_exit(now, 'stall_supervizor',
+                               f"firul supervizorului blocat "
+                               f"{self.stall_gap_s or 0.0:.1f} s: iesire pasiva",
+                               phase, passive=True)
+            return Action.EXIT
+
+        # B1: the ceiling first. In the same step it outranks every other
+        # monitor - it is the only one whose action is RTL (rule 15.2.4:
+        # abort -> return home). One exception, a DOUBLE FAULT: the main
+        # thread is dead too. EXIT_RTL is executed by the state machine, in
+        # that very thread, so asking for it would ask nobody; the thread
+        # fault is handled instead (_exit_direct: SRC1 + LOITER, urgent,
+        # once), exactly as without a breach.
+        c_act, c_mon, c_why = self._mon_ceiling(now, None, phase)
+        if c_act != Action.NONE:
+            if self._principal_dead(now, phase):
+                varsta = dict(self._fire_stagnate(now)).get('principal', 0.0)
+                self._emit(now, 'ceiling_agl', Action.NONE,
+                           f"{c_why} - DAR firul principal e mort: tratat ca "
+                           f"defectiunea firului (dubla defectiune)", phase)
+                self._trigger_exit(now, 'thread_principal',
+                                   f"firul principal fara heartbeat de "
+                                   f"{varsta:.1f} s (si plafon depasit)", phase)
+                return Action.EXIT
+            else:
+                self._trigger_exit(now, c_mon, c_why, phase, rtl=True)
+                return Action.EXIT_RTL
+
         worst, monitor, detail = Action.NONE, None, ''
+        # The ceiling is NOT in this list (B1): it ran above, with its own
+        # action; the old origin-relative one must not fire here as well.
         for mon in (self._mon_override, self._mon_link, self._mon_ekf,
-                    self._mon_threads, self._mon_radius, self._mon_ceiling,
+                    self._mon_threads, self._mon_radius,
                     self._mon_descent_rate, self._mon_climb_rate,
                     self._mon_tilt):
             act, name, why = mon(now, None, phase)
@@ -908,22 +1074,45 @@ class ExtNavSupervisor(SafetySupervisor):
                     f"firul {nume} fara heartbeat de {varsta:.1f} s")
         return Action.NONE, None, ''
 
-    def _trigger_exit(self, now, monitor, detail, phase):
-        self.latched = Action.EXIT
+    def _trigger_exit(self, now, monitor, detail, phase, rtl=False,
+                      passive=False):
+        """Latch and ask the state machine for the exit: the normal EXIT,
+        or EXIT_RTL (`rtl`, the ceiling only). The kind travels with the
+        reason (abort_rtl next to abort_reason; on_exit(reason, rtl=True)
+        on the callback wiring of the simulator and the tests)."""
+        action = Action.EXIT_RTL if rtl else Action.EXIT
+        # B1.9: when this supervisor does the hand-back itself (main thread
+        # dead -> _exit_direct), the abort is passive for the state machine:
+        # if it ever wakes up it only re-requests SRC1, no second mode.
+        passive = passive or monitor == 'thread_principal'
+        self.latched = action
         self.latched_monitor = monitor
-        self.passive = monitor == 'pilot_override'
-        self._set_abort(f"{monitor}: {detail}", passive=False)
-        self._emit(now, monitor, Action.EXIT, detail, phase)
+        self.passive = monitor == 'pilot_override' or passive
+        self._set_abort(f"{monitor}: {detail}", passive=passive, rtl=rtl)
+        self._emit(now, monitor, action, detail, phase)
         if monitor == 'thread_principal':
             self._exit_direct(now, phase)
         if self.on_exit is not None:
+            if rtl:
+                try:
+                    self.on_exit(f"{monitor}: {detail}", rtl=True)
+                    return
+                except TypeError:          # a callback without the kind
+                    pass
             self.on_exit(f"{monitor}: {detail}")
 
     def _exit_direct(self, now, phase):
         """EXIT-ul ordonat, facut de supervizor cand masina de stari nu
         mai poate (firul principal mort): setul EKF 1 inapoi, apoi LOITER,
         amandoua prin URGENT, o singura data. Fara ALT_HOLD de rezerva:
-        aici nu mai e nimeni sa confirme modurile."""
+        aici nu mai e nimeni sa confirme modurile.
+
+        Unchanged by B1, deliberately: a ceiling breach together with a
+        dead main thread is a DOUBLE fault and is handled as the thread
+        fault - SRC1 + LOITER, not RTL. RTL needs the ordered path (SRC1
+        acknowledged, EKF back in the GNSS frame) that only the state
+        machine runs; asked blindly from here it could fly to the marker
+        frame's idea of home. The pilot gets the vehicle in LOITER."""
         if getattr(self, '_exit_direct_done', False):
             return
         self._exit_direct_done = True
@@ -934,10 +1123,33 @@ class ExtNavSupervisor(SafetySupervisor):
                 ok1 = fn(1, urgent=True)
             except TypeError:
                 ok1 = fn(1)
-        ok2 = self._cere_mod(MODE_LOITER)
+        # B1.9 (G1): LOITER only over the mode we hold, seen on a FRESH view
+        # of our own. Anything else (the pilot's ALT_HOLD, a failsafe's LAND
+        # or RTL, a stale snapshot, our own stall) -> SRC1 only: passive.
+        fresh, why = self.view_fresh(now)
+        if fresh and self.v.mode == MODE_GUIDED:
+            ok2 = self._cere_mod(MODE_LOITER)
+            self._emit(now, 'exit_direct', Action.EXIT,
+                       f"masina de stari nu raspunde: SRC1 ({ok1}) si LOITER "
+                       f"({ok2}) cerute direct, prin URGENT", phase)
+            return
+        self.passive = True
         self._emit(now, 'exit_direct', Action.EXIT,
-                   f"masina de stari nu raspunde: SRC1 ({ok1}) si LOITER "
-                   f"({ok2}) cerute direct, prin URGENT", phase)
+                   f"masina de stari nu raspunde: SRC1 ({ok1}) cerut direct; "
+                   f"FARA LOITER - {why or f'FC in {self.v.mode_name()}, nu GUIDED'}",
+                   phase)
+
+    def view_fresh(self, now):
+        """(True, '') when this thread may trust its view for a mode
+        command: not stalled, and the snapshot (VehicleView.last_snapshot_t)
+        at most HANDBACK_VIEW_MAX_AGE_S old. A view without a snapshot time
+        (the synchronous wiring: the vehicle itself) counts as fresh."""
+        if self._stalled:
+            return False, 'firul supervizorului a fost blocat'
+        t = getattr(self.v, 'last_snapshot_t', None)
+        if t is not None and now - t > HANDBACK_VIEW_MAX_AGE_S:
+            return False, f"instantaneu vechi de {now - t:.1f} s"
+        return True, ''
 
     def _mon_ekf(self, now, age, phase):
         """Brief §6: the EKF must hold a valid horizontal position while
@@ -974,7 +1186,8 @@ class ExtNavSupervisor(SafetySupervisor):
             ok = fn() if fn is not None else None
             ekf = '-' if ok is None else ('ok' if ok else 'INVALID')
             return f"SAFETY activ | {self.override.status()} | ekf {ekf}"
-        return f"SAFETY EXIT ({self.latched_monitor}), executat de masina de stari"
+        return (f"SAFETY {Action.NAMES.get(self.latched, self.latched)} "
+                f"({self.latched_monitor}), executat de masina de stari")
 
 
 # Modurile in care supervizorul considera ca vehiculul nu mai e in segmentul

@@ -130,10 +130,11 @@ PILOT_THR_BHV,0
 FS_THR_ENABLE,1
 
 # --- 15.2.4: geofence ---
-# Parametrii FENCE_* NU se pun aici, la fel ca in SITL: ii gestioneaza
-# companion-ul in zbor (nova/fence.py), pentru ca geometria difera intre
-# segmentul autonom (cerc de 10 m pe marker) si restul turului (16.3.2).
-# FenceManager.save()/restore() acopera trecerea intre ele.
+# No fence on the FC: no fence parameter here, none written in flight
+# (user decision 02.10.2026: in the race the vehicle flies above 30 m AGL).
+# The 30 m ceiling of rule 15.2.4 exists only inside the autonomous
+# sequence, in the companion's supervisor (nova/safety.py, ExtNavSupervisor):
+# height above home over the ceiling -> abort, action SRC1 -> RTL.
 
 # =========================================================================
 # DECIZII DESCHISE - de completat inainte de primul zbor

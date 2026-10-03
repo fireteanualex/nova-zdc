@@ -37,6 +37,8 @@ class FakeVehicle:
                                   'VELZ': 0, 'YAW': 1, 'OPTIONS': 0}
         self._raspunde = raspunde
         self.link = True
+        self._req = self._res = None
+        self.ack_instant = True
 
     def request_param(self, nume):
         self.cerute.append(nume)
@@ -48,11 +50,20 @@ class FakeVehicle:
         return True
 
     def send_ekf_source_set(self, n):
+        # B1: like the real Vehicle - a request invalidates the previous
+        # ack at once; the FC's ack (instant here) is attributed to it
+        self._req = n
+        self._res = None
         if not self.link:
             return False
         self.comenzi.append(n)
         self.ekf_src_ack = mavutil.mavlink.MAV_RESULT_ACCEPTED
+        if self.ack_instant:
+            self._res = mavutil.mavlink.MAV_RESULT_ACCEPTED
         return True
+
+    def ekf_src_ack_for(self, n):
+        return self._res if self._req == n else None
 
 
 def ruleaza(s, v, faze, t0=0.0, dt=0.1):
@@ -270,7 +281,40 @@ def test_parametrii_din_fisiere_sunt_conformi():
     return f"ambele fisiere descriu setul {ek.SET_AUTONOM} fara GNSS"
 
 
+
+def test_ack_vechi_de_SRC1_nu_trece_drept_ack_de_SRC2():
+    """(d) B1, coordonator: ack_ok e raspunsul la CEREREA de comutare, nu
+    ultimul ack primit. Un ACCEPTED ramas de la restaurarea SRC1 (zborul /
+    incercarea anterioara) nu face ack_ok adevarat pentru SRC2 inainte ca
+    FC-ul sa raspunda la SRC2. Negativ: dupa raspuns, ack_ok. Si release
+    fara trimitere (calea EXIT_RTL trimite singura SRC1): nicio comanda,
+    managerul eliberat; un vehicul fara accesor -> ack None (necunoscut)."""
+    v = FakeVehicle()
+    s = ek.EkfSourceManager(v, verbose=False)
+    ruleaza(s, v, ['DESCEND_TRACK'] * 3)
+    s.release(1.0, 'iesire')                    # SRC1 restored, acknowledged
+    assert v.ekf_src_ack_for(1) == mavutil.mavlink.MAV_RESULT_ACCEPTED
+    v.ack_instant = False                      # the FC has not answered SRC2 yet
+    ruleaza(s, v, ['DESCEND_TRACK'] * 3, t0=2.0)
+    assert s.state == s.ACTIV and v.comenzi[-1] == ek.SET_AUTONOM
+    assert v.ekf_src_ack == mavutil.mavlink.MAV_RESULT_ACCEPTED, "capcana absenta"
+    assert not s.ack_ok and s.ack is None, s.ack
+    v._res = mavutil.mavlink.MAV_RESULT_ACCEPTED   # the FC's answer to SRC2
+    assert s.ack_ok
+    n = len(v.comenzi)
+    assert s.release(3.0, 'EXIT_RTL', urgent=True, send=False) == s.RESTAURAT
+    assert len(v.comenzi) == n and not s._comutat
+    assert s.log[-1]['kind'] == 'release'
+
+    class Fara:
+        ekf_src_ack = mavutil.mavlink.MAV_RESULT_ACCEPTED
+    s2 = ek.EkfSourceManager(Fara(), verbose=False)
+    assert s2.ack is None and not s2.ack_ok
+    return "ACCEPTED vechi de SRC1: ack_ok fals pana la raspunsul la SRC2"
+
 TESTS = [
+    ('ack vechi de SRC1 nu trece drept ack de SRC2',
+     test_ack_vechi_de_SRC1_nu_trece_drept_ack_de_SRC2),
     ('predicatul e mai strict decat firmware-ul',
      test_predicatul_e_mai_strict_decat_firmware_ul),
     ('fiecare termen e verificat', test_fiecare_termen_e_verificat),

@@ -59,6 +59,9 @@ ROSU = (0, 0, 255)
 
 #: A detection older than this is drawn yellow, not green.
 PROASPAT_S = 1.0
+#: B1: the status line shows the height above home against the ceiling
+#: when it is within this many metres of it (active phases only).
+PLAFON_ARATA_M = 5.0
 #: How many past messages are kept for the band (newest + previous).
 MESAJE = 2
 #: The window's own cost log: one line per this many seconds.
@@ -173,8 +176,35 @@ class OsdMesaje:
         if name == 'exit':
             pas = ' PASIV' if g('passive') else ''
             return f"EXIT{pas}: {g('reason')}", ROSU
+        if name == 'exit_rtl':
+            c = g('ceiling_m')
+            n = f"{c:.0f}m " if c is not None else ''
+            pas = ': PASIV, modul e al pilotului' if g('passive') else ' -> RTL'
+            return f"PLAFON {n}DEPASIT{pas}", ROSU
+        if name == 'exit_rtl_no_ack':
+            return "SRC1 NECONFIRMAT in 2 s -> LAND (fara RTL)", ROSU
+        if name == 'exit_rtl_land':
+            if g('reason') == 'rtl_refuzat':
+                return "RTL refuzat -> LAND", ROSU
+            return None, None               # exit_rtl_no_ack said it
+        if name == 'exit_rtl_frame':
+            if g('ok'):
+                return None, None
+            return "cadru GNSS neconfirmat in 1 s: RTL oricum", GALBEN
+        if name == 'exit_rtl_taken':
+            m = g('mode')
+            return f"EXIT_RTL: {MODE_NAME.get(m, m)} pus de pilot/FC, pasiv", GALBEN
         if name == 'exit_done':
             m = g('mode')
+            if g('kind') == 'rtl':
+                r = g('result')
+                if r == 'rtl':
+                    return "RTL confirmat", GALBEN
+                if r == 'land':
+                    return "LAND confirmat (fara RTL)", ROSU
+                if r == 'fail':
+                    return "NICI RTL, NICI LAND confirmat", ROSU
+                return f"EXIT_RTL pasiv: FC in {MODE_NAME.get(m, m)}", GALBEN
             return f"EXIT gata: FC in {MODE_NAME.get(m, m)}", GALBEN
         if name == 'exit_fallback':
             return "LOITER refuzat -> cer ALT_HOLD", GALBEN
@@ -363,6 +393,9 @@ class FereastraBord:
                 h = getattr(v, 'alt', None)
             if h is not None:
                 parti.append(f"h {h:4.1f}m")
+            pl = self.plafon(sm)
+            if pl is not None:
+                parti.append(pl)
             e = getattr(sm, 'last_est', None)
             if e is not None and now - e.t < 2.0:
                 parti.append(f"lat {e.lateral_m:.2f}m")
@@ -395,6 +428,21 @@ class FereastraBord:
         # wide the cut eats this, never the flight state before it.
         parti.append(self.camera_si_calibrare())
         return ' '.join(parti)
+
+    def plafon(self, sm):
+        """B1: 'h 26.3/30 m' - height above HOME against the ceiling, when
+        within PLAFON_ARATA_M of it and only in the phases where the
+        supervisor watches it; None otherwise."""
+        sup, v = self.sup, self.v
+        fazele = getattr(sup, 'ceiling_phases', None)
+        ceil = getattr(sup, 'ceiling_agl_m', None)
+        h = getattr(v, 'rel_alt', None) if v is not None else None
+        if (fazele is None or ceil is None or h is None
+                or getattr(sm, 'state', None) not in fazele):
+            return None
+        if h < ceil - PLAFON_ARATA_M:
+            return None
+        return f"h {h:.1f}/{ceil:.0f} m"
 
     def camera_si_calibrare(self):
         """'<preset> <calibration kind, short>', '-' for what is unknown."""

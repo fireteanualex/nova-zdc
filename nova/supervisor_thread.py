@@ -26,8 +26,8 @@ EKF 1 + LOITER (ExtNav, unde RTL/BRAKE pe setul 2 nu au voie).
 import time
 
 from .concurrency import Heartbeat, Latest, run_thread, stop_threads
-from .safety import ExtNavSupervisor
-from .vehicle import MODE_BRAKE, MODE_LOITER
+from .safety import EXTNAV_PHASES, THREAD_HEARTBEAT_MAX_S, ExtNavSupervisor
+from .vehicle import MODE_BRAKE, MODE_GUIDED, MODE_LOITER
 
 #: Perioada firului supervizorului. Pana acum rula la fiecare iteratie a
 #: buclei principale (sleep 2 ms + lucrul buclei, adica ~100-300 Hz);
@@ -59,6 +59,14 @@ class SupervisorThread:
         self.n_steps = 0
         self.watchdog_tripped = False
         self.last_action = None
+        #: B1.9 (G2): the watchdog's own previous call (the main thread's
+        #: loop), when it last woke from a stall, and the sticky flag (a
+        #: new attempt - GATE_SEARCH entered from outside the procedure -
+        #: clears it)
+        self._wd_last_t = None
+        self._wd_wake_t = None
+        self.wd_stalled = False
+        self._wd_last_phase = 'IDLE'
 
     # -- firul ---------------------------------------------------------------
     def step(self, now=None):
@@ -102,18 +110,58 @@ class SupervisorThread:
         if self.watchdog_tripped or self.thread is None:
             return False
         now = self.clock() if now is None else now
+        # B1.9 (G2): the main thread's own gap. If WE were stalled, the
+        # supervisor's heartbeat looks old because nothing ran - not
+        # because it died. No trip on that: its age counts again only from
+        # our waking up, and whatever trips later sends no mode command
+        # for this attempt.
+        faza, _t = self.phase.get()
+        if faza == 'GATE_SEARCH' and self._wd_last_phase not in EXTNAV_PHASES:
+            self.wd_stalled = False                  # a new attempt
+        self._wd_last_phase = faza
+        gap = None if self._wd_last_t is None else now - self._wd_last_t
+        self._wd_last_t = now
+        if gap is not None and gap > THREAD_HEARTBEAT_MAX_S:
+            self.wd_stalled = True
+            self._wd_wake_t = now
+            return False
         age = self.heartbeat.age(now)
+        if age is not None and self._wd_wake_t is not None:
+            age = min(age, now - self._wd_wake_t)
         if age is None or age <= max_s:
             return False
         self.watchdog_tripped = True
+        # B1 (02.10.2026), deliberate: a ceiling breach while the
+        # supervisor thread is dead is a DOUBLE fault (nobody measures the
+        # ceiling any more) and is handled as the thread fault - the same
+        # SRC1 + LOITER as always, a normal abort (abort_rtl stays False).
+        # RTL is not asked from here: it needs the ordered EXIT_RTL path
+        # (SRC1 acknowledged, EKF back in the GNSS frame) and nothing here
+        # waits for either. The pilot gets the vehicle in LOITER.
         motiv = f"watchdog: supervizorul fara heartbeat de {age:.2f} s"
-        self.sup._set_abort(motiv, passive=False)
+        # B1.9: ExtNav - the abort is PASSIVE for the state machine: the
+        # mode of the hand-back is decided here (LOITER, or none), so the
+        # machine only requests SRC1 again and sends no second mode command
+        # (it would otherwise follow with its own LOITER, or worse, over a
+        # pilot who reacted in between). PLND unchanged.
+        self.sup._set_abort(motiv,
+                            passive=isinstance(self.sup, ExtNavSupervisor))
         v = self.vehicle
         if isinstance(self.sup, ExtNavSupervisor):
             ok1 = v.send_ekf_source_set(1, urgent=True)
-            ok2 = v.request_mode(MODE_LOITER, urgent=True)
-            ce = f"SRC1 ({ok1}) + LOITER ({ok2})"
+            # B1.9 (G1): LOITER only over the GUIDED we hold, on the main
+            # thread's own view (refreshed by pump() every iteration), and
+            # never after our own stall. Otherwise SRC1 only - passive.
+            mode = getattr(v, 'mode', None)
+            if not self.wd_stalled and mode == MODE_GUIDED:
+                ok2 = v.request_mode(MODE_LOITER, urgent=True)
+                ce = f"SRC1 ({ok1}) + LOITER ({ok2})"
+            else:
+                de_ce = ('firul principal a fost blocat' if self.wd_stalled
+                         else f"FC in modul {mode}, nu GUIDED")
+                ce = f"SRC1 ({ok1}), FARA LOITER: {de_ce}"
         else:
+            # PLND (not flown): unchanged, BRAKE
             ok = v.request_mode(MODE_BRAKE, urgent=True)
             ce = f"BRAKE ({ok})"
         print(f"!! {motiv}: {ce} in URGENT, din firul principal")

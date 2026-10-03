@@ -790,9 +790,8 @@ def test_ExtNav_celelalte_monitoare_dau_tot_EXIT():
     t = ruleaza_extnav(v, sup, 'CENTER_CHECK', t, n=5)
     assert exits and exits[0].startswith('tilt'), exits
     cazuri.append('inclinare')
-    # raza si plafon in FINAL_ALIGN, rata de coborare in LAND
+    # raza in FINAL_ALIGN, rata de coborare in LAND
     for camp, val, mon, faza in (('x', 12.0, 'geofence_radius', 'FINAL_ALIGN'),
-                                 ('z', -40.0, 'ceiling', 'FINAL_ALIGN'),
                                  ('vz', 3.0, 'descent_rate', 'LAND')):
         v, sup, exits = build_extnav()
         t = ruleaza_extnav(v, sup, faza, 100.0, n=3)
@@ -801,6 +800,22 @@ def test_ExtNav_celelalte_monitoare_dau_tot_EXIT():
         assert exits and exits[0].startswith(mon), (mon, exits)
         assert v.mode_reqs == []
         cazuri.append(mon)
+    # B1 (02.10.2026): the ExtNav ceiling is above HOME now (relative_alt,
+    # tools/test_ceiling_rtl.py). The old origin-relative one is gone: 40 m
+    # above the EKF origin with no relative_alt -> nothing; relative_alt
+    # over 30 m on 3 distinct samples -> EXIT_RTL, still 0 mode commands
+    v, sup, exits = build_extnav()
+    t = ruleaza_extnav(v, sup, 'FINAL_ALIGN', 100.0, n=3)
+    v.z = -40.0
+    ruleaza_extnav(v, sup, 'FINAL_ALIGN', t, n=8)
+    assert not exits and sup.latched == Action.NONE, exits
+    v.rel_alt, v.n_gpi = 31.0, 0
+    for _ in range(3):
+        v.n_gpi += 1
+        t = ruleaza_extnav(v, sup, 'FINAL_ALIGN', t, n=1)
+    assert exits and exits[0].startswith('ceiling_agl'), exits
+    assert sup.latched == Action.EXIT_RTL and sup.abort_rtl and v.mode_reqs == []
+    cazuri.append('plafon deasupra home -> EXIT_RTL')
     return ', '.join(cazuri) + ' -> EXIT, 0 comenzi de mod'
 
 

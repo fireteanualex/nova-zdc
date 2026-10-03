@@ -60,6 +60,22 @@ PLND machine in nova/state_machine.py stays for the simulator.
     reported (the EKF set still goes back to SRC1 for the next flight).
     Never RTL while on SRC2: home is in another frame after the reset.
 
+    EXIT_RTL (B1, 02.10.2026, rule 15.2.4: the supervisor's 30 m ceiling
+    above home, from GATE_SEARCH to the hand-back), every step URGENT:
+      1. SET_EKF_SOURCE_SET(1) sent explicitly from EVERY phase (also from
+         GATE_SEARCH, where set 1 is already active: idempotent, one path),
+         the EkfSourceManager let go; re-sent every 0.5 s until an ACCEPTED
+         attributed to THIS request (no stale ack). None in 2.0 s -> LAND,
+         never RTL: RTL on set 2 flies to the marker frame's "home".
+      2. frame gate: GLOBAL_POSITION_INT within 3 m of GPS_RAW_INT, both
+         received after the ack (the EKF position reset is the only proof
+         the EKF is back in the GNSS frame; no STATUSTEXT is ever waited
+         for). 1.0 s at most, then RTL anyway (measured: still reaches
+         home, without the RTL_ALT climb).
+      3. RTL, confirmed from HEARTBEAT; refused -> LAND; LAND refused ->
+         reported. A third mode at any point -> passive, nothing more.
+    After the hand-back (ABORT) nothing is re-sent, whatever the FC does.
+
 THE MODE RULE, in every phase (brief §6, closes the ACQUIRE bug and the
 incident class of 26.09): the confirmed mode is remembered; a mode we did
 not ask for is the pilot's or a failsafe's -> passive EXIT (SRC1 restored,
@@ -79,7 +95,9 @@ from dataclasses import dataclass
 from pymavlink import mavutil
 
 from . import extnav
-from .vehicle import (MODE_ALT_HOLD, MODE_GUIDED, MODE_LAND, MODE_LOITER)
+from .safety import THREAD_HEARTBEAT_MAX_S
+from .vehicle import (MODE_ALT_HOLD, MODE_GUIDED, MODE_LAND, MODE_LOITER,
+                      MODE_RTL)
 
 # --- Thresholds (brief §3), named for the Safety Case ------------------------
 GATE_WINDOW_S = 5.0          # search window for the gate detection(s)
@@ -107,6 +125,25 @@ MODE_TRIES = 5
 EKF_RESET_TOL_M = 1.0        # EKF position within this of our estimate
 EKF_SETTLE_S = 0.5           # after the switch, before judging the reset
 EXIT_ACK_TIMEOUT_S = 2.0     # SRC1 acknowledged, else go on regardless
+# EXIT_RTL (B1, 02.10.2026; measured in SITL 4.5.7, fazaA1/RESULTS.md):
+# ack 2-12 ms after SET_EKF_SOURCE_SET(1), EKF position reset 0.17-0.19 s
+EXIT_RTL_SRC1_RESEND_S = 0.5  # SRC1 re-sent this often until acknowledged
+#: Horizontal distance GLOBAL_POSITION_INT (EKF) - GPS_RAW_INT (receiver)
+#: under which the EKF is back in the GNSS frame. Real GPS noise; in SITL
+#: the two agree within ~1 m right after the reset (14.5 m before it).
+FRAME_TOL_M = 3.0
+#: The gate is SHORT on purpose: between the reset and RTL, GUIDED chases
+#: its old target (0, 0), which after the reset is the EKF origin (run1:
+#: 3.35 m drift in 3 s). Measured reset at 0.18 s; on timeout RTL anyway.
+FRAME_TIMEOUT_S = 1.0
+#: B1.9 (G2, 02.10.2026, SITL campaign S rows F6c / F2 / F2c): a gap between
+#: two update() calls above this means the main loop (or the whole
+#: process) was stalled - its picture of the vehicle is stale, and so may
+#: be the first bytes read after it (old messages in the serial buffer).
+#: From then on NO mode command for this attempt: every exit is passive
+#: (SRC1 still requested, urgent) until a new attempt through the gate.
+#: The same limit as the thread heartbeats the supervisor watches.
+STALL_MAX_S = THREAD_HEARTBEAT_MAX_S
 # touchdown and the climb back (27.09.2026)
 TOUCHDOWN_SETPOINT_S = 0.1   # the z ramp is re-sent at 10 Hz
 TOUCHDOWN_BELOW_M = 0.5      # the ramp ends this far below the ground
@@ -148,6 +185,8 @@ class Phase:
     RISEUP = 'RISEUP'
     HOVER_CONFIRM = 'HOVER_CONFIRM'
     COMPLETE = 'COMPLETE'
+    #: B1: the ceiling's exit - SRC1 (acknowledged), frame gate, RTL
+    EXIT_RTL = 'EXIT_RTL'
 
 
 #: After FINAL_ALIGN: descent to contact, the ground and the climb back.
@@ -166,7 +205,13 @@ SRC2_PHASES = (Phase.ENGAGE, Phase.MOVE, Phase.CENTER_CHECK, Phase.DESCEND,
 ENGAGED_PHASES = (Phase.ENGAGE, Phase.MOVE, Phase.CENTER_CHECK, Phase.DESCEND,
                   Phase.FINAL_ALIGN, Phase.LAND, Phase.TOUCHDOWN) + TOUCHDOWN_PHASES
 #: Phases in which estimates are sent to the EKF (D5: from ENGAGE on).
-VPE_PHASES = ENGAGED_PHASES + (Phase.EXIT, Phase.COMPLETE)
+#: EXIT_RTL like EXIT: while set 2 may still be active the EKF keeps its
+#: vision (with the supervisor's abort up the I/O thread drops it anyway).
+VPE_PHASES = ENGAGED_PHASES + (Phase.EXIT, Phase.COMPLETE, Phase.EXIT_RTL)
+#: Phases from which an EXIT_RTL request runs the RTL path (B1): the
+#: procedure from AUX up. GATE_SEARCH too - nothing engaged yet, but the
+#: ceiling holds there as well (rule 15.2.4).
+EXIT_RTL_FROM = (Phase.GATE_SEARCH,) + ENGAGED_PHASES
 #: Phases in which we hold a mode of our own and watch it.
 GUIDED_PHASES = (Phase.MOVE, Phase.CENTER_CHECK, Phase.DESCEND,
                  Phase.FINAL_ALIGN) + TOUCHDOWN_PHASES
@@ -265,6 +310,14 @@ class ExtNavLanding:
         self.exit_passive = False
         self._exit_step = None          # 'src1', 'mode'
         self._exit_t = None
+        self._exit_owned = set()        # G1: modes owned when the exit began
+        #: G1: the pilot's mode when the search started (GATE_SEARCH owns it)
+        self._search_mode = None
+        #: G2: this loop's previous update() time, and the sticky stall flag
+        self._last_update_t = None
+        self._stalled = False
+        self._last_abort_rtl = False    # kind of the abort last read
+        self._clear_rtl()
         self.n_vpe_sent = 0
         self._clear_touchdown()
 
@@ -303,7 +356,19 @@ class ExtNavLanding:
         self.exit_reason = None
         self.exit_passive = False
         self._exit_step = None
+        self._clear_rtl()
         self._clear_touchdown()
+
+    def _clear_rtl(self):
+        """State of the EXIT_RTL path (B1)."""
+        self._rtl_step = None           # 'src1', 'frame', 'rtl', 'land'
+        self._rtl_t0 = None             # path start (the decision, for us)
+        self._rtl_src_t = None          # last SRC1 sent
+        self._rtl_src_n = 0
+        self._rtl_ack_t = None
+        self._rtl_gpi0 = self._rtl_gps0 = None
+        self._rtl_mode0 = set()         # modes not yet "someone else's"
+        self._rtl_land_why = None
 
     def _clear_touchdown(self):
         self.contact = None             # what CONTACT recorded (dict)
@@ -478,10 +543,33 @@ class ExtNavLanding:
         if n == self._abort_seen_n:
             return None
         self._abort_seen_n = n
+        # B1: which exit - read with the reason, after the new number
+        self._last_abort_rtl = bool(getattr(sup, 'abort_rtl', False))
         return (sup.abort_reason or 'abort supervizor'), bool(sup.abort_passive)
 
-    def request_exit(self, reason, passive=False):
-        """The supervisor's lever, and ours. Idempotent inside EXIT."""
+    def request_exit(self, reason, passive=False, rtl=False):
+        """The supervisor's lever, and ours. Idempotent inside EXIT.
+
+        `rtl=True` (B1): the ceiling's exit, EXIT_RTL - from GATE_SEARCH
+        and every engaged phase. While EXIT_RTL runs, any request (a normal
+        one too: AUX down, a timeout) is ignored; while a normal EXIT runs,
+        an EXIT_RTL request is ignored (the hand-back under way is not
+        overruled - same choice as in the supervisor's latch)."""
+        if self.state == Phase.EXIT_RTL:
+            return
+        # B1.9 (G1, G2): the mode rule INSIDE the request, so that no path -
+        # the supervisor's abort included, which is read before the mode
+        # watch - can bypass it: a mode we do not own, or a stall of this
+        # loop, makes the exit passive whatever the caller said.
+        if not passive and self._mode_taken_by_other():
+            passive = True
+            reason = f"{reason} [mod {self.v.mode_name()} nepus de noi: pasiv]"
+        if not passive and self._stalled:
+            passive = True
+            reason = f"{reason} [dupa blocaj: pasiv]"
+        if rtl and self.state in EXIT_RTL_FROM:
+            self._begin_exit_rtl(reason, passive)
+            return
         if self.state in (Phase.EXIT, Phase.ABORT, Phase.IDLE, Phase.DONE,
                           Phase.COMPLETE):
             # COMPLETE is already the ordered hand-back (SRC1, LOITER)
@@ -502,15 +590,17 @@ class ExtNavLanding:
         # 1. SRC1 first, whatever else: home is in another frame on SRC2
         self._exit_step = 'src1'
         self._exit_t = self.now
+        self._exit_owned = self._owned_modes()
         self.ekf.release(self.now, reason, urgent=True)
         self._mode_want = None
         self._mode_expected = None
         self._mode_stage = 0
         self.set_state(Phase.EXIT, reason)
 
-    def _handback_done(self, text, mode, passive):
-        """End of the hand-back: EXIT -> ABORT ('exit_done'), COMPLETE ->
-        DONE ('sequence_complete', said on the OSD and to the FC)."""
+    def _handback_done(self, text, mode, passive, kind='exit', result=None):
+        """End of the hand-back: EXIT / EXIT_RTL -> ABORT ('exit_done'),
+        COMPLETE -> DONE ('sequence_complete', said on the OSD and to the
+        FC). From ABORT nothing is sent again, whatever the FC does next."""
         if self.state == Phase.COMPLETE:
             self.set_state(Phase.DONE, text)
             self._emit('sequence_complete', mode=mode, passive=passive,
@@ -519,14 +609,31 @@ class ExtNavLanding:
             self._say("\n== SECVENTA COMPLETA: SRC1, predat pilotului ==\n")
         else:
             self.set_state(Phase.ABORT, text)
-            self._emit('exit_done', mode=mode, passive=passive)
+            self._emit('exit_done', mode=mode, passive=passive, kind=kind,
+                       result=result)
+
+    def _src1_acked(self):
+        """True only for an ACCEPTED attributed to the LATEST source-set
+        request, and that request is set 1 (Vehicle.ekf_src_ack_for). The
+        raw `ekf_src_ack` is not read: right after a request it still holds
+        the previous command's ACCEPTED (the SRC2 switch) until the I/O
+        thread dispatches - the stale ack found in SITL (02.10.2026). A
+        vehicle without the accessor never counts as acknowledged."""
+        fn = getattr(self.v, 'ekf_src_ack_for', None)
+        if fn is None:
+            return False
+        return fn(1) == mavutil.mavlink.MAV_RESULT_ACCEPTED
 
     def _run_exit(self, now):
         """The ordered hand-back, for EXIT and for COMPLETE alike: SRC1
-        acknowledged first, then LOITER, ALT_HOLD if LOITER is refused."""
+        acknowledged first, then LOITER, ALT_HOLD if LOITER is refused.
+        B1: the ack is the one attributed to OUR request (_src1_acked);
+        the wait is real now - 2-12 ms measured in SITL on TCP, a few tens
+        of ms on the serial link - and still capped at EXIT_ACK_TIMEOUT_S,
+        after which the hand-back goes on regardless (the pilot must get
+        the vehicle back)."""
         if self._exit_step == 'src1':
-            ack = getattr(self.v, 'ekf_src_ack', None)
-            acked = ack == mavutil.mavlink.MAV_RESULT_ACCEPTED
+            acked = self._src1_acked()
             if not acked and now - self._exit_t < EXIT_ACK_TIMEOUT_S:
                 return
             if not acked:
@@ -534,6 +641,13 @@ class ExtNavLanding:
             if self.exit_passive:
                 self._handback_done('EXIT pasiv: SRC1 cerut, modul e al pilotului',
                                     self.v.mode, True)
+                return
+            if self.v.mode not in self._exit_owned:
+                # B1.9 (G1): the pilot / a failsafe changed the mode while
+                # we waited for the ack - the LOITER would override them
+                self._emit('exit_taken', mode=self.v.mode)
+                self._handback_done(f"pasiv: {self.v.mode_name()} pus de altcineva "
+                                    f"inainte de LOITER", self.v.mode, True)
                 return
             self._exit_step = 'mode'
             self._mode_stage = 0
@@ -556,10 +670,221 @@ class ExtNavLanding:
                 self._handback_done('nici LOITER, nici ALT_HOLD confirmat',
                                     self.v.mode, False)
 
+    # -- EXIT_RTL (B1, 02.10.2026, rule 15.2.4) -----------------------------
+    def _owned_modes(self):
+        """B1.9 (G1): the modes the companion may command OVER - the one it
+        holds (GUIDED in the guided phases), a request of its own still in
+        flight and the mode that request started from, and in GATE_SEARCH
+        / ENGAGE the pilot's mode recorded when the search started. Any
+        other FC mode is the pilot's or a failsafe's (the mode rule of §6):
+        an exit decided then is PASSIVE. Empty set = nothing is owned."""
+        owned = set()
+        if self._mode_expected is not None:
+            owned.add(self._mode_expected)
+        if self._mode_want is not None:
+            owned.add(self._mode_want)
+            if self._mode_before is not None:
+                owned.add(self._mode_before)
+        if (self.state in (Phase.GATE_SEARCH, Phase.ENGAGE)
+                and self._search_mode is not None):
+            owned.add(self._search_mode)
+        return owned
+
+    def _mode_taken_by_other(self):
+        """True when the FC is in a mode we do not own (_owned_modes):
+        the exit then stays PASSIVE - SRC1 goes back, no mode command."""
+        return self.v.mode not in self._owned_modes()
+
+    def _on_stall(self, now, gap):
+        """B1.9 (G2): this loop did not run for `gap` s. Sticky for the
+        attempt: every exit from here is passive, and one under way stops
+        sending mode commands. In the engaged phases the attempt ends here
+        (passive EXIT); in GATE_SEARCH the search is dropped (nothing was
+        engaged - a new attempt needs AUX down and up)."""
+        first = not self._stalled
+        self._stalled = True
+        self._emit('stall', gap_s=gap, phase=self.state)
+        if first:
+            self._say(f"\n!! bucla principala blocata {gap:.1f} s in {self.state}: "
+                      f"fara comenzi de mod pana la o incercare noua\n")
+        st = self.state
+        if st in ENGAGED_PHASES:
+            self.request_exit(f"bucla principala blocata {gap:.1f} s", passive=True)
+        elif st == Phase.GATE_SEARCH:
+            self.reset(f"bucla blocata {gap:.1f} s in cautare")
+        elif st in (Phase.EXIT, Phase.COMPLETE):
+            self.exit_passive = True
+            if self._exit_step == 'mode':
+                self._mode_want = None
+                self._handback_done(f"{st} pasiv dupa blocaj: nicio comanda de mod",
+                                    self.v.mode, True)
+        elif st == Phase.EXIT_RTL:
+            self.exit_passive = True
+            if self._rtl_step != 'src1':
+                self._mode_want = None
+                self._rtl_passive_done(f"EXIT_RTL pasiv dupa blocaj de {gap:.1f} s")
+
+    def _send_src1(self, now, resend):
+        """SET_EKF_SOURCE_SET(1), URGENT. The first one is a NEW request:
+        it invalidates any earlier ack at once (Vehicle); resends keep it."""
+        fn = self.v.send_ekf_source_set
+        try:
+            ok = fn(1, urgent=True, resend=resend)
+        except TypeError:                       # test vehicles without kwargs
+            ok = fn(1)
+        self._rtl_src_t = now
+        self._rtl_src_n += 1
+        return ok
+
+    def _begin_exit_rtl(self, reason, passive):
+        now = self.now
+        self.exit_reason = reason
+        self.exit_passive = passive
+        self._clear_rtl()
+        self._rtl_t0 = now
+        # G1: the modes owned when the exit was decided (_owned_modes; a
+        # request of ours in flight - ENGAGE asking GUIDED - included: the
+        # FC adopting it is not the pilot's doing). Before RTL is sent, the
+        # FC must still be in one of them.
+        self._rtl_mode0 = self._owned_modes()
+        ceiling = getattr(self.sup, 'ceiling_agl_m', None)
+        # a. the abort is up (the supervisor raised it; TX is being purged);
+        #    the OSD event and the STATUSTEXT, urgent
+        self._emit('exit_rtl', reason=reason, passive=passive,
+                   ceiling_m=ceiling, phase=self.state)
+        self._say(f"\n!! EXIT_RTL: {reason}" + (" (pasiv: fara comenzi de mod)"
+                                               if passive else '') + "\n")
+        n = f"{ceiling:.0f}m " if ceiling is not None else ''
+        self._statustext(f"NOVA PLAFON {n}DEPASIT: SRC1 -> RTL", urgent=True)
+        # b. SRC1, explicitly, from every phase; the manager let go so it
+        #    does not switch back (it sends nothing itself here)
+        self.ekf.release(now, reason, urgent=True, send=False)
+        self._send_src1(now, resend=False)
+        self._rtl_step = 'src1'
+        self._mode_want = None
+        self._mode_expected = None
+        self._mode_stage = 0
+        self.set_state(Phase.EXIT_RTL, reason)
+
+    def _frame_dist_m(self):
+        """Horizontal distance GLOBAL_POSITION_INT - GPS_RAW_INT, metres,
+        from samples received AFTER the ack was seen; None until both have
+        a new one with a position (and the GPS a 3D fix). Abort path only:
+        this GNSS reading never feeds guidance (15.2.5; rule 15.2.4 lets
+        the monitor use the FC's GNSS / altitude data)."""
+        v = self.v
+        n_gpi, n_gps = getattr(v, 'n_gpi', None), getattr(v, 'n_gps', None)
+        if (n_gpi is None or n_gps is None or n_gpi <= self._rtl_gpi0
+                or n_gps <= self._rtl_gps0):
+            return None
+        lat, lon = getattr(v, 'lat', None), getattr(v, 'lon', None)
+        glat, glon = getattr(v, 'gps_lat', None), getattr(v, 'gps_lon', None)
+        if None in (lat, lon, glat, glon):
+            return None
+        fix = getattr(v, 'gps_fix', None)
+        if fix is not None and fix < 3:
+            return None
+        k = math.radians(1.0) * 6371000.0
+        dn = (lat - glat) * k
+        de = (lon - glon) * k * math.cos(math.radians(glat))
+        return math.hypot(dn, de)
+
+    def _rtl_passive_done(self, why):
+        self._handback_done(why, self.v.mode, True, kind='rtl', result='passive')
+
+    def _rtl_land(self, now, why):
+        """Step e: LAND at the current position (rule 16.2.3), urgent."""
+        self._rtl_step = 'land'
+        self._rtl_land_why = why
+        self._emit('exit_rtl_land', reason=why)
+        self._say(f"  !! EXIT_RTL: {why}; cer LAND")
+        self._statustext("NOVA RTL refuzat -> LAND" if why == 'rtl_refuzat'
+                         else "NOVA SRC1 neconfirmat -> LAND (fara RTL)",
+                         urgent=True)
+        self._mode_begin(now, MODE_LAND, urgent=True)
+
+    def _run_exit_rtl(self, now):
+        step = self._rtl_step
+        if step in ('src1', 'frame') and self.v.mode not in self._rtl_mode0:
+            # No mode command of ours is out yet: a mode change now is the
+            # pilot's switch or a failsafe (§5.66) - it outranks us.
+            self._emit('exit_rtl_taken', mode=self.v.mode, step=step)
+            self._rtl_passive_done(f"EXIT_RTL: mod schimbat de altcineva "
+                                   f"({self.v.mode_name()}) inainte de RTL")
+            return
+        if step == 'src1':
+            if not self._src1_acked():
+                if now - self._rtl_t0 >= EXIT_ACK_TIMEOUT_S:
+                    self._emit('exit_rtl_no_ack', s=now - self._rtl_t0,
+                               n=self._rtl_src_n)
+                    if self.exit_passive:
+                        self._rtl_passive_done('EXIT_RTL pasiv: SRC1 neconfirmat, '
+                                               'modul e al pilotului')
+                        return
+                    # never RTL here: on set 2 it lands on the marker
+                    self._rtl_land(now, 'src1_neconfirmat')
+                    return
+                if now - self._rtl_src_t >= EXIT_RTL_SRC1_RESEND_S:
+                    self._send_src1(now, resend=True)
+                return
+            self._rtl_ack_t = now
+            self._rtl_gpi0 = getattr(self.v, 'n_gpi', 0) or 0
+            self._rtl_gps0 = getattr(self.v, 'n_gps', 0) or 0
+            self._emit('exit_rtl_src1', s=now - self._rtl_t0, n=self._rtl_src_n)
+            if self.exit_passive:
+                self._rtl_passive_done('EXIT_RTL pasiv: SRC1 confirmat, modul '
+                                       'e al pilotului')
+                return
+            self._rtl_step = 'frame'
+            step = 'frame'
+        if step == 'frame':
+            d = self._frame_dist_m()
+            waited = now - self._rtl_ack_t
+            if d is not None and d < FRAME_TOL_M:
+                self._emit('exit_rtl_frame', ok=True, dist_m=d, s=waited)
+            elif waited >= FRAME_TIMEOUT_S:
+                self._emit('exit_rtl_frame', ok=False, dist_m=d, s=waited)
+                self._say(f"  !! EXIT_RTL: cadrul GNSS neconfirmat in "
+                          f"{FRAME_TIMEOUT_S:.1f} s (dist "
+                          f"{'-' if d is None else f'{d:.1f} m'}); cer RTL oricum")
+            else:
+                return
+            # d. RTL, urgent, confirmed from HEARTBEAT
+            self._rtl_step = 'rtl'
+            self._emit('exit_rtl_mode', mode=MODE_RTL)
+            self._mode_begin(now, MODE_RTL, urgent=True)
+            return
+        r = self._mode_drive(now)
+        if r is None:
+            return
+        if r == 'taken':
+            self._rtl_passive_done(f"EXIT_RTL: {self.v.mode_name()} pus de "
+                                   f"altcineva; nu mai trimit nimic")
+            return
+        if step == 'rtl':
+            if r == 'ok':
+                self._handback_done('EXIT_RTL: RTL confirmat', self.v.mode,
+                                    False, kind='rtl', result='rtl')
+            else:
+                self._rtl_land(now, 'rtl_refuzat')
+            return
+        if r == 'ok':
+            self._handback_done('EXIT_RTL: LAND confirmat', self.v.mode, False,
+                                kind='rtl', result='land')
+        else:
+            self._handback_done('EXIT_RTL: nici RTL, nici LAND confirmat',
+                                self.v.mode, False, kind='rtl', result='fail')
+
     # -- loop --------------------------------------------------------------
     def update(self, now=None):
         now = now if now is not None else time.monotonic()
         self.now = now
+        # B1.9 (G2): our own gap, first thing - before anything acts on a
+        # picture of the vehicle that may be STALL_MAX_S or more old
+        gap = None if self._last_update_t is None else now - self._last_update_t
+        self._last_update_t = now
+        if gap is not None and gap > STALL_MAX_S:
+            self._on_stall(now, gap)
         if self.was_armed and not self.v.armed and self.v.have_pos:
             if self.state in GROUND_PHASES:
                 # the FC disarmed on the marker (throttle at zero for
@@ -568,7 +893,8 @@ class ExtNavLanding:
                            held_s=None if self.contact is None
                            else now - self.contact['t_on_ground_rx'])
                 self._say(f"\n!! DEZARMAT PE SOL in {self.state}: fara comenzi\n")
-            if self.state in ENGAGED_PHASES or self.state == Phase.EXIT:
+            if self.state in ENGAGED_PHASES or self.state in (Phase.EXIT,
+                                                                Phase.EXIT_RTL):
                 # on the ground, or the pilot disarmed: the EKF set must
                 # not stay on SRC2 for the next flight
                 self.ekf.release(now, 'dezarmat')
@@ -598,9 +924,12 @@ class ExtNavLanding:
         # ALT_HOLD) - only the thread that pulls it changes.
         ab = self._abort_asked()
         if ab is not None:
-            self.request_exit(ab[0], passive=ab[1])
+            self.request_exit(ab[0], passive=ab[1], rtl=self._last_abort_rtl)
 
         st = self.state
+        if st == Phase.EXIT_RTL:
+            self._run_exit_rtl(now)
+            return
         if st in (Phase.EXIT, Phase.COMPLETE):
             self._run_exit(now)
             return
@@ -659,6 +988,10 @@ class ExtNavLanding:
         if self.gate is None:
             self.reset('fara poarta')
             return
+        # a new attempt through the gate: the stall of a previous one is
+        # history (G2); the pilot's mode now is the one GATE_SEARCH owns (G1)
+        self._stalled = False
+        self._search_mode = self.v.mode
         self.gate.on_aux_requested(now)
         self.window_tries = 0
         self._open_window(now)
@@ -1016,7 +1349,8 @@ class ExtNavLanding:
         self._emit('hover_confirmed', lateral_m=e.lateral_m, h=self.h_now())
         self._exit_step = 'src1'
         self._exit_t = now
-        self.exit_passive = False
+        self.exit_passive = self._stalled
+        self._exit_owned = self._owned_modes()
         self.ekf.release(now, 'secventa completa', urgent=True)
         self._mode_want = None
         self._mode_expected = None

@@ -149,6 +149,18 @@ DEFAULTS = {
     'riseup_timeout_s': 15.0,
     'hover_confirm_s': 1.0,
 
+    # Rule 15.2.4 ceiling of the AUTONOMOUS SEQUENCE (B1, 02.10.2026):
+    # height above HOME (GLOBAL_POSITION_INT.relative_alt) watched by the
+    # companion's supervisor from AUX up to the hand-back; confirmed on
+    # `ceiling_confirm_n` consecutive distinct samples, then SRC1 -> RTL
+    # (nova/safety.py ExtNavSupervisor, nova/extnav_landing.py EXIT_RTL).
+    # There is NO fence on the FC (user decision 02.10.2026): outside the
+    # sequence the vehicle flies above 30 m in the race. Validated by
+    # ceiling_settings(): anything but 30.0 is a WARNING at startup (the
+    # team lowers it only for a ground / low test of the RTL path).
+    'ceiling_agl_m': 30.0,
+    'ceiling_confirm_n': 3,
+
     # OLD KEY, replaced by `exposure` (27.09.2026): true = 'auto_lock',
     # false = 'fixed'. Read only when `exposure` is unset. None = not set:
     # the preset decides (a default of True here would override every
@@ -249,6 +261,52 @@ def touchdown_settings(cfg):
     if v['touchdown_speed'] > 1.0:
         warnings.append(f"touchdown_speed = {v['touchdown_speed']} m/s: contact dur")
     return v, warnings
+
+
+#: The rule's value. Anything else is a test setting, said at startup.
+CEILING_RULE_M = 30.0
+
+
+def ceiling_settings(cfg):
+    """(values dict, warnings list) for the autonomous-sequence ceiling
+    (rule 15.2.4), or ValueError (startup refused): `ceiling_agl_m` must
+    be a positive number, `ceiling_confirm_n` an integer >= 1. A ceiling
+    other than 30.0 m is only a WARNING - the team lowers it on purpose
+    for a ground / low-altitude test of the SRC1 -> RTL path, and must not
+    forget it there."""
+    raw = cfg.get('ceiling_agl_m', DEFAULTS['ceiling_agl_m'])
+    raw = DEFAULTS['ceiling_agl_m'] if raw is None else raw
+    if isinstance(raw, bool):
+        raise ValueError(f"config: `ceiling_agl_m` = {raw!r} nu e un numar")
+    try:
+        h = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"config: `ceiling_agl_m` = {raw!r} nu e un numar")
+    if not (h > 0 and h != float('inf')):          # also NaN
+        raise ValueError(f"config: `ceiling_agl_m` = {raw!r} trebuie sa fie "
+                         f"un numar pozitiv")
+    raw_n = cfg.get('ceiling_confirm_n', DEFAULTS['ceiling_confirm_n'])
+    raw_n = DEFAULTS['ceiling_confirm_n'] if raw_n is None else raw_n
+    if isinstance(raw_n, bool):
+        raise ValueError(f"config: `ceiling_confirm_n` = {raw_n!r} nu e un numar")
+    try:
+        n = float(raw_n)
+    except (TypeError, ValueError):
+        raise ValueError(f"config: `ceiling_confirm_n` = {raw_n!r} nu e un numar")
+    finite = n == n and abs(n) != float('inf')
+    if not finite or n != int(n):
+        raise ValueError(f"config: `ceiling_confirm_n` = {raw_n!r} trebuie "
+                         f"sa fie un numar intreg")
+    if n < 1:
+        raise ValueError(f"config: `ceiling_confirm_n` = {raw_n!r} trebuie "
+                         f"sa fie cel putin 1")
+    warnings = []
+    if h != CEILING_RULE_M:
+        warnings.append(
+            f"plafon de test: ceiling_agl_m = {h:g} m, nu {CEILING_RULE_M:g} m "
+            f"(regula 15.2.4). Pune-l inapoi la {CEILING_RULE_M:g} inainte de "
+            f"orice incercare punctata")
+    return {'ceiling_agl_m': h, 'ceiling_confirm_n': int(n)}, warnings
 
 
 def guidance(cfg):

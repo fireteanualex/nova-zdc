@@ -43,6 +43,10 @@
   "riseup_timeout_s": 15.0,
   "hover_confirm_s": 1.0,
 
+  "_ceiling": "Plafonul regulii 15.2.4 (02.10.2026), DOAR in secventa autonoma: inaltimea deasupra HOME (GLOBAL_POSITION_INT.relative_alt), urmarita de supervizorul companion-ului din GATE_SEARCH (AUX sus) pana la predarea catre pilot. Depasit pe ceiling_confirm_n esantioane distincte la rand -> abort: setul EKF 1 inapoi (cu ACK), EKF-ul inapoi in cadrul GNSS, apoi RTL; LAND daca setul 1 nu e confirmat sau RTL e refuzat. FARA fence pe FC (decizia utilizatorului): in cursa drona zboara peste 30 m. Orice valoare in afara de 30.0 da AVERTISMENT la pornire - se coboara doar temporar, pentru un test la sol / la joasa altitudine al caii SRC1 -> RTL, si se pune inapoi la 30.0 inainte de orice incercare punctata.",
+  "ceiling_agl_m": 30.0,
+  "ceiling_confirm_n": 3,
+
   "_camera_fresh_capture": "false (27.09.2026): capture_request(flush=True) astepta un cadru capturat DUPA apel, ~62 ms in serie cu detectia la fiecare cadru (etapa 'achizitie' in b29). Cadrul din coada e cu 50-90 ms mai vechi, dar ExtNav foloseste timpul capturii, nu al publicarii, deci varsta nu conteaza pentru pozitie.",
   "camera_fresh_capture": false,
 

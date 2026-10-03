@@ -76,6 +76,18 @@ RC_HZ = 50            # 15.3.1: implicit RC_CHANNELS vine la 10 Hz, adica
 #: segment when the EKF loses a valid horizontal position. 5 Hz is enough
 #: for a window measured in seconds, and cheap on the serial link.
 EKF_HZ = 5
+#: GPS_RAW_INT (B1, 02.10.2026): the raw GNSS fix, read ONLY by the
+#: EXIT_RTL frame gate of nova/extnav_landing.py (after SRC1 is back, the
+#: EKF's GLOBAL_POSITION_INT must agree with it before RTL is asked). It
+#: never feeds guidance (15.2.5). 10 Hz so the gate (measured reset 0.18 s
+#: after the switch) waits at most ~0.1 s for a fresh sample; >= 5 Hz is the
+#: requirement. GLOBAL_POSITION_INT rides TELEM_HZ (20 Hz).
+GPS_RAW_HZ = 10
+#: SET_EKF_SOURCE_SET acknowledgement attribution (B1, stale-ack fix): a
+#: dispatched command whose COMMAND_ACK has not come back in this long is
+#: considered lost, so a later ack is not attributed to it. Measured 2-12 ms
+#: on TCP in SITL; tens of ms expected on the 921600 serial link.
+EKF_SRC_ACK_EXPIRE_S = 1.0
 #: How much attitude / position history is kept for the ExtNav estimator,
 #: which needs the attitude at the CAPTURE time of a frame (§4 of the
 #: brief), not the latest one. At 20 Hz, 400 samples = 20 s.
@@ -147,7 +159,11 @@ STATE_FIELDS = ('x', 'y', 'z', 'vx', 'vy', 'vz', 'rel_alt', 'lat', 'lon',
                 'landed_state', 'time_boot_ms', 'rc', 'rc_t', 'ekf_flags',
                 'ekf_pos_horiz_var', 'ekf_t', 'ekf_src_ack',
                 'n_lt', 'n_ds', 'n_vpe', 'n_pos_target',
-                'unix_usec', 'unix_boot_ms')
+                'unix_usec', 'unix_boot_ms',
+                # B1 (02.10.2026): sample identity of GLOBAL_POSITION_INT
+                # (the ceiling monitor counts DISTINCT samples) and the raw
+                # GNSS fix for the EXIT_RTL frame gate
+                'n_gpi', 'gps_lat', 'gps_lon', 'gps_fix', 'n_gps')
 
 
 class VehicleState:
@@ -178,6 +194,13 @@ class VehicleState:
         #: only (docs/SCORING_FORMAT.md), never for guidance
         self.unix_usec = None
         self.unix_boot_ms = None
+        #: GLOBAL_POSITION_INT messages received (sample identity)
+        self.n_gpi = 0
+        #: GPS_RAW_INT: degrees, None without a 3D fix; fix_type; count.
+        #: Abort path only (EXIT_RTL frame gate), never guidance (15.2.5).
+        self.gps_lat = self.gps_lon = None
+        self.gps_fix = None
+        self.n_gps = 0
 
     def copy(self):
         c = VehicleState.__new__(VehicleState)
@@ -256,8 +279,16 @@ class VehicleView:
     def request_mode(self, mode, urgent=True):
         return self._v.request_mode(mode, urgent=urgent)
 
-    def send_ekf_source_set(self, n, urgent=True):
-        return self._v.send_ekf_source_set(n, urgent=urgent)
+    def send_ekf_source_set(self, n, urgent=True, resend=False):
+        return self._v.send_ekf_source_set(n, urgent=urgent, resend=resend)
+
+    def ekf_src_ack_for(self, n):
+        # Live, not from the snapshot: the attribution record is the
+        # vehicle's own, under its lock (a request invalidates at once).
+        return self._v.ekf_src_ack_for(n)
+
+    def ekf_src_acked(self, n):
+        return self._v.ekf_src_acked(n)
 
     def send_statustext(self, severity, text, urgent=False):
         return self._v.send_statustext(severity, text, urgent=urgent)
@@ -304,7 +335,30 @@ class Vehicle:
         self.rc_t = None
 
         #: Ultimul raspuns la SET_EKF_SOURCE_SET, sau None daca nu s-a cerut.
+        #: RAW, for logs only: it is NOT attributed to a request (B1 stale-
+        #: ack fix). Decisions use ekf_src_ack_for(n) / ekf_src_acked(n).
         self.ekf_src_ack = None
+        #: B1 (02.10.2026): GLOBAL_POSITION_INT count and the raw GNSS fix
+        #: (GPS_RAW_INT) - abort path only, see VehicleState.
+        self.n_gpi = 0
+        self.gps_lat = self.gps_lon = None
+        self.gps_fix = None
+        self.n_gps = 0
+        #: SET_EKF_SOURCE_SET attribution (B1, stale ack). Written by the
+        #: requesting thread (request) and the I/O thread (dispatch, ack),
+        #: always under this lock; read through ekf_src_ack_for().
+        #:   _src_req   set number of the LATEST request (None = none yet)
+        #:   _src_gen   generation of that request; a new request (not a
+        #:              resend of the same set) starts a new one
+        #:   _src_fly   dispatched commands awaiting their COMMAND_ACK, in
+        #:              order: (gen, set, t_dispatch)
+        #:   _src_res   result of the ack attributed to the latest request
+        self._src_lock = threading.Lock()
+        self._src_req = None
+        self._src_gen = 0
+        self._src_fly = collections.deque()
+        self._src_res = None
+        self.n_src_superseded = 0
         #: SYSTEM_TIME (27.09.2026): labelling of the touchdown capture only
         self.unix_usec = None
         self.unix_boot_ms = None
@@ -596,6 +650,8 @@ class Vehicle:
             (mavutil.mavlink.MAVLINK_MSG_ID_EXTENDED_SYS_STATE, self.landed_hz),
             (mavutil.mavlink.MAVLINK_MSG_ID_RC_CHANNELS, RC_HZ),
             (mavutil.mavlink.MAVLINK_MSG_ID_EKF_STATUS_REPORT, EKF_HZ),
+            # EXIT_RTL frame gate only (B1); never guidance (15.2.5)
+            (mavutil.mavlink.MAVLINK_MSG_ID_GPS_RAW_INT, GPS_RAW_HZ),
             (mavutil.mavlink.MAVLINK_MSG_ID_SYSTEM_TIME, 1),
         ]
         for msg_id, hz in rates:
@@ -675,6 +731,18 @@ class Vehicle:
             if msg.lat != 0 or msg.lon != 0:
                 st.lat = msg.lat / 1e7
                 st.lon = msg.lon / 1e7
+            # sample identity: the ceiling monitor counts distinct messages
+            st.n_gpi += 1
+        elif t == 'GPS_RAW_INT':
+            # Abort path only (EXIT_RTL frame gate: is the EKF back in the
+            # GNSS frame?). Never used for guidance - 15.2.5.
+            st.gps_fix = msg.fix_type
+            if msg.fix_type >= 3 and (msg.lat != 0 or msg.lon != 0):
+                st.gps_lat = msg.lat / 1e7
+                st.gps_lon = msg.lon / 1e7
+            else:
+                st.gps_lat = st.gps_lon = None
+            st.n_gps += 1
         elif t == 'SYSTEM_TIME':
             st.unix_usec = msg.time_unix_usec or None
             st.unix_boot_ms = msg.time_boot_ms
@@ -722,6 +790,7 @@ class Vehicle:
             # 15.2.5: comutarea de surse e o afirmatie de conformitate, deci
             # raspunsul FC-ului se pastreaza, nu doar se tipareste.
             self._live.ekf_src_ack = msg.result
+            self._ekf_src_note_ack(msg.result)
             if msg.result != mavutil.mavlink.MAV_RESULT_ACCEPTED:
                 print(f"!! SET_EKF_SOURCE_SET respins (result={msg.result})")
 
@@ -851,7 +920,10 @@ class Vehicle:
                                (self._sysid, self._compid, name.encode('ascii'),
                                 value, mavutil.mavlink.MAV_PARAM_TYPE_REAL32), {})
         if kind == 'ekf_src':
-            _, n = item
+            n = item[1]
+            gen = item[2] if len(item) > 2 else None
+            if not self._ekf_src_note_dispatch(n, gen):
+                return False            # superseded by a newer request
             self._live.ekf_src_ack = None
             return self._write('command_long_send',
                                (self._sysid, self._compid,
@@ -976,15 +1048,91 @@ class Vehicle:
                           mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
                           mode, 0, 0, 0, 0, 0, urgent=urgent)
 
-    def send_ekf_source_set(self, n, urgent=False):
+    def send_ekf_source_set(self, n, urgent=False, resend=False):
         """Comuta setul de surse al EKF3 (15.2.5). `n` e 1..3.
 
         `GCS_Common.cpp:5133`: comanda accepta 1..3 si scade 1 intern.
-        Confirmarea vine prin `COMMAND_ACK`, citit in `_on_ack`; `ekf_src_ack`
-        se sterge in momentul trimiterii."""
+        Confirmarea vine prin `COMMAND_ACK`, citit in `_on_ack`.
+
+        B1 (stale ack, 02.10.2026): the request is recorded HERE, in the
+        caller's thread, before anything is queued - so the previous
+        command's ACCEPTED stops counting in this very call, for this
+        thread and for the supervisor's VehicleView (ekf_src_ack_for).
+        `resend=True` repeats the latest request for the same set: it keeps
+        an ack already valid for it, and an ACCEPTED to any of the copies
+        counts. Recorded even when the link is down (the intent changed)."""
         if n not in (1, 2, 3):
             raise ValueError(f"setul de surse EKF e 1..3, nu {n}")
-        return self._enqueue(('ekf_src', n), urgent=urgent)
+        gen = self._ekf_src_note_request(n, resend=resend)
+        return self._enqueue(('ekf_src', n, gen), urgent=urgent)
+
+    # -- SET_EKF_SOURCE_SET: which ack answers which request (B1) ----------
+    #
+    # COMMAND_ACK carries the command id, not its parameter: an ack for "set
+    # 2" and one for "set 1" look the same. ArduPilot answers commands in
+    # the order it receives them, so acks are matched to dispatched
+    # commands in order (FIFO); one is attributed to the latest request
+    # only if it answers a command of that request (same generation, same
+    # set), dispatched before it arrived. A command dispatched for an OLDER
+    # request whose set differs from the latest is not sent at all (it
+    # would undo the newer one if it left the TX queue after an URGENT
+    # one). Lost acks expire after EKF_SRC_ACK_EXPIRE_S.
+
+    def _ekf_src_note_request(self, n, resend=False):
+        with self._src_lock:
+            if resend and n == self._src_req:
+                return self._src_gen
+            self._src_gen += 1
+            self._src_req = n
+            self._src_res = None
+            return self._src_gen
+
+    def _ekf_src_note_dispatch(self, n, gen):
+        """True = write it. Called by whoever writes the command (the I/O
+        thread; inline in the synchronous mode; the test stubs)."""
+        with self._src_lock:
+            if gen is not None and gen != self._src_gen and n != self._src_req:
+                self.n_src_superseded += 1
+                drop = True
+            else:
+                self._src_fly.append((gen if gen is not None else self._src_gen,
+                                      n, time.monotonic()))
+                drop = False
+        if drop:
+            log.warning("[vehicle] SET_EKF_SOURCE_SET %d depasit de o cerere "
+                        "mai noua: nu se trimite", n)
+        return not drop
+
+    def _ekf_src_note_ack(self, result):
+        """A COMMAND_ACK for SET_EKF_SOURCE_SET. Matched to the oldest
+        command still awaiting its ack; counted only if that command
+        belongs to the latest request. An ACCEPTED, once attributed, is
+        not overwritten by a later refusal to a resend (any ACCEPTED after
+        the first dispatch for that set is valid)."""
+        now = time.monotonic()
+        with self._src_lock:
+            fly = self._src_fly
+            while fly and now - fly[0][2] > EKF_SRC_ACK_EXPIRE_S:
+                fly.popleft()
+            if not fly:
+                return False
+            gen, n, _t = fly.popleft()
+            if gen != self._src_gen or n != self._src_req:
+                return False
+            if self._src_res != mavutil.mavlink.MAV_RESULT_ACCEPTED:
+                self._src_res = result
+            return True
+
+    def ekf_src_ack_for(self, n):
+        """MAV_RESULT of the ack attributed to the LATEST source-set
+        request, if that request was for set `n`; None otherwise (no
+        request for `n`, a newer request for another set, or no ack yet).
+        The only reading a decision may use - `ekf_src_ack` is raw."""
+        with self._src_lock:
+            return self._src_res if self._src_req == n else None
+
+    def ekf_src_acked(self, n):
+        return self.ekf_src_ack_for(n) == mavutil.mavlink.MAV_RESULT_ACCEPTED
 
     def send_takeoff(self, alt_above_home_m):
         # Copter accepta NAV_TAKEOFF ca COMMAND_LONG; cadrul devine

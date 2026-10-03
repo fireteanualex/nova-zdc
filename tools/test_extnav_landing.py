@@ -37,6 +37,10 @@ from nova.vehicle import (MODE_ALT_HOLD, MODE_GUIDED, MODE_LAND,  # noqa: E402
 
 AUX = 8
 GPS_OFFSET = (20.0, -5.0)          # cadrul GPS fata de cadrul markerului
+#: lat/lon of the EKF origin (local NED (0, 0) in the GNSS frame), for
+#: GLOBAL_POSITION_INT / GPS_RAW_INT (B1: the EXIT_RTL frame gate)
+LAT0, LON0 = 44.4, 26.1
+M_PER_DEG = math.radians(1.0) * 6371000.0
 LANDED_ON_GROUND = mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND
 LANDED_IN_AIR = mavutil.mavlink.MAV_LANDED_STATE_IN_AIR
 
@@ -69,6 +73,23 @@ class SimVeh(Vehicle):
         self.ekf_valid = True
         self.ekf_valid_after_switch = True
         self.src_cmds = []
+        #: B1: how the FC answers SET_EKF_SOURCE_SET. Sets in `src_lost`
+        #: never reach it (no effect, no ack); `src_ack_delay_s` delays the
+        #: ack, `src_reset_delay_s` the EKF position reset (measured 0.18 s);
+        #: `src_result` is the MAV_RESULT it answers with.
+        self.src_lost = set()
+        self.src_ack_delay_s = 0.0
+        self.src_reset_delay_s = 0.0
+        self.src_result = mavutil.mavlink.MAV_RESULT_ACCEPTED
+        self.src_events = []             # (t, fn), applied in step()
+        self.src_acks = []               # (t, set) acks sent back
+        #: everything discrete on the "wire", in order, with the FC time:
+        #: ('src', n, t), ('ack', n, t, result), ('mode', m, t)
+        self.wire = []
+        #: B1: home below the marker's ground by this much (relative_alt =
+        #: h + offset) - how the tests put the vehicle over the ceiling
+        #: without fighting the physics of the phase
+        self.rel_alt_offset = 0.0
         self.statustexts = []
         self.vpe = []
         self.targets = []
@@ -152,7 +173,17 @@ class SimVeh(Vehicle):
                           self.vel[2])
         self._on_attitude(now, 0.0, 0.0, self.yaw_true)
         live = self._live
-        live.rel_alt = self.h
+        live.rel_alt = self.h + self.rel_alt_offset
+        # GLOBAL_POSITION_INT: the EKF's position (frame-dependent) on the
+        # origin's lat/lon; GPS_RAW_INT: the truth in the GNSS frame
+        live.lat = LAT0 + x / M_PER_DEG
+        live.lon = LON0 + y / (M_PER_DEG * math.cos(math.radians(LAT0)))
+        live.n_gpi += 1
+        gx, gy = self.p[0] + GPS_OFFSET[0], self.p[1] + GPS_OFFSET[1]
+        live.gps_lat = LAT0 + gx / M_PER_DEG
+        live.gps_lon = LON0 + gy / (M_PER_DEG * math.cos(math.radians(LAT0)))
+        live.gps_fix = 3
+        live.n_gps += 1
         live.rc_t = now
         self.hb_t = now                  # legatura vie (monitorul de link)
         valid = self.ekf_valid if self.src == 1 else self.ekf_valid_after_switch
@@ -172,16 +203,42 @@ class SimVeh(Vehicle):
     def request_param(self, name):
         return True                      # valorile sunt deja in params
 
-    def send_ekf_source_set(self, n, urgent=False):
+    def send_ekf_source_set(self, n, urgent=False, resend=False):
+        # The request / dispatch / ack bookkeeping of the real Vehicle
+        # (B1, attributable ack): this stub writes the command at once.
+        gen = self._ekf_src_note_request(n, resend=resend)
         self.src_cmds.append(n)
-        self._live.ekf_src_ack = mavutil.mavlink.MAV_RESULT_ACCEPTED
-        self.src = n
-        if n == 1:
-            self.bias = None
+        self.wire.append(('src', n, self.now))
+        if not self._ekf_src_note_dispatch(n, gen):
+            return True
+        if n in self.src_lost:
+            return True
+
+        def apply():
+            self.src = n
+            if n == 1:
+                self.bias = None
+
+        def ack():
+            self._live.ekf_src_ack = self.src_result
+            self._ekf_src_note_ack(self.src_result)
+            self.src_acks.append((self.now, n))
+            self.wire.append(('ack', n, self.now, self.src_result))
+
+        if self.src_result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
+            if self.src_reset_delay_s > 0:
+                self.src_events.append((self.now + self.src_reset_delay_s, apply))
+            else:
+                apply()
+        if self.src_ack_delay_s > 0:
+            self.src_events.append((self.now + self.src_ack_delay_s, ack))
+        else:
+            ack()
         return True
 
     def request_mode(self, m, urgent=False):
         self.mode_reqs.append(m)
+        self.wire.append(('mode', m, self.now))
         self.last_mode_req = m
         if m in self.refuse_modes:
             return True
@@ -197,6 +254,10 @@ class SimVeh(Vehicle):
     def step(self, now, dt):
         self.now = now
         live = self._live
+        due = [e for e in self.src_events if e[0] <= now]
+        self.src_events = [e for e in self.src_events if e[0] > now]
+        for _t, fn in due:
+            fn()
         if self.bias_tau and self.bias_target is not None and self.bias is not None:
             k = min(1.0, dt / self.bias_tau)
             self.bias = [b + (t - b) * k for b, t in zip(self.bias, self.bias_target)]

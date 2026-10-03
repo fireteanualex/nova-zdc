@@ -221,11 +221,22 @@ class EkfSourceManager:
 
         return self.state
 
-    def release(self, now=None, reason='', urgent=False):
+    def release(self, now=None, reason='', urgent=False, send=True):
         """Inapoi la setul normal. Se apeleaza si pe calea de abort.
         `urgent=True` (EXIT-ul ExtNav): pe coada URGENT a vehiculului, care
-        nu se goleste cand abort-ul supervizorului e aprins (faza 5)."""
+        nu se goleste cand abort-ul supervizorului e aprins (faza 5).
+        `send=False` (EXIT_RTL, B1): the caller sends SET_EKF_SOURCE_SET(1)
+        itself, from every phase, and waits for its ack; the manager only
+        lets go, so it does not switch back to SRC2."""
         now = time.monotonic() if now is None else now
+        if not send:
+            if self._comutat or self.state in (self.ACTIV, self.CITESTE):
+                self._emit(now, 'release',
+                           f"eliberat fara comanda (setul {self.set_normal} il "
+                           f"trimite apelantul); {reason}")
+            self._comutat = False
+            self.state = self.RESTAURAT if self.state == self.ACTIV else self.IDLE
+            return self.state
         if self._comutat:
             fn = self.v.send_ekf_source_set
             if urgent:
@@ -255,8 +266,18 @@ class EkfSourceManager:
 
     @property
     def ack(self):
-        """Raspunsul FC-ului la ultima comutare, sau None."""
-        return getattr(self.v, 'ekf_src_ack', None)
+        """Raspunsul FC-ului la ultima comutare, sau None.
+
+        B1 (stale ack, 02.10.2026): ATTRIBUTED, not the raw last ack. While
+        the manager holds the autonomous set it is the answer to THAT
+        request (Vehicle.ekf_src_ack_for); a leftover ACCEPTED from the
+        previous SRC1 restore no longer passes for the SRC2 switch. A
+        vehicle without the accessor gives None: unknown is not accepted."""
+        fn = getattr(self.v, 'ekf_src_ack_for', None)
+        if fn is None:
+            return None
+        return fn(self.set_autonom if self.state == self.ACTIV
+                  else self.set_normal)
 
     @property
     def ack_ok(self):

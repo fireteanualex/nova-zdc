@@ -299,7 +299,12 @@ def cablaj_extnav(a, cfg, vehicle, override, gate_kw, canal, prag,
     # and reads the vehicle through a VehicleView (snapshots); its verdict
     # reaches the state machine through `abort`, read by the main thread
     # each step - no on_exit callback across threads.
-    sup = ExtNavSupervisor(vedere(vehicle), override=override)
+    # Rule 15.2.4 (B1): the ceiling of the autonomous sequence, above HOME,
+    # from config/nova.json (validated: ValueError on a refusal)
+    plafon, _w = nova_config.ceiling_settings(cfg)
+    sup = ExtNavSupervisor(vedere(vehicle), override=override,
+                           ceiling_agl_m=plafon['ceiling_agl_m'],
+                           ceiling_confirm_n=plafon['ceiling_confirm_n'])
     est = ExtNavEstimator(vehicle, verbose=False)
     ekf = EkfSourceManager(vehicle, faze=SRC2_PHASES)
     sm = ExtNavLanding(vehicle, est, ekf, gate,
@@ -310,6 +315,9 @@ def cablaj_extnav(a, cfg, vehicle, override, gate_kw, canal, prag,
           "SRC2; GUIDED in trepte h/2 pana la 1 m; LAND vertical. PLND 0.")
     print(f"[bord] poarta: {gate.alt_min_m:.1f}-{gate.alt_max_m:.0f} m, fara "
           f"raza; segmentul porneste la o detectie in <= 5 s (un retry)")
+    print(f"[bord] plafon 15.2.4: {sup.ceiling_agl_m:g} m deasupra home "
+          f"({sup.ceiling_confirm_n} esantioane la rand), din GATE_SEARCH pana "
+          f"la predare -> SRC1 -> RTL; fara fence pe FC")
     if a.no_ascent:
         print("[bord] --no-ascent: fara efect pe extnav (secventa se "
               "incheie la contact oricum)")
@@ -494,6 +502,15 @@ def main():
         print(f"\n[bord] NU PORNESC: {e}\n")
         return 2
     for w in _td_warn:
+        print(f"[bord] ATENTIE: {w}")
+    # rule 15.2.4 ceiling (B1): refused before the port and the camera; a
+    # ceiling other than 30 m is a test setting, said loudly
+    try:
+        _pl, _pl_warn = nova_config.ceiling_settings(cfg)
+    except ValueError as e:
+        print(f"\n[bord] NU PORNESC: {e}\n")
+        return 2
+    for w in _pl_warn:
         print(f"[bord] ATENTIE: {w}")
 
     # H2: portul INAINTE de orice altceva. Daca e ocupat, aflam acum, nu

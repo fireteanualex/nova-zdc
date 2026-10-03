@@ -890,7 +890,145 @@ def test_IO_niciun_apel_pe_mav_in_afara_firului():
     return "sursa: mav doar in 5 metode ale firului; runtime: scriere din alt fir refuzata"
 
 
+
+# --- B1 (02.10.2026): attributable SET_EKF_SOURCE_SET ack, GPS_RAW_INT ----------
+
+class _Ack:
+    def __init__(self, result=0):
+        from pymavlink import mavutil
+        self.command = mavutil.mavlink.MAV_CMD_SET_EKF_SOURCE_SET
+        self.result = result
+
+    def get_type(self):
+        return 'COMMAND_ACK'
+
+
+def test_ack_SRC_atribuit_cererii_nu_ack_vechi():
+    """(a) Coordonator, B1: SRC2 acceptat, apoi send_ekf_source_set(1) si
+    o citire IMEDIATA -> fara ack pentru setul 1 (ekf_src_ack brut inca
+    ACCEPTED: exact capcana). Valid abia dupa un COMMAND_ACK care urmeaza
+    trimiterii. Negativ: un ACK sosit INAINTE de trimitere (cel intarziat al
+    lui SRC2) nu conteaza; o retrimitere a aceluiasi set nu invalideaza un
+    ack deja valid; o comanda depasita (SRC2 ramas in TX dupa un SRC1
+    URGENT) nu mai pleaca. La fel sincron, pe fir I/O si prin VehicleView."""
+    out = []
+    for threaded in (False, True):
+        if threaded:
+            v, link = make_threaded()
+        else:
+            v = make_vehicle(Harness(FakeLink()))
+            link = v.m
+        io = (lambda: v._io_step(1.0)) if threaded else (lambda: None)
+        view = v.view()
+        assert v.ekf_src_ack_for(1) is None and v.ekf_src_ack_for(2) is None
+        v.send_ekf_source_set(2)
+        io()
+        v._handle(_Ack(0))
+        assert v.ekf_src_acked(2) and view.ekf_src_acked(2)
+        assert v._live.ekf_src_ack == 0
+        v.send_ekf_source_set(1, urgent=True)
+        # the same call: no ack for 1, and none for 2 either
+        assert v.ekf_src_ack_for(1) is None and v.ekf_src_ack_for(2) is None
+        assert not view.ekf_src_acked(1)
+        if threaded:
+            assert v._live.ekf_src_ack == 0, "capcana: brutul e inca ACCEPTED"
+            v._handle(_Ack(0))            # a late ack, BEFORE our dispatch
+            assert not v.ekf_src_acked(1), "ack de dinainte de trimitere atribuit"
+        io()
+        assert not v.ekf_src_acked(1), "valid fara COMMAND_ACK"
+        v._handle(_Ack(0))
+        assert v.ekf_src_acked(1) and view.ekf_src_acked(1)
+        # a resend of set 1 keeps the valid ack; an ack for it is fine too
+        v.send_ekf_source_set(1, urgent=True, resend=True)
+        assert v.ekf_src_acked(1)
+        io()
+        v._handle(_Ack(4))                # a refusal to the resend
+        assert v.ekf_src_acked(1), "ACCEPTED anterior suprascris de un refuz"
+        # a NEW request for 1 (not a resend) invalidates at once
+        v.send_ekf_source_set(1)
+        assert not v.ekf_src_acked(1)
+        io()
+        v._handle(_Ack(0))
+        assert v.ekf_src_acked(1)
+        # two in flight: SRC2 dispatched, SRC1 requested before its ack; the
+        # SRC2 ack (first, FIFO) is not taken for SRC1
+        v.send_ekf_source_set(2)
+        io()
+        v.send_ekf_source_set(1, urgent=True)
+        io()
+        v._handle(_Ack(0))
+        assert not v.ekf_src_acked(1), "ack-ul lui SRC2 luat drept al lui SRC1"
+        v._handle(_Ack(0))
+        assert v.ekf_src_acked(1)
+        out.append('fir I/O' if threaded else 'sincron')
+    # superseded: SRC2 still in TX when SRC1 goes URGENT -> SRC2 never sent
+    v, link = make_threaded()
+    v.send_ekf_source_set(2)
+    v.send_ekf_source_set(1, urgent=True)
+    n0 = len(link.sent_args)
+    v._io_step(1.0)
+    from pymavlink import mavutil
+    trimise = [a for name, a, _kw in link.sent_args[n0:]
+               if name == 'command_long_send'
+               and a[2] == mavutil.mavlink.MAV_CMD_SET_EKF_SOURCE_SET]
+    assert [a[4] for a in trimise] == [1.0], trimise
+    assert v.n_src_superseded == 1
+    return ', '.join(out) + '; SRC2 depasit nu pleaca'
+
+
+def test_GPS_RAW_INT_si_GLOBAL_POSITION_INT_pentru_poarta_de_cadru():
+    """B1: GPS_RAW_INT cerut la >= 5 Hz si citit (doar pentru poarta de
+    cadru a caii EXIT_RTL), GLOBAL_POSITION_INT la >= 5 Hz, cu contorul de
+    esantioane (n_gpi) pe care il numara plafonul. Fara fix 3D -> fara
+    pozitie GPS (negativ). Campurile ajung si in VehicleView."""
+    from pymavlink import mavutil
+    from nova.vehicle import STATE_FIELDS, Vehicle
+    cerute = []
+
+    class _Mav:
+        def command_long_send(self, *a):
+            cerute.append((a[4], a[5]))
+
+    v = object.__new__(Vehicle)
+    v.m = type('M', (), {'mav': _Mav(), 'target_system': 1,
+                         'target_component': 1})()
+    v.telem_hz, v.landed_hz = 20, 50
+    v._request_streams()
+    ids = dict(cerute)
+    for mid in (mavutil.mavlink.MAVLINK_MSG_ID_GPS_RAW_INT,
+                mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT):
+        assert mid in ids and 1e6 / ids[mid] >= 5.0, (mid, ids.get(mid))
+    for f in ('n_gpi', 'gps_lat', 'gps_lon', 'gps_fix', 'n_gps', 'rel_alt'):
+        assert f in STATE_FIELDS, f
+
+    class M:
+        def __init__(self, t, **kw):
+            self._t = t
+            self.__dict__.update(kw)
+
+        def get_type(self):
+            return self._t
+    v, link = make_threaded()
+    v._handle(M('GLOBAL_POSITION_INT', time_boot_ms=5, relative_alt=31500,
+                lat=444000000, lon=261000000))
+    v._handle(M('GPS_RAW_INT', fix_type=3, lat=444000100, lon=261000200))
+    v._io_step(1.0)
+    view = v.view().refresh()
+    assert view.n_gpi == 1 and abs(view.rel_alt - 31.5) < 1e-9
+    assert abs(view.gps_lat - 44.40001) < 1e-9 and view.gps_fix == 3 and view.n_gps == 1
+    v._handle(M('GPS_RAW_INT', fix_type=1, lat=444000100, lon=261000200))
+    v._io_step(1.1)
+    view.refresh()
+    assert view.gps_lat is None and view.gps_lon is None and view.n_gps == 2
+    return (f"GPS_RAW_INT {1e6 / ids[mavutil.mavlink.MAVLINK_MSG_ID_GPS_RAW_INT]:.0f} Hz, "
+            f"GPI {1e6 / ids[mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT]:.0f} Hz; "
+            f"fara fix 3D -> fara pozitie")
+
 TESTS = [
+    ('B1: ack SRC atribuit cererii, nu ack vechi',
+     test_ack_SRC_atribuit_cererii_nu_ack_vechi),
+    ('B1: GPS_RAW_INT / GLOBAL_POSITION_INT pentru poarta de cadru',
+     test_GPS_RAW_INT_si_GLOBAL_POSITION_INT_pentru_poarta_de_cadru),
     ('I/O: abort aprins goleste TX si periodicele, cu numar',
      test_IO_abort_aprins_goleste_TX_si_periodicele_cu_numar),
     ('I/O: URGENT inaintea lui TX', test_IO_urgent_pleaca_inaintea_lui_TX),
