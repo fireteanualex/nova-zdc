@@ -449,24 +449,22 @@ def test_WP_ACC_lasa_marja_pentru_tranzitoriu():
     la cazul masurat era 14.0 - marja zero. Valoarea din fisierul de
     parametri trebuie sa lase loc tranzitoriului."""
     import math as _m
-    for fisier in ('nova_flight.parm', 'nova_flight_4.5.parm'):
-        radacina = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        text = open(os.path.join(radacina, 'config', fisier)).read()
-        # 4.7+ names it WP_ACC (m/s2); 4.5 names it WPNAV_ACCEL (cm/s2).
-        linii = [l for l in text.splitlines()
-                 if l.strip().startswith('WP_ACC,')]
-        scala = 1.0
-        if not linii:
-            linii = [l for l in text.splitlines()
-                     if l.strip().startswith('WPNAV_ACCEL,')]
-            scala = 0.01
-        assert linii, f"WP_ACC / WPNAV_ACCEL lipseste din {fisier}"
-        val = float(linii[-1].split(',')[1]) * scala
-        unghi = _m.degrees(_m.atan(val / 9.81))
-        assert unghi <= 10.0, (
-            f"{fisier}: WP_ACC {val} -> {unghi:.1f} deg in regim, prea "
-            f"aproape de bugetul cadrului")
-    return f"WP_ACC {val} m/s2 -> {unghi:.1f} deg in regim, in ambele fisiere"
+    # one parm file since 04.10.2026, ArduCopter 4.7.1 only: WP_ACC in m/s/s
+    # (Copter-4.7.1 AC_WPNav.cpp:85-92). The pre-4.7 WPNAV_ACCEL (cm/s/s)
+    # must not be there: it does not exist on the board.
+    fisier = 'nova_flight.parm'
+    radacina = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    text = open(os.path.join(radacina, 'config', fisier)).read()
+    linii = [l for l in text.splitlines() if l.strip().startswith('WP_ACC,')]
+    assert linii, f"WP_ACC lipseste din {fisier}"
+    assert not [l for l in text.splitlines()
+                if l.strip().startswith('WPNAV_ACCEL,')], fisier
+    val = float(linii[-1].split(',')[1])
+    unghi = _m.degrees(_m.atan(val / 9.81))
+    assert unghi <= 10.0, (
+        f"{fisier}: WP_ACC {val} -> {unghi:.1f} deg in regim, prea "
+        f"aproape de bugetul cadrului")
+    return f"WP_ACC {val} m/s2 -> {unghi:.1f} deg in regim"
 
 
 def test_pragul_de_legatura_are_marja_fata_de_rata_ceruta():

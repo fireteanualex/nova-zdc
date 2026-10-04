@@ -19,23 +19,22 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from nova import authority as auth                          # noqa: E402
 from nova.authority import (MANAGED, AuthorityScheduler,     # noqa: E402
                             PROFIL_IMPLICIT, PROFIL_RAPID)
 
-#: Valori "de pe vehicul" inainte de orice modificare. Copter-4.5.7 names
-#: and units: WPNAV_ACCEL 250 cm/s/s = 2.5 m/s/s, speeds 50 cm/s = 0.5 m/s.
+#: Valori "de pe vehicul" inainte de orice modificare. Copter-4.7.1 names
+#: and units (SI): WP_ACC 2.5 m/s/s, speeds 0.5 m/s.
 ORIGINALE = {
-    'PSC_POSXY_P': 1.0,
-    'PSC_VELXY_D': 0.25,
-    'WPNAV_ACCEL': 250.0,
-    'WPNAV_SPEED_DN': 50.0,
-    'LAND_SPEED': 50.0,
+    'PSC_NE_POS_P': 1.0,
+    'PSC_NE_VEL_D': 0.25,
+    'WP_ACC': 2.5,
+    'WP_SPD_DN': 0.5,
+    'LAND_SPD_MS': 0.5,
     'PLND_LAG': 0.02,
     # parametri pe care NU ii gestionam - prezenti ca sa se vada ca raman
-    'ANGLE_MAX': 30.0,
+    'ATC_ANGLE_MAX': 30.0,
     'PSC_ANGLE_MAX': 0.0,
 }
 
@@ -144,7 +143,7 @@ def test_nu_modifica_nimic_inainte_de_a_salva():
 
     rulare(s, fc, 3, 'DESCEND_TRACK', 10.0, latency=0.05)
     assert s.state == s.ACTIVE
-    assert s.original['WPNAV_ACCEL'] == 250.0
+    assert s.original['WP_ACC'] == 2.5
     assert len(s.original) == len(MANAGED)
     return f"{len(fc.citiri)} citiri inainte de prima scriere; 0 scrieri"
 
@@ -155,21 +154,20 @@ def test_NEGATIV_parametru_inexistent_nu_e_gestionat():
     Daca l-am scrie oricum, am avea in `original` o gaura si n-am putea
     restaura - plus ca scrierea nu ar face nimic, deci am crede ca am
     modulat ceva ce de fapt nu s-a schimbat."""
-    fc, s = make(FakeFC(inexistente={'WPNAV_ACCEL'}))
+    fc, s = make(FakeFC(inexistente={'WP_ACC'}))
     # READ_TRIES cereri la cate READ_TIMEOUT_S, plus cicluri pentru aplicare.
     # Detectia dureaza ~6 s, in care autoritatea ramane NOMINALA - adica
     # partea sigura a compromisului.
     rulare(s, fc, 24, 'DESCEND_TRACK', 10.0, latency=0.05)
     assert s.state == s.ACTIVE, s.state
-    assert 'WPNAV_ACCEL' in s.unavailable, s.unavailable
-    assert 'WPNAV_ACCEL' not in s.original
+    assert 'WP_ACC' in s.unavailable, s.unavailable
+    assert 'WP_ACC' not in s.original
     scrise = {n for n, _ in fc.scrieri}
-    assert 'WPNAV_ACCEL' not in scrise, "a scris un parametru inexistent"
-    assert 'PSC_POSXY_P' in scrise, "restul nu s-au mai aplicat"
+    assert 'WP_ACC' not in scrise, "a scris un parametru inexistent"
+    assert 'PSC_NE_POS_P' in scrise, "restul nu s-au mai aplicat"
     ev = [e for e in s.log if e.kind == 'unavailable']
-    assert ev and 'WPNAV_ACCEL' in ev[0].detail
-    return ("WPNAV_ACCEL neraspuns -> raportat, negestionat, nescris; "
-            "restul merg")
+    assert ev and 'WP_ACC' in ev[0].detail
+    return "WP_ACC neraspuns -> raportat, negestionat, nescris; restul merg"
 
 
 # --- benzi ------------------------------------------------------------------
@@ -180,19 +178,17 @@ def test_benzi_si_tinte():
     assert s.band.nume == 'sus', s.band
     # multiplicator: 0.70 * originalul 1.0 (pasul 2 din procedura de
     # diagnostic a oscilatiei)
-    assert abs(fc.reale['PSC_POSXY_P'] - 0.70) < 1e-6, fc.reale
+    assert abs(fc.reale['PSC_NE_POS_P'] - 0.70) < 1e-6, fc.reale
     # D: 0.60 * 0.25
-    assert abs(fc.reale['PSC_VELXY_D'] - 0.15) < 1e-6, fc.reale
+    assert abs(fc.reale['PSC_NE_VEL_D'] - 0.15) < 1e-6, fc.reale
 
     rulare(s, fc, 6, 'DESCEND_TRACK', 1.0, latency=0.05, t0=10.0)
     assert s.band.nume == 'jos', s.band
-    assert abs(fc.reale['PSC_POSXY_P'] - 1.25) < 1e-6
-    # 0.7 * 250 cm/s/s = 175 cm/s/s = 1.75 m/s/s, as before the translation
-    assert abs(fc.reale['WPNAV_ACCEL'] - 0.7 * 250.0) < 1e-6, (
-        fc.reale['WPNAV_ACCEL'])
-    assert abs(fc.reale['LAND_SPEED'] - 35.0) < 1e-6      # 0.35 m/s
-    return ("sus: P x0.70, D x0.60; jos: P x1.25, WPNAV_ACCEL 175 cm/s/s, "
-            "LAND_SPEED 35 cm/s")
+    assert abs(fc.reale['PSC_NE_POS_P'] - 1.25) < 1e-6
+    assert abs(fc.reale['WP_ACC'] - 0.7 * 2.5) < 1e-6, fc.reale['WP_ACC']
+    assert abs(fc.reale['LAND_SPD_MS'] - 0.35) < 1e-6
+    return ("sus: P x0.70, D x0.60; jos: P x1.25, WP_ACC 1.75 m/s/s, "
+            "LAND_SPD_MS 0.35")
 
 
 def test_histereza_nu_lasa_sa_oscileze():
@@ -246,17 +242,15 @@ def test_viteza_de_coborare_limitata_la_ce_e_validat():
     fc, s = make(bands=PROFIL_RAPID)
     rulare(s, fc, 4, 'DESCEND_TRACK', 12.0, latency=0.05)
     for k in auth.DESCENT_SPEEDS:
-        assert abs(fc.reale[k] - auth.DESCENT_VALIDATED_CMS) < 1e-6, (
+        assert abs(fc.reale[k] - auth.DESCENT_VALIDATED_MS) < 1e-6, (
             f"{k} {fc.reale[k]} - profilul rapid a trecut de limita")
-    assert auth.DESCENT_VALIDATED_CMS == 50 and \
-        auth.DESCENT_VALIDATED_MS == 0.5
+    assert auth.DESCENT_SPEEDS == ('WP_SPD_DN', 'LAND_SPD_MS')
 
     fc2, s2 = make(bands=PROFIL_RAPID, allow_fast_descent=True)
     rulare(s2, fc2, 4, 'DESCEND_TRACK', 12.0, latency=0.05)
-    assert abs(fc2.reale['WPNAV_SPEED_DN'] - 150.0) < 1e-6, (
-        fc2.reale['WPNAV_SPEED_DN'])
-    return ("profil rapid taiat la 50 cm/s (0.5 m/s) implicit; "
-            "cu allow_fast_descent, 150 cm/s")
+    assert abs(fc2.reale['WP_SPD_DN'] - 1.5) < 1e-6, fc2.reale['WP_SPD_DN']
+    return ("profil rapid taiat la 0.5 m/s implicit; "
+            "cu allow_fast_descent, 1.5 m/s")
 
 
 # --- restaurare -------------------------------------------------------------
@@ -384,9 +378,11 @@ def test_release_inainte_de_prima_scriere():
 
 # --- garzi ------------------------------------------------------------------
 
-def test_ANGLE_MAX_nu_e_atins_niciodata():
+def test_ATC_ANGLE_MAX_nu_e_atins_niciodata():
     """Cerinta explicita. Verificata pe TOT ce s-a trimis, nu pe intentie."""
-    assert 'ANGLE_MAX' in auth.FORBIDDEN and 'PSC_ANGLE_MAX' in auth.FORBIDDEN
+    # Copter-4.7.1: the lean-angle limit is ATC_ANGLE_MAX (the pre-4.7
+    # ANGLE_MAX does not exist there); PSC_ANGLE_MAX is the same on both
+    assert auth.FORBIDDEN == ('ATC_ANGLE_MAX', 'PSC_ANGLE_MAX'), auth.FORBIDDEN
     for s in MANAGED:
         assert s.name not in auth.FORBIDDEN
 
@@ -403,13 +399,13 @@ def test_ANGLE_MAX_nu_e_atins_niciodata():
 
     # si o banda nu poate numi un parametru interzis
     try:
-        auth.Band('rea', 0.0, ANGLE_MAX=0.5)
-        raise AssertionError('o banda a acceptat ANGLE_MAX')
+        auth.Band('rea', 0.0, ATC_ANGLE_MAX=0.5)
+        raise AssertionError('o banda a acceptat ATC_ANGLE_MAX')
     except AssertionError as e:
         if 'a acceptat' in str(e):
             raise
     return (f"{len(atinse)} parametri atinsi in tot ciclul, niciunul din "
-            f"FORBIDDEN; banda cu ANGLE_MAX respinsa")
+            f"FORBIDDEN; banda cu ATC_ANGLE_MAX respinsa")
 
 
 def test_benzile_acopera_toata_plaja():
@@ -427,94 +423,123 @@ def test_benzile_acopera_toata_plaja():
     return f"praguri {praguri}, agl=None pastreaza banda curenta"
 
 
-def test_numele_sunt_cele_de_pe_4_5_7():
-    """The board runs Copter-4.5.7 (CUAV X7+): a 4.7+/4.8 name gets no
+#: The managed parameters on Copter-4.7.1: name -> (unit, @Range low,
+#: @Range high) from the 4.7.1 source; None = a gain, no unit. The code
+#: targets 4.7.1 ONLY (user decision, 04.10.2026).
+UNITATI_471 = {
+    'PSC_NE_POS_P': (None, 0.5, 4.0),     # AC_PosControl.cpp:108, :114
+    'PSC_NE_VEL_D': (None, 0.0, 1.0),     # AC_PosControl.cpp:307, :344
+    'WP_ACC': ('m/s/s', 0.5, 5.0),        # AC_WPNav.cpp:85-92
+    'WP_SPD_DN': ('m/s', 0.1, 10.0),      # AC_WPNav.cpp:76-83
+    'LAND_SPD_MS': ('m/s', 0.3, 2.0),     # mode_land.cpp:6-13
+    'PLND_LAG': ('s', 0.02, 0.25),        # AC_PrecLand.cpp:120-128
+}
+#: The same parameters under their pre-4.7 names (cm units): none of them
+#: exists on 4.7.1, so a write would be silent and inert.
+NUME_45 = ('PSC_POSXY_P', 'PSC_VELXY_D', 'WPNAV_ACCEL', 'WPNAV_SPEED_DN',
+           'LAND_SPEED')
+
+
+def _nume_471():
+    cale = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'params_copter_4.7.1.txt')
+    with open(cale) as f:
+        return {s.strip() for s in f if s.strip() and not s.startswith('#')}
+
+
+def probleme_nume_unitati(managed, profile):
+    """What is not 4.7.1 in a MANAGED list and its profiles; [] = nothing.
+
+    Names: exactly UNITATI_471, each in the Copter-4.7.1 name list. Units:
+    an 'abs' speed is m/s, so every band value sits between the 0.1 m/s
+    clamp and the parameter's @Range high, and the clamp limits are m/s (a
+    cm/s value, 50 for 0.5 m/s, is out by far). The 0.2 m/s contact band of
+    PROFIL_RAPID is below LAND_SPD_MS @Range 0.3 on purpose (see
+    nova/authority.py). WP_ACC / PLND_LAG limits are their @Range. 'mul'
+    factors are unitless and stay within [0.5, 1.4]."""
+    known = _nume_471()
+    out = []
+    nume = {s.name for s in managed}
+    if nume != set(UNITATI_471):
+        out.append(f"nume {sorted(nume ^ set(UNITATI_471))}")
+    out += [f"{n} nu e pe 4.7.1" for n in sorted(nume) if n not in known]
+    by = {s.name: s for s in managed}
+    for n in ('WP_SPD_DN', 'LAND_SPD_MS'):
+        sp = by.get(n)
+        if sp is None:
+            continue
+        if sp.mode != 'abs' or not (0.1 <= sp.lo and sp.hi <= 5.0):
+            out.append(f"{n}: limite {sp.lo}..{sp.hi} nu sunt m/s")
+        for nume_p, benzi in profile.items():
+            for b in benzi:
+                v = b.valori.get(n)
+                if v is not None and not 0.1 <= v <= UNITATI_471[n][2]:
+                    out.append(f"{nume_p}/{b.nume}: {n}={v} nu e m/s")
+    for n in ('WP_ACC', 'PLND_LAG'):
+        sp = by.get(n)
+        if sp is not None and (sp.lo, sp.hi) != UNITATI_471[n][1:]:
+            out.append(f"{n}: limite {sp.lo}..{sp.hi} nu sunt @Range "
+                       f"{UNITATI_471[n][0]}")
+    for nume_p, benzi in profile.items():
+        for b in benzi:
+            for k, v in b.valori.items():
+                if k in by and by[k].mode == 'mul' and not 0.5 <= v <= 1.4:
+                    out.append(f"{nume_p}/{b.nume}: factor {k}={v}")
+    return out
+
+
+def test_numele_si_unitatile_sunt_cele_de_pe_4_7_1():
+    """The board runs Copter-4.7.1 (CUAV X7+): a pre-4.7 name gets no
     PARAM_VALUE there, so the scheduler would mark it unavailable and the
-    modulation would be silently inert (§5.4). The test pins the 4.5.7
-    names; the full list check is in tools/test_params_x7.py."""
+    modulation would be silently inert (§5.4); a cm/s value written to an
+    m/s parameter would be 100x too fast. The test pins names AND units;
+    the repo-wide name check is in tools/test_params_x7.py."""
+    profile = {'PROFIL_IMPLICIT': PROFIL_IMPLICIT,
+               'PROFIL_RAPID': PROFIL_RAPID}
+    p = probleme_nume_unitati(MANAGED, profile)
+    assert p == [], p
+    known = _nume_471()
     nume = {s.name for s in MANAGED}
-    for doar_47 in ('WP_ACC', 'PSC_NE_POS_P', 'PSC_NE_VEL_D', 'WP_SPD_DN',
-                    'LAND_SPD_MS'):
-        assert doar_47 not in nume, f"{doar_47} nu exista pe Copter-4.5.7"
-    for corect in ('WPNAV_ACCEL', 'PSC_POSXY_P', 'PSC_VELXY_D',
-                   'WPNAV_SPEED_DN', 'LAND_SPEED', 'PLND_LAG'):
-        assert corect in nume, f"lipseste {corect}"
-    return ', '.join(sorted(nume))
+    for vechi in NUME_45:
+        assert vechi not in nume and vechi not in known, vechi
+    for interzis in auth.FORBIDDEN:
+        assert interzis in known, f"{interzis} nu exista pe 4.7.1"
+    assert auth.DESCENT_VALIDATED_MS == 0.5
+    assert not hasattr(auth, 'DESCENT_VALIDATED_CMS')
+    # the shipped profile, value by value, in m/s and factors
+    assert [b.valori['WP_SPD_DN'] for b in PROFIL_IMPLICIT] == \
+        [0.5, 0.5, 0.35, 0.35]
+    assert [b.valori['WP_ACC'] for b in PROFIL_IMPLICIT] == \
+        [1.0, 1.0, 0.7, 0.5]
+    return ', '.join(sorted(nume)) + " (SI, @Range 4.7.1)"
 
 
-#: The profile as it was written for 4.7+/4.8 (SI units), frozen here as the
-#: reference for the translation. 'mul' entries are factors, 'abs' entries
-#: m/s. (min_agl, {4.7 name: value})
-_PROFIL_47 = {
-    'PROFIL_IMPLICIT': [
-        (8.0, dict(PSC_NE_POS_P=0.70, PSC_NE_VEL_D=0.60, WP_ACC=1.00,
-                   WP_SPD_DN=0.5, LAND_SPD_MS=0.5)),
-        (3.0, dict(PSC_NE_POS_P=1.00, PSC_NE_VEL_D=1.00, WP_ACC=1.00,
-                   WP_SPD_DN=0.5, LAND_SPD_MS=0.5)),
-        (0.5, dict(PSC_NE_POS_P=1.25, PSC_NE_VEL_D=1.10, WP_ACC=0.70,
-                   WP_SPD_DN=0.35, LAND_SPD_MS=0.35)),
-        (0.0, dict(PSC_NE_POS_P=1.25, PSC_NE_VEL_D=1.10, WP_ACC=0.50,
-                   WP_SPD_DN=0.35, LAND_SPD_MS=0.35)),
-    ],
-    'PROFIL_RAPID': [
-        (8.0, dict(PSC_NE_POS_P=0.70, PSC_NE_VEL_D=0.60, WP_ACC=1.00,
-                   WP_SPD_DN=1.5, LAND_SPD_MS=1.5)),
-        (3.0, dict(PSC_NE_POS_P=1.00, PSC_NE_VEL_D=1.00, WP_ACC=1.00,
-                   WP_SPD_DN=0.8, LAND_SPD_MS=0.8)),
-        (0.5, dict(PSC_NE_POS_P=1.25, PSC_NE_VEL_D=1.10, WP_ACC=0.70,
-                   WP_SPD_DN=0.3, LAND_SPD_MS=0.3)),
-        (0.0, dict(PSC_NE_POS_P=1.25, PSC_NE_VEL_D=1.10, WP_ACC=0.50,
-                   WP_SPD_DN=0.2, LAND_SPD_MS=0.2)),
-    ],
-}
-#: Spec limits as they were for 4.7+ (SI units): name -> (mode, lo, hi).
-_LIMITE_47 = {
-    'PSC_NE_POS_P': ('mul', 0.1, 5.0), 'PSC_NE_VEL_D': ('mul', 0.0, 1.0),
-    'WP_ACC': ('mul', 0.5, 5.0), 'WP_SPD_DN': ('abs', 0.1, 5.0),
-    'LAND_SPD_MS': ('abs', 0.1, 5.0),
-}
+def test_NEGATIV_nume_45_sau_unitati_cm_sunt_prinse():
+    """The check above must be able to fail: a 4.5 name, a profile in cm/s
+    and clamp limits in cm/s/s are each caught."""
+    S = auth.Spec
+    rau_nume = [s for s in MANAGED if s.name != 'WP_ACC'] + [
+        S('WPNAV_ACCEL', 'mul', 50.0, 500.0)]
+    p = probleme_nume_unitati(rau_nume, {})
+    assert any('WPNAV_ACCEL' in x for x in p), p
 
+    rau_cm = (auth.Band('sus', 8.0, WP_SPD_DN=50, LAND_SPD_MS=50),)
+    p = probleme_nume_unitati(MANAGED, {'cm': rau_cm})
+    assert len(p) == 2 and all('nu e m/s' in x for x in p), p
 
-def test_traducerea_4_5_7_e_cea_din_make_parm_45():
-    """Behaviour identical to the 4.7+ version: every 4.5.7 value is the old
-    SI value passed through the SAME table that generates
-    config/nova_flight_4.5.parm (tools/make_parm_45.py REDENUMIRI). 'mul'
-    factors are unitless and stay as they are; absolute values and the
-    clamp limits go through the unit conversion. LAND_SPEED is AP_Int16 on
-    4.5.7 (ArduCopter/Parameters.h:429): a fractional cm/s value would be
-    truncated by the FC and never confirmed, so every target is an integer."""
-    import make_parm_45 as mp
-    n = 0
-    for nume_profil, benzi47 in _PROFIL_47.items():
-        benzi = getattr(auth, nume_profil)
-        assert [b.min_agl for b in benzi] == [a for a, _ in benzi47]
-        for b, (_, valori47) in zip(benzi, benzi47):
-            assert len(b.valori) == len(valori47), (b.nume, b.valori)
-            for n47, v47 in valori47.items():
-                n45, conv = mp.REDENUMIRI[n47]
-                mode = _LIMITE_47[n47][0]
-                asteptat = v47 if mode == 'mul' else conv(v47)
-                assert b.valori[n45] == asteptat, (
-                    f"{nume_profil}/{b.nume}: {n45}={b.valori[n45]}, "
-                    f"din {n47}={v47} -> {asteptat}")
-                n += 1
-            assert float(b.valori['LAND_SPEED']).is_integer()
-    for n47, (mode, lo, hi) in _LIMITE_47.items():
-        n45, conv = mp.REDENUMIRI[n47]
-        sp = auth.MANAGED_BY_NAME[n45]
-        assert sp.mode == mode, (n45, sp.mode)
-        assert (sp.lo, sp.hi) == (conv(lo), conv(hi)), (
-            f"{n45}: limite {(sp.lo, sp.hi)} vs {n47} {(lo, hi)}")
-    assert auth.DESCENT_VALIDATED_CMS == mp.REDENUMIRI['WP_SPD_DN'][1](0.5)
-    assert len(MANAGED) == len(_LIMITE_47) + 1          # + PLND_LAG, same
-    return f"{n} valori de banda + {len(_LIMITE_47)} limite = tabela REDENUMIRI"
+    rau_lim = [s for s in MANAGED if s.name not in ('WP_ACC', 'LAND_SPD_MS')]
+    rau_lim += [S('WP_ACC', 'mul', 50.0, 500.0),
+                S('LAND_SPD_MS', 'abs', 10.0, 500.0)]
+    p = probleme_nume_unitati(rau_lim, {})
+    assert len(p) == 2, p
+    return "WPNAV_ACCEL; 50 'm/s'; limite cm -> prinse"
 
 
 def test_profilele_difera_doar_pe_viteza():
     """I5: cand se compara doua rulari, singura variabila schimbata trebuie
     sa fie profilul de coborare. Daca si castigurile difera, o oscilatie
     apuruta la 1.5 m/s nu se mai poate atribui vitezei."""
-    viteze = set(auth.DESCENT_SPEEDS)
+    viteze = {'WP_SPD_DN', 'LAND_SPD_MS'}
     a, b = auth.PROFIL_IMPLICIT, auth.PROFIL_RAPID
     assert len(a) == len(b), (len(a), len(b))
     for ba, bb in zip(a, b):
@@ -529,25 +554,24 @@ def test_profilele_difera_doar_pe_viteza():
 
 
 def test_profilul_rapid_e_cel_din_tabelul_I5():
-    # cm/s on 4.5.7: 1.5 / 0.8 / 0.3 / 0.2 m/s
-    asteptat = [(8.0, 150), (3.0, 80), (0.5, 30), (0.0, 20)]
-    gasit = [(b.min_agl, b.valori['WPNAV_SPEED_DN'])
+    asteptat = [(8.0, 1.5), (3.0, 0.8), (0.5, 0.3), (0.0, 0.2)]
+    gasit = [(b.min_agl, b.valori['WP_SPD_DN'])
              for b in auth.PROFIL_RAPID]
     assert gasit == asteptat, f"{gasit} != {asteptat}"
     for b in auth.PROFIL_RAPID:
-        assert b.valori['LAND_SPEED'] == b.valori['WPNAV_SPEED_DN'], (
-            f"{b.nume}: LAND_SPEED si WPNAV_SPEED_DN trebuie sa spuna "
-            f"acelasi lucru, altfel viteza depinde de care controler e activ")
-    return "8m/150, 3m/80, 0.5m/30, contact/20 cm/s"
+        assert b.valori['LAND_SPD_MS'] == b.valori['WP_SPD_DN'], (
+            f"{b.nume}: LAND_SPD_MS si WP_SPD_DN trebuie sa spuna acelasi "
+            f"lucru, altfel viteza depinde de care controler e activ")
+    return "8m/1.5, 3m/0.8, 0.5m/0.3, contact/0.2"
 
 
 def test_profilul_implicit_nu_depaseste_ce_s_a_validat():
     for b in auth.PROFIL_IMPLICIT:
-        for k in auth.DESCENT_SPEEDS:
-            assert b.valori[k] <= auth.DESCENT_VALIDATED_CMS, (
+        for k in ('WP_SPD_DN', 'LAND_SPD_MS'):
+            assert b.valori[k] <= auth.DESCENT_VALIDATED_MS, (
                 f"{b.nume}.{k} = {b.valori[k]} peste "
-                f"{auth.DESCENT_VALIDATED_CMS} cm/s validati")
-    return f"toate <= {auth.DESCENT_VALIDATED_CMS} cm/s"
+                f"{auth.DESCENT_VALIDATED_MS} m/s validati")
+    return f"toate <= {auth.DESCENT_VALIDATED_MS} m/s"
 
 
 TESTS = [
@@ -575,11 +599,13 @@ TESTS = [
     ('restored e afirmatie verificata', test_restored_e_afirmatie_verificata),
     ('release inainte de prima scriere',
      test_release_inainte_de_prima_scriere),
-    ('ANGLE_MAX nu e atins niciodata', test_ANGLE_MAX_nu_e_atins_niciodata),
+    ('ATC_ANGLE_MAX nu e atins niciodata',
+     test_ATC_ANGLE_MAX_nu_e_atins_niciodata),
     ('benzile acopera toata plaja', test_benzile_acopera_toata_plaja),
-    ('numele sunt cele de pe 4.5.7', test_numele_sunt_cele_de_pe_4_5_7),
-    ('traducerea 4.5.7 e cea din make_parm_45',
-     test_traducerea_4_5_7_e_cea_din_make_parm_45),
+    ('numele si unitatile sunt cele de pe 4.7.1',
+     test_numele_si_unitatile_sunt_cele_de_pe_4_7_1),
+    ('NEGATIV: nume 4.5 sau unitati cm sunt prinse',
+     test_NEGATIV_nume_45_sau_unitati_cm_sunt_prinse),
 ]
 
 

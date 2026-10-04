@@ -1185,8 +1185,9 @@ class Vehicle:
         from above, yaw decreasing), +1 = clockwise; param4 1 = relative to
         the current yaw, 0 = absolute (ArduCopter autoyaw.cpp:116). Measured
         on 4.5.7: the angle overshoots by ~2.4 deg; the FC caps the rate at
-        ATC_SLEW_YAW (6000 cd/s). A later SET_POSITION_TARGET with a yaw
-        ends it."""
+        ATC_RATE_WPY_MAX (60 deg/s; Copter-4.7.1 AC_AttitudeControl.cpp:
+        166-173, ATC_SLEW_YAW 6000 cd/s before 4.7). A later
+        SET_POSITION_TARGET with a yaw ends it."""
         if direction not in (-1, 1):
             raise ValueError(f"directia CONDITION_YAW e -1 sau 1, nu {direction}")
         angle = float(angle_deg)

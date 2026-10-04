@@ -73,7 +73,7 @@ from pymavlink import mavutil                                  # noqa: E402
 
 import sitl_touchdown as std                                    # noqa: E402
 
-SITL_DEFAULT = os.path.expanduser('~/ardupilot-4.5.7/build/sitl/bin/arducopter')
+SITL_DEFAULT = os.path.expanduser('~/ardupilot-4.7.1/build/sitl/bin/arducopter')
 
 COPTER_MODES = {0: 'STABILIZE', 1: 'ACRO', 2: 'ALT_HOLD', 3: 'AUTO', 4: 'GUIDED',
                 5: 'LOITER', 6: 'RTL', 7: 'CIRCLE', 9: 'LAND', 11: 'DRIFT',

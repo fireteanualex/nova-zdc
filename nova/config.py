@@ -95,11 +95,9 @@ DEFAULTS = {
     'camera_rotation_deg': 0,
 
     # Fisierul de parametri ArduPilot care corespunde FIRMWARE-ULUI de pe
-    # FC. Numele si unitatile difera intre 4.6 si 4.7 (CLAUDE.md §5.4), deci
-    # preflight-ul trebuie sa verifice fisierul potrivit versiunii - altfel
-    # pica pe nume care pur si simplu nu exista pe placa.
-    #   4.7.0+  config/nova_flight.parm
-    #   4.5.x   config/nova_flight_4.5.parm  (generat, nu editat de mana)
+    # FC. The board (CUAV X7+) runs ArduCopter 4.7.1 only (user decision,
+    # 04.10.2026): config/nova_flight.parm, 4.7.1 names and units. The 4.5.x
+    # variant (nova_flight_4.5.parm, generated) was removed.
     'flight_parm': 'config/nova_flight.parm',
 
     # Canalul RC pe care pilotul CERE segmentul autonom (frontul crescator).
@@ -177,7 +175,7 @@ DEFAULTS = {
     #                         search_radius_m) | true | false
     #   yaw_search_max_deg    90 sweeps the long axis through every
     #                         direction; at most 180 (more = refused)
-    #   yaw_search_rate_dps   at most 60 (ATC_SLEW_YAW); above 30 a WARNING:
+    #   yaw_search_rate_dps   at most 60 (ATC_RATE_WPY_MAX); above 30 a WARNING:
     #                         detection at that rate is untested
     #   search_radius_m       rule 15.2.3's zone around the handover point
     'yaw_search': 'auto',
@@ -436,7 +434,7 @@ def yaw_search_settings(cfg):
     if rate > xl.YAW_SEARCH_RATE_LIMIT_DPS:
         raise ValueError(
             f"config: yaw_search_rate_dps = {rate:g} grd/s peste "
-            f"{xl.YAW_SEARCH_RATE_LIMIT_DPS:g} grd/s (ATC_SLEW_YAW 6000 cd/s "
+            f"{xl.YAW_SEARCH_RATE_LIMIT_DPS:g} grd/s (ATC_RATE_WPY_MAX 60 deg/s "
             f"al FC-ului)")
     dur = xl.yaw_search_duration_s(deg, rate)
     if mode is not False and dur > xl.SEARCH_BUDGET_S + 1e-9:

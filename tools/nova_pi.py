@@ -423,8 +423,8 @@ def run_preflight(a):
     args = _ap.Namespace(
         config=a.config, conn=a.conn, baud=a.baud,
         # None: preflight takes `flight_parm` from config/nova.json, i.e.
-        # the file that matches the FC firmware (4.5.7 today). A fixed
-        # nova_flight.parm here checked 4.7 names against a 4.5 board.
+        # the file that matches the FC firmware (4.7.1, config/nova_flight.parm).
+        # A fixed path here once checked the wrong firmware's names.
         parm=None,
         frames=30, mavlink_timeout=10.0, no_camera=False,
         no_mavlink=a.no_mavlink, json=False, os_release='/etc/os-release')

@@ -1,43 +1,57 @@
 # NOVA - ZDC 2026 - configuratie VEHICUL REAL (CUAV X7+)
 #
-# Flight controller: CUAV X7+ (firmware target CUAV-X7; it runs 4.5.7, so load
-# the generated config/nova_flight_4.5.parm), no hardware safety switch.
-# Before the X7+ the vehicle used a Pixhawk 6C; that board is history -
-# nothing below depends on it.
+# Flight controller: CUAV X7+ (firmware target CUAV-X7), running ArduCopter
+# 4.7.1 (user, 04.10.2026), no hardware safety switch. This file is loaded
+# on the board AS IT IS: there is no generated variant for another firmware
+# (the 4.5.7 file and its generator were removed on 04.10.2026). Before the
+# X7+ the vehicle used a Pixhawk 6C; that board is history - nothing below
+# depends on it.
 #
 # ===========================================================================
-# CERE ArduCopter 4.7.0 SAU MAI NOU
+# ArduCopter 4.7.1 ONLY - every name and unit checked in tag Copter-4.7.1
 # ===========================================================================
 #
-# Trei nume din fisierul asta nu exista pe 4.6 si mai vechi - redenumirile
-# au cazut intre 4.6 si 4.7 (verificat in tag-urile ArduPilot):
+# Names and units, Copter-4.7.1 source (not from memory, §5.10):
+#   FRAME_CLASS / FRAME_TYPE, DISARM_DELAY (s), PILOT_THR_BHV,
+#     FS_THR_ENABLE, SURFTRAK_MODE   ArduCopter/Parameters.cpp:680, :230,
+#                                    :242, :53, :124, :881
+#   RNGFND1_TYPE / _ORIENT / _MIN / _MAX / _GNDCLR (m)
+#                    libraries/AP_RangeFinder/AP_RangeFinder_Params.cpp:
+#                    14, 184, 101, 109, 142 (group "RNGFND",
+#                    Parameters.cpp:493)
+#   TERRAIN_ENABLE   libraries/AP_Terrain/AP_Terrain.cpp:43
+#   PLND_* (ALT_MIN m, YAW_ALIGN cdeg)
+#                    libraries/AC_PrecLand/AC_PrecLand.cpp:33, 40, 74, 138,
+#                    164, 47 (group "PLND_", Parameters.cpp:511)
+#   WP_RFND_USE / WP_SPD (m/s) / WP_SPD_DN (m/s) / WP_ACC (m/s/s)
+#                    libraries/AC_WPNav/AC_WPNav.cpp:24, 49, 76, 85
+#                    (group "WP_", Parameters.cpp:369)
+#   LAND_SPD_MS (m/s)  ArduCopter/mode_land.cpp:6-13 (group "LAND_",
+#                    Parameters.cpp:1128)
+#   EK3_SRC2_* / EK3_SRC_OPTIONS
+#                    libraries/AP_NavEKF/AP_NavEKF_Source.cpp:63-96, 136-141
+#                    (subgroup "SRC" of "EK3_", AP_NavEKF3.cpp:663)
+#   VISO_TYPE / _DELAY_MS (ms) / _POS_M_NSE (m)
+#                    libraries/AP_VisualOdom/AP_VisualOdom.cpp:31, 77, 93
+#                    (group "VISO", AP_Vehicle.cpp:50)
+#   SERIAL2_PROTOCOL libraries/AP_SerialManager/AP_SerialManager.cpp:203
+#   BRD_SER2_RTSCTS / BRD_SAFETY_DEFLT / BRD_SAFETYOPTION
+#                    libraries/AP_BoardConfig/AP_BoardConfig.cpp:126, 182, 282
 #
-#               4.5.x / 4.6.x        aici (4.7.0+)
-#   armare      ARMING_CHECK         ARMING_SKIPCHK
-#   navigatie   WPNAV_ACCEL          WP_ACC
-#               WPNAV_SPEED          WP_SPD        (cm/s -> m/s)
-#               WPNAV_SPEED_DN       WP_SPD_DN     (cm/s -> m/s)
-#   aterizare   LAND_SPEED           LAND_SPD_MS   (cm/s -> m/s)
-#               WPNAV_RFND_USE       WP_RFND_USE
-#   telemetru   RNGFND1_MIN_CM       RNGFND1_MIN  (metri, nu cm)
+# A name that does not exist on the firmware is accepted in silence: no
+# error, no PARAM_VALUE, and Mission Planner says "No matching Params" and
+# writes the rest. tools/test_params_x7.py checks every name here against
+# the Copter-4.7.1 name list (tools/params_copter_4.7.1.txt).
 #
-# Simptomul pe firmware vechi: Mission Planner spune "No matching Params"
-# pe exact numele alea, si scrie restul - deci configuratia iese pe
-# jumatate aplicata, fara ca nimic sa pice.
-#
-# NU traduce numele DE MANA. Masca de armare se INVERSEAZA (SKIPCHK
-# listeaza ce sari, CHECK ce faci: 32768 aici = 1015294 pe 4.5/4.6), iar
-# doua unitati se schimba din m in cm. Pentru 4.5.x exista
-# config/nova_flight_4.5.parm, GENERAT din fisierul asta de
-# tools/make_parm_45.py si verificat de un test. Dupa orice schimbare aici:
-#     python3 tools/make_parm_45.py
-# config/nova.json (`flight_parm`) spune care din cele doua se verifica.
+# Arming checks (ARMING_SKIPCHK on 4.7) are NOT in this file: they are set
+# by hand by the team (user decision, 04.10.2026).
 #
 # ===========================================================================
 # ORDINEA DE INCARCARE - NU tot fisierul dintr-o data
 # ===========================================================================
 #
-# PLND_ENABLED si RNGFND1_TYPE sunt declarati cu AP_PARAM_FLAG_ENABLE:
+# PLND_ENABLED si RNGFND1_TYPE sunt declarati cu AP_PARAM_FLAG_ENABLE
+# (Copter-4.7.1 AC_PrecLand.cpp:38, AP_RangeFinder_Params.cpp:68):
 # restul grupului nu e VIZIBIL pentru o statie de sol cat timp parametrul
 # de activare e 0. Iar aici PLND_ENABLED e 0 deliberat (§5.8), deci
 # sub-parametrii PLND_* nu ar aparea niciodata.
@@ -97,11 +111,7 @@ PLND_STRICT,2
 PLND_ALT_MIN,0.35
 PLND_YAW_ALIGN,0
 
-# --- Verificari de armare (§5.13) ---
-# Bit 15 = Rangefinder. Camera nu poate produce range la sol (markerul nu
-# incape in cadru la 74 mm), deci verificarea e imposibil de trecut.
-# Compensat prin PLND_STRICT=2 si prin Safety Supervisor.
-ARMING_SKIPCHK,32768
+# Arming checks are set by hand by the team (user decision 04.10.2026).
 
 # --- 15.2.7: urcare la 5 m dupa touchdown (§5.7) ---
 # Numele e WP_RFND_USE, nu WPNAV_RFND_USE - obiectul AC_WPNav e inregistrat
@@ -114,9 +124,11 @@ WP_RFND_USE,0
 # Copter-4.5.7 (27.09.2026): in GUIDED dezarmarea automata cere throttle-ul
 # pilotului la ZERO, pe sol, timp de DISARM_DELAY - 21.1 s cu 20 aici; cu
 # throttle-ul la mijloc nu dezarmeaza deloc. 20 s >> 1.5 s de sol.
+# The same logic is in Copter-4.7.1 (ArduCopter/motors.cpp:11-47,
+# auto_disarm_check); the SITL measurement itself was on 4.5.7.
 DISARM_DELAY,20
 # Throttle NE-arcuit (bitul 0 = 0): cu bitul 0 aprins, in GUIDED "throttle
-# jos" inseamna sub MIJLOC (motors.cpp, auto_disarm_check) si un pilot cu
+# jos" inseamna sub MIJLOC (motors.cpp:38-44, auto_disarm_check) si un pilot cu
 # stick-ul la mijloc ar dezarma drona pe marker dupa DISARM_DELAY.
 PILOT_THR_BHV,0
 
@@ -156,9 +168,10 @@ FS_THR_ENABLE,1
 #    2x 6S LiPo 4000 mAh, 25.2 V max (§2). Senzorul de curent si divizorul
 #    depind de placa de putere, care nu e finalizata (§7 pozitia 3).
 #    On the CUAV X7+ the firmware default is BATT_MONITOR 8 = DroneCAN
-#    (Copter-4.5.7 hwdef/CUAV-X7/defaults.parm:12, with CAN_P1_DRIVER 1).
-#    Without a CAN power module connected, ARMING_CHECK bit 8 (battery)
-#    fails arming with "Battery 1 unhealthy". Still the team's decision.
+#    (Copter-4.7.1 hwdef/CUAV-X7/defaults.parm:12, with CAN_P1_DRIVER 1 at
+#    :11). Without a CAN power module connected, the battery arming check
+#    (bit 8) fails arming with "Battery 1 unhealthy". Still the team's
+#    decision, like every arming check.
 #
 # 3. MOT_SPOOL_TIM_DN
 #    §5.6: fereastra intre land_complete si GROUND_IDLE e cea in care
@@ -233,25 +246,27 @@ VISO_DELAY_MS,100
 # 0.3); de reglat pe loguri.
 VISO_POS_M_NSE,0.5
 # Viteze mici in GUIDED (MOVE / DESCEND in trepte): limiteaza inclinarea,
-# deci tin markerul in cadru. WP_SPD orizontal 1.0 m/s, WP_SPD_DN 0.5 m/s.
-# Pe 4.5.7 sunt WPNAV_SPEED / WPNAV_SPEED_DN, in cm/s (generat).
+# deci tin markerul in cadru. WP_SPD orizontal 1.0 m/s, WP_SPD_DN 0.5 m/s
+# (m/s on 4.7.1: AC_WPNav.cpp:52 and :79, @Units m/s).
 WP_SPD,1.0
 WP_SPD_DN,0.5
-# LAND-ul final, vertical de la 1 m: 0.5 m/s. Pe 4.5.7: LAND_SPEED, cm/s.
+# LAND-ul final, vertical de la 1 m: 0.5 m/s (m/s, @Range 0.3 2,
+# mode_land.cpp:9-10).
 LAND_SPD_MS,0.5
 # LAND_ALT_LOW: de revazut (brief §7); nu se seteaza pana nu e decis.
 
 # ---------------------------------------------------------------------------
 # Link to the Raspberry Pi 4, on TELEM2 of the CUAV X7+.
 #
-# WHICH SERIAL IS TELEM2, checked in the Copter-4.5.7 source, not from
+# WHICH SERIAL IS TELEM2, checked in the Copter-4.7.1 source, not from
 # memory (§5.10):
 #
-#   libraries/AP_HAL_ChibiOS/hwdef/CUAV-X7/hwdef.dat:24
+#   libraries/AP_HAL_ChibiOS/hwdef/CUAV-X7/hwdef.dat:22
 #     SERIAL_ORDER OTG1 USART2 USART6 USART1 UART4 UART8 UART7 OTG2
 #                    0     1      2      3     4     5     6     7
-#   and hwdef.dat:144 in the same file: "# USART6 is telem2" (pins
-#   :145-148). The X7, X7 Pro, X7+ and X7+ Pro share this one hwdef.
+#   and hwdef.dat:141 in the same file: "# USART6 is telem2" (pins
+#   :142-145). The X7, X7 Pro, X7+ and X7+ Pro share this one hwdef. The
+#   order is the same as on Copter-4.5.7 (there at hwdef.dat:24 / :144).
 #
 #   So TELEM1 = SERIAL1, TELEM2 = **SERIAL2** - the same index as on the
 #   Pixhawk 6C we flew before (there TELEM2 was UART5), so the Pi link stays
@@ -275,9 +290,9 @@ SERIAL2_PROTOCOL,2
 # The Pi side opens the port at --baud (default 921600); the two must match.
 
 # Controlul de flux: implicit 2 = AUTO pe placile ChibiOS
-# (Copter-4.5.7 AP_BoardConfig.cpp:131, default 2 written literally; the
-# X7 defines USART6_RTS/CTS, hwdef.dat:147-148, so the parameter exists
-# there). Auto-detectia
+# (Copter-4.7.1 AP_BoardConfig.cpp:126-130, default 2 written literally;
+# the X7 defines USART6_CTS/RTS, hwdef.dat:144-145, so the parameter
+# exists there). Auto-detectia
 # testeaza daca bufferul de iesire se umple la pornire - cu RTS/CTS
 # nelegate, cum e cablajul de 3 fire de mai sus, rezultatul depinde de ce
 # se intampla sa fie pe pini in acel moment.
@@ -290,26 +305,27 @@ BRD_SER2_RTSCTS,0
 # ---------------------------------------------------------------------------
 # Hardware safety switch: NONE on this vehicle (CUAV X7+).
 #
-# The X7 hwdef has a safety input (CUAV-X7/hwdef.dat:300-303:
-# HAL_HAVE_SAFETY_SWITCH 1, PE10 SAFETY_IN), so on Copter-4.5.7 the
+# The X7 hwdef has a safety input (CUAV-X7/hwdef.dat:295-297:
+# HAL_HAVE_SAFETY_SWITCH 1, PE10 SAFETY_IN), so on Copter-4.7.1 the
 # defaults are BRD_SAFETY_DEFLT 1 and BRD_SAFETYOPTION 3
-# (AP_BoardConfig.cpp:46-49 and :66-68). With DEFLT 1 and no button the
+# (AP_BoardConfig.cpp:47-50 and :67-69). With DEFLT 1 and no button the
 # outputs stay blocked and arming fails on "Hardware safety switch"
-# (AP_Arming.cpp:744-756, ARMING_CHECK bit 11).
+# (AP_Arming.cpp:795-806, arming check bit 11).
 #
 # BRD_SAFETY_DEFLT 0: safety starts OFF at boot (board_drivers.cpp:34-49
-# forces it off). @RebootRequired (AP_BoardConfig.cpp:165-171): REBOOT the
+# forces it off). @RebootRequired (AP_BoardConfig.cpp:182-188): REBOOT the
 # FC after writing it, then read it back.
 BRD_SAFETY_DEFLT,0
 # BRD_SAFETYOPTION 0: no button may toggle safety (AP_BoardConfig.cpp:
-# 234-239, filter at :505-526, DroneCAN button too). With the default 3 a
+# 282-287, filter at :568-589, DroneCAN button too). With the default 3 a
 # button on the GPS module, held 1 s on the ground, would turn safety back
 # ON and arming would fail on bit 11 until reboot or a MAVLink command.
 # Bit 3 ("Force safety on when the aircraft disarms") must stay OFF: with
-# it, every disarm re-enables safety (AP_Arming.cpp:1847-1853) and without
+# it, every disarm re-enables safety (AP_Arming.cpp:1967-1973) and without
 # a button the vehicle cannot re-arm - that would break the touchdown
 # sequence if a disarm ever happened on the marker.
 BRD_SAFETYOPTION,0
 # BRD_SAFETY_MASK stays at its default 0 and is not written (irrelevant
-# with safety off). ARMING_CHECK bit 11 stays ON, set by the team: with
-# BRD_SAFETY_DEFLT 0 it passes, and it still catches safety switched back on.
+# with safety off). The arming checks, the safety-switch one (bit 11)
+# included, are set by hand by the team: with BRD_SAFETY_DEFLT 0 that check
+# passes, and it still catches safety switched back on.

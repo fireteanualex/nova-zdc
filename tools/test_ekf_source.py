@@ -263,7 +263,8 @@ def test_parametrii_din_fisiere_sunt_conformi():
     """Fisierele de parametri trebuie sa descrie un set fara GNSS. Daca
     cineva schimba o linie, asta pica - nu campania de peste doua zile."""
     radacina = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for fisier in ('nova_flight.parm', 'nova_flight_4.5.parm'):
+    # one parm file since 04.10.2026 (ArduCopter 4.7.1 only)
+    for fisier in ('nova_flight.parm',):
         cale = os.path.join(radacina, 'config', fisier)
         valori = {}
         for linie in open(cale):
@@ -278,7 +279,10 @@ def test_parametrii_din_fisiere_sunt_conformi():
                 valori[ek.OPTIUNI_TERMEN] = float(val)
         rau, motive = ek.contine_gnss(valori)
         assert not rau, f"{fisier}: {motive}"
-    return f"ambele fisiere descriu setul {ek.SET_AUTONOM} fara GNSS"
+        assert len(valori) == len(ek.TERMENI) + 1, (fisier, valori)
+    assert not os.path.exists(os.path.join(radacina, 'config',
+                                           'nova_flight_4.5.parm'))
+    return f"nova_flight.parm descrie setul {ek.SET_AUTONOM} fara GNSS"
 
 
 

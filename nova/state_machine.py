@@ -46,7 +46,7 @@ Parametri ArduPilot necesari (toti in config/nova_sitl.parm):
     PLND_ENABLED 1 / PLND_TYPE 1 / PLND_EST_TYPE 1 / PLND_STRICT 2
     PLND_ALT_MIN 0.35
     SURFTRAK_MODE 0
-    WPNAV_RFND_USE 0      # altfel urcarea din GUIDED e "deasupra terenului"
+    WP_RFND_USE 0         # altfel urcarea din GUIDED e "deasupra terenului"
     DISARM_DELAY 20       # marja pentru pauza de pe sol
 """
 

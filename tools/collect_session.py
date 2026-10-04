@@ -56,16 +56,17 @@ FRAMES_DIR = os.path.join(REPO_ROOT, 'data', 'frames')
 #: (aia e tools/check_params.py) - e o INREGISTRARE a ce era pe vehicul in
 #: momentul zborului. La o contestatie, "ce era setat" e intrebarea.
 #:
-#: Copter-4.5.7 names (the board, CUAV X7+): a 4.7+ name gets no reply
-#: there and would be recorded as missing. Values are recorded RAW, in the
-#: FC's own units (RNGFND1_*_CM in cm, WPNAV_* / LAND_SPEED in cm/s).
-#: ARMING_CHECK is the 4.5.7 mask (bits = checks DONE), not the inverse
-#: 4.7+ ARMING_SKIPCHK.
+#: Copter-4.7.1 names (the board, CUAV X7+; the code targets 4.7.1 only):
+#: a name that does not exist there gets no reply and would be recorded as
+#: missing. Values are recorded RAW, in the FC's own 4.7.1 units
+#: (RNGFND1_MIN / _MAX / _GNDCLR in m, WP_SPD_DN / LAND_SPD_MS in m/s, WP_ACC
+#: in m/s/s). The arming checks are not recorded: they are the team's, set
+#: by hand (user decision, 04.10.2026).
 PARAMS_OF_RECORD = (
     'PLND_ENABLED', 'PLND_TYPE', 'PLND_EST_TYPE', 'PLND_STRICT',
     'PLND_ALT_MIN', 'PLND_YAW_ALIGN',
-    'RNGFND1_TYPE', 'RNGFND1_MIN_CM', 'RNGFND1_MAX_CM', 'RNGFND1_GNDCLEAR',
-    'SURFTRAK_MODE', 'TERRAIN_ENABLE', 'WPNAV_RFND_USE', 'ARMING_CHECK',
+    'RNGFND1_TYPE', 'RNGFND1_MIN', 'RNGFND1_MAX', 'RNGFND1_GNDCLR',
+    'SURFTRAK_MODE', 'TERRAIN_ENABLE', 'WP_RFND_USE',
     'DISARM_DELAY', 'FS_THR_ENABLE',
     # CUAV X7+ without a hardware safety switch (config/nova_flight.parm).
     'BRD_SAFETY_DEFLT', 'BRD_SAFETYOPTION',
@@ -75,8 +76,8 @@ PARAMS_OF_RECORD = (
     # DUPA zbor, cand modularea a restaurat deja originalele - deci valorile
     # din manifest trebuie sa fie cele nominale. Daca nu sunt, restaurarea a
     # esuat si se vede aici, negru pe alb.
-    'PSC_POSXY_P', 'PSC_VELXY_D', 'WPNAV_ACCEL', 'WPNAV_SPEED_DN',
-    'LAND_SPEED', 'PLND_LAG',
+    'PSC_NE_POS_P', 'PSC_NE_VEL_D', 'WP_ACC', 'WP_SPD_DN', 'LAND_SPD_MS',
+    'PLND_LAG',
     # Neatins de noi, deliberat (nova/authority.py: FORBIDDEN). Inregistrat
     # tocmai ca sa se poata dovedi ca nu l-am schimbat.
     'PSC_ANGLE_MAX',

@@ -694,10 +694,10 @@ def test_G4_totul_trece_da_zero():
 
 
 def test_preflightul_de_cursa_verifica_fisierul_firmware_ului():
-    """Modul de cursa trimitea preflight-ului config/nova_flight.parm (4.7+)
-    fix, desi placa ruleaza 4.5.7 si config/nova.json cere
-    nova_flight_4.5.parm: numele diferite ar fi picat preflight-ul, sau
-    ar fi verificat alt set decat cel scris pe FC."""
+    """Modul de cursa nu fixeaza fisierul de parametri: il ia preflight-ul
+    din config/nova.json (`flight_parm`). Placa ruleaza ArduCopter 4.7.1 si
+    codul tinteste doar 4.7.1 (04.10.2026): fisierul e config/nova_flight.parm,
+    singurul. Negativ: un `flight_parm` gresit in config se vede in alegere."""
     import argparse
     import nova_pi
     import preflight_check as pf
@@ -717,8 +717,13 @@ def test_preflightul_de_cursa_verifica_fisierul_firmware_ului():
     from nova import config as nova_config
     cfg = nova_config.load(None)
     ales = nova_config.resolve(cfg, 'flight_parm')
-    assert ales.endswith('nova_flight_4.5.parm'), ales
-    return "parm None -> flight_parm din config: nova_flight_4.5.parm"
+    assert ales.endswith(os.path.join('config', 'nova_flight.parm')), ales
+    assert os.path.exists(ales), ales
+    rau = dict(cfg, flight_parm='config/nova_flight_4.5.parm')
+    ales_rau = nova_config.resolve(rau, 'flight_parm')
+    assert ales_rau.endswith('nova_flight_4.5.parm') and \
+        not os.path.exists(ales_rau), ales_rau
+    return "parm None -> flight_parm din config: nova_flight.parm (4.7.1)"
 
 
 def test_preflight_fara_venv_nu_eticheteaza_apt_ca_venv():
@@ -943,7 +948,8 @@ def test_G4_parametrii_de_zbor():
 
     # Numele care ne-au costat deja o data (§5.4/§5.10).
     assert 'WP_RFND_USE' in f and 'WPNAV_RFND_USE' not in f
-    assert f['ARMING_SKIPCHK'] == 32768.0
+    # arming checks: set by hand by the team (user decision, 04.10.2026)
+    assert not [n for n in f if n.startswith('ARMING')], f
 
     # FLTMODE_* depinde de emitator: mai bine lipsa decat inventat.
     assert not any(n.startswith('FLTMODE') for n in f), (
@@ -959,19 +965,19 @@ def test_preflight_numeste_parametrul_nepotrivit():
     si atat. Numele parametrului era in iesirea lui check_params.py, dar
     preflight-ul pastra doar linia de rezumat."""
     import preflight_check as pf
-    iesire = """[check_params] 28 parametri din config/nova_flight_4.5.parm
+    iesire = """[check_params] 28 parametri din config/nova_flight.parm
   PLND_ENABLED         cerut 0          citit 1            NU SE POTRIVESTE
-  WPNAV_ACCEL          cerut 150        citit -            LIPSESTE  <-- numele nu exista pe acest firmware
+  WP_ACC               cerut 1.5        citit -            LIPSESTE  <-- numele nu exista pe acest firmware
 
   27 ok | 1 nepotriviri | 1 inexistenti
 
   VALORI DIFERITE DE CE AM CERUT:
-    config/nova_flight_4.5.parm:41  PLND_ENABLED: cerut 0, FC raporteaza 1
+    config/nova_flight.parm:41  PLND_ENABLED: cerut 0, FC raporteaza 1
 """
     r = pf.rezumat_parametri(iesire)
     assert r.startswith('27 ok | 1 nepotriviri'), r
     assert 'PLND_ENABLED cerut 0 citit 1' in r, r
-    assert 'WPNAV_ACCEL lipseste' in r, r
+    assert 'WP_ACC lipseste' in r, r
     # fara diferente, rezumatul ramane cel vechi
     assert pf.rezumat_parametri("\n  28 ok | 0 nepotriviri | 0 inexistenti\n") \
         == '28 ok | 0 nepotriviri | 0 inexistenti'
@@ -1142,90 +1148,81 @@ def test_rotatia_de_montaj_ajunge_doar_pe_vehicul():
     return f"{len(pe_vehicul)} locuri pe vehicul, {len(in_simulare)} offline"
 
 
-def test_parametrii_pentru_4_5_sunt_traducerea_corecta():
-    """Placa ruleaza ArduCopter 4.5.7; nova_flight.parm e scris pentru 4.7+.
+#: The unit-sensitive names of config/nova_flight.parm and the plausible
+#: range of each in its Copter-4.7.1 unit (the pre-4.7 cm values - 5, 3000,
+#: 7, 150, 50 - are all outside).
+UNITATI_SI = {
+    'RNGFND1_MIN': (0.0, 1.0),      # m (AP_RangeFinder_Params.cpp:101-107)
+    'RNGFND1_MAX': (1.0, 100.0),    # m (:109-115)
+    'RNGFND1_GNDCLR': (0.05, 1.5),  # m, @Range 0.05 1.5 (:142-149)
+    'WP_ACC': (0.5, 5.0),           # m/s/s, @Range (AC_WPNav.cpp:85-92)
+    'WP_SPD': (0.1, 20.0),          # m/s, @Range (AC_WPNav.cpp:49-56)
+    'WP_SPD_DN': (0.1, 10.0),       # m/s, @Range (AC_WPNav.cpp:76-83)
+    'LAND_SPD_MS': (0.3, 2.0),      # m/s, @Range (mode_land.cpp:6-13)
+    'PLND_ALT_MIN': (0.0, 5.0),     # m, @Range (AC_PrecLand.cpp:164-169)
+}
 
-    `config/nova_flight_4.5.parm` e GENERAT de tools/make_parm_45.py. Testul
-    verifica trei lucruri, fiecare cu un mod de esec care nu da eroare
-    nicaieri:
 
-    1. fisierul e la zi cu sursa - editat de mana sau uitat la o schimbare,
-       placa ar zbura alta configuratie decat cea descrisa;
-    2. unitatile: WP_ACC 1.5 m/s/s copiat ca WPNAV_ACCEL 1.5 ar insemna
-       1.5 cm/s/s, practic zero corectie laterala;
-    3. ARMING_CHECK NU e in fisier: decizia echipei (24.09.2026), masca o
-       seteaza ei de mana. Cu el inclus, preflight-ul pica si `--write` ar
-       suprascrie valoarea lor. Omis explicit, cu motivul scris in fisier.
-    Primele doua ar trece orice audit pe valoare (§5.10)."""
-    import make_parm_45 as mp
+def unitati_gresite(valori):
+    """Names of UNITATI_SI whose value is missing or outside its SI range."""
+    return sorted(n for n, (lo, hi) in UNITATI_SI.items()
+                  if n not in valori or not lo <= valori[n] <= hi)
 
-    assert open(mp.TINTA).read() == mp.genereaza(), (
-        "config/nova_flight_4.5.parm nu corespunde sursei. Ruleaza: "
-        "python3 tools/make_parm_45.py")
 
-    sursa = dict(mp.citeste(mp.SURSA))
-    gen = dict(mp.citeste(mp.TINTA))
+def test_un_singur_fisier_de_parametri_pentru_4_7_1():
+    """The board (CUAV X7+) runs ArduCopter 4.7.1 and the code targets
+    4.7.1 ONLY (user decision, 04.10.2026). config/nova_flight.parm is the
+    one parm file, loaded as it is; the generated 4.5 file and its
+    generator are gone. Its units are the 4.7.1 ones: a cm value under a
+    4.7 name (WP_ACC 150 for 1.5 m/s/s) would pass any name check and fly
+    100x too hard. Arming checks are not in it: the team's, set by hand.
+    Negative: the old cm values are caught by the unit check."""
+    for vechi in ('config/nova_flight_4.5.parm', 'tools/make_parm_45.py'):
+        assert not os.path.exists(os.path.join(REPO, vechi)), vechi
+    flight = os.path.join(REPO, 'config', 'nova_flight.parm')
+    f = {n: v for n, v, _ in parse_parm(flight)}
+    assert unitati_gresite(f) == [], unitati_gresite(f)
+    assert f['WP_ACC'] == 1.5 and f['WP_SPD_DN'] == 0.5 and \
+        f['LAND_SPD_MS'] == 0.5 and f['RNGFND1_GNDCLR'] == 0.0745
+    assert not [n for n in f if n.startswith('ARMING')], f
 
-    assert gen['WPNAV_ACCEL'] == sursa['WP_ACC'] * 100, (
-        f"WPNAV_ACCEL {gen['WPNAV_ACCEL']} cm/s/s pentru WP_ACC "
-        f"{sursa['WP_ACC']} m/s/s")
-    assert 50 <= gen['WPNAV_ACCEL'] <= 500, "in afara plajei de pe 4.5.7"
-    assert gen['RNGFND1_MIN_CM'] == sursa['RNGFND1_MIN'] * 100
-    assert gen['RNGFND1_MAX_CM'] == sursa['RNGFND1_MAX'] * 100
-    assert abs(gen['RNGFND1_GNDCLEAR'] - sursa['RNGFND1_GNDCLR'] * 100) <= 0.5
-    assert gen['WPNAV_RFND_USE'] == sursa['WP_RFND_USE']
+    # NEGATIVE: the 4.5.7 file's cm numbers under the 4.7 names
+    rau = dict(f, RNGFND1_MIN=5, RNGFND1_GNDCLR=7, WP_ACC=150, WP_SPD_DN=50,
+               LAND_SPD_MS=50)
+    assert unitati_gresite(rau) == ['LAND_SPD_MS', 'RNGFND1_GNDCLR',
+                                    'RNGFND1_MIN', 'WP_ACC', 'WP_SPD_DN'], (
+        unitati_gresite(rau))
 
-    assert 'ARMING_CHECK' not in gen, (
-        "ARMING_CHECK in fisierul pentru 4.5: echipa il seteaza de mana")
-    assert 'ARMING_SKIPCHK' in mp.OMISI
-    text = open(mp.TINTA).read()
-    assert 'OMIS aici' in text and 'bitul 15' in text, (
-        "omisiunea trebuie scrisa in fisier, cu bitul care conteaza")
-
-    # niciun nume care exista doar pe 4.7+
-    for doar_47 in ('WP_ACC', 'WP_RFND_USE', 'ARMING_SKIPCHK',
-                    'RNGFND1_MIN', 'RNGFND1_MAX', 'RNGFND1_GNDCLR'):
-        assert doar_47 not in gen, f"{doar_47} nu exista pe 4.5.7"
-
-    # restul identic
-    for nume, v in sursa.items():
-        if nume not in mp.REDENUMIRI and nume not in mp.OMISI:
-            assert gen.get(nume) == v, f"{nume}: {gen.get(nume)} vs {v}"
-
-    # si preflight-ul verifica fisierul care corespunde placii
+    # config/nova.json, check_params and preflight all point at that file
+    import check_params as cp
+    import preflight_check as pf
     from nova import config as nova_config
     cfg = nova_config.load()
-    assert nova_config.resolve(cfg, 'flight_parm').endswith(
-        'nova_flight_4.5.parm'), (
-        "config/nova.json nu indica fisierul pentru 4.5.7, dar placa "
-        "ruleaza 4.5.7 - preflight-ul ar pica pe nume inexistente")
-    return (f"WPNAV_ACCEL {gen['WPNAV_ACCEL']:.0f}, ARMING_CHECK omis, "
-            f"{len(gen)} parametri, la zi cu sursa")
+    for cale in (nova_config.resolve(cfg, 'flight_parm'), cp.DEFAULT_PARM,
+                 pf.FLIGHT_PARM):
+        assert os.path.samefile(cale, flight), cale
+    return (f"WP_ACC {f['WP_ACC']:g} m/s/s, WP_SPD_DN {f['WP_SPD_DN']:g} m/s, "
+            f"{len(f)} parametri, unitati 4.7.1; valorile cm -> prinse")
 
 
-def test_bitii_de_armare_sunt_cei_din_ArduPilot():
-    """Tabela care descompune masca in check_params.py avea bitii 12-14
-    decalati: bitul 12 aparea ca "hardware de siguranta". E GPS_CONFIG - chiar
-    bitul stins pe vehicul, deci ieșirea descria gresit exact schimbarea
-    care conta. Valorile de mai jos sunt din AP_Arming.h (enum Check),
-    identice pe Copter-4.5.7 si pe 4.8-dev."""
+def test_check_params_nu_descrie_armarea():
+    """Arming checks are the team's, set by hand (user decision,
+    04.10.2026: "incearca sa omiti tot ce tine de arming checks"). The tool
+    no longer carries a table of arming bits, does not describe the mask,
+    and treats ARMING_CHECK / ARMING_SKIPCHK as hand-set (never written,
+    never compared - tools/test_params_x7.py checks that on a fake FC)."""
     import check_params as cp
-    din_sursa = {11: 'SWITCH', 12: 'GPS_CONFIG', 13: 'SYSTEM', 14: 'MISSION',
-                 15: 'RANGEFINDER', 16: 'CAMERA'}
-    asteptat = {11: 'comutator de siguranta', 12: 'GPS config',
-                13: 'sistem', 14: 'misiune', 15: 'rangefinder', 16: 'camera'}
-    for bit in din_sursa:
-        assert cp.BITI_ARMARE[bit] == asteptat[bit], (
-            f"bitul {bit} ({din_sursa[bit]}): {cp.BITI_ARMARE[bit]!r}")
-    assert cp.BITMASKS['ARMING_CHECK'] is cp.BITI_ARMARE
-    # the 4.7+ inverse mask is not described any more: the board runs 4.5.7
-    # and no tool run against it carries a 4.7+ name (test_params_x7.py)
-    assert 'ARMING_SKIPCHK' not in cp.BITMASKS
-    # valoarea de pe vehicul: masca generata inainte, fara bitul 12
-    d = cp.describe_mask('ARMING_CHECK', 1011198)
-    stinse = d.split('STINS  :')[1]
-    assert '12:GPS config' in stinse and '15:rangefinder' in stinse, d
-    return "11-16 ca in AP_Arming.h; 1011198 = GPS config si rangefinder stinse"
+    assert not hasattr(cp, 'BITI_ARMARE')
+    assert not [n for n in cp.BITMASKS if n.startswith('ARMING')]
+    assert cp.is_hand_set('ARMING_CHECK') and cp.is_hand_set('ARMING_SKIPCHK')
+    # NEGATIVE: asking for the description of an arming mask fails loudly
+    for n in ('ARMING_CHECK', 'ARMING_SKIPCHK'):
+        try:
+            cp.describe_mask(n, 32768)
+            raise AssertionError(f"{n} inca descris")
+        except KeyError:
+            pass
+    return "fara tabela de biti; ARMING_CHECK / ARMING_SKIPCHK setati de mana"
 
 
 class _FCFals:
@@ -1279,39 +1276,42 @@ class _FCFals:
 def test_scrierea_pe_nume_ocoleste_filtrul_din_mission_planner():
     """Mission Planner a raportat 9 parametri lipsa: PLND_* si RNGFND1_*,
     ascunsi din LISTA cat timp PLND_ENABLED / RNGFND1_TYPE sunt 0. FC-ul ii
-    accepta insa PE NUME oricand (verificat pe Copter-4.5.7). `--write`
-    scrie pe nume si citeste inapoi fiecare valoare.
+    accepta insa PE NUME oricand (verificat pe Copter-4.7.1,
+    GCS_Param.cpp:279). `--write` scrie pe nume si citeste inapoi fiecare
+    valoare.
 
     Trei cazuri, fiecare cu modul lui de esec tacut:
       - un parametru ascuns se scrie si se confirma;
-      - un nume inexistent pe firmware (WP_ACC pe 4.5.7) e raportat ESEC, nu
-        "scris" - PARAM_SET pe el nu da nicio eroare (§5.10);
+      - un nume inexistent pe firmware (WPNAV_ACCEL, pre-4.7, pe 4.7.1) e
+        raportat ESEC, nu "scris" - PARAM_SET pe el nu da nicio eroare
+        (§5.10);
       - cu vehiculul armat, nu se scrie nimic."""
     import check_params as cp
 
     wanted = [('PLND_TYPE', 1.0, 1), ('PLND_ALT_MIN', 0.35, 2),
-              ('RNGFND1_MIN_CM', 5.0, 3), ('FS_THR_ENABLE', 1.0, 4)]
+              ('RNGFND1_MIN', 0.05, 3), ('FS_THR_ENABLE', 1.0, 4)]
     # PLND_* exista (pe nume), doar ca au valori de fabrica
     fc = _FCFals({'PLND_TYPE': 0.0, 'PLND_ALT_MIN': 0.75,
-                  'RNGFND1_MIN_CM': 20.0, 'FS_THR_ENABLE': 1.0})
+                  'RNGFND1_MIN': 0.2, 'FS_THR_ENABLE': 1.0})
     rez = cp.write_params(fc, wanted)
     for n, w, g in rez:
         assert g is not None and cp.close_enough(w, g), (n, w, g)
     assert 'FS_THR_ENABLE' not in fc.scrieri, (
         "a rescris un parametru deja corect")
-    assert set(fc.scrieri) == {'PLND_TYPE', 'PLND_ALT_MIN', 'RNGFND1_MIN_CM'}
+    assert set(fc.scrieri) == {'PLND_TYPE', 'PLND_ALT_MIN', 'RNGFND1_MIN'}
 
-    # nume de 4.7 pe o placa 4.5.7: tacere, deci ESEC, nu succes
-    fc2 = _FCFals({'WPNAV_ACCEL': 250.0})
-    rez2 = cp.write_params(fc2, [('WP_ACC', 1.5, 1)])
+    # nume pre-4.7 pe o placa 4.7.1: tacere, deci ESEC, nu succes
+    fc2 = _FCFals({'WP_ACC': 2.5})
+    rez2 = cp.write_params(fc2, [('WPNAV_ACCEL', 150.0, 1)])
     assert rez2[0][2] is None, (
-        "WP_ACC raportat ca scris pe o placa unde nu exista")
+        "WPNAV_ACCEL raportat ca scris pe o placa unde nu exista")
+    assert fc2.p == {'WP_ACC': 2.5}
 
     # armat: refuz
     assert cp.is_armed(_FCFals({}, armat=True)) is True
     assert cp.is_armed(_FCFals({}, armat=False)) is False
     return (f"{len(fc.scrieri)} ascunsi scrisi pe nume si confirmati; "
-            f"nume de 4.7 -> ESEC; armat -> refuz")
+            f"nume pre-4.7 -> ESEC; armat -> refuz")
 
 
 def test_pragul_de_calibrare_are_o_singura_sursa():
@@ -1863,8 +1863,8 @@ def test_setup_uart_cauta_ambele_directoare_de_boot():
 
 
 def test_parametrii_de_telemetrie_sunt_in_fisierul_de_zbor():
-    """TELEM2 pe CUAV X7+ = SERIAL2 (Copter-4.5.7 CUAV-X7/hwdef.dat:24,
-    :144 "USART6 is telem2"), verificat in hwdef, nu presupus.
+    """TELEM2 pe CUAV X7+ = SERIAL2 (Copter-4.7.1 CUAV-X7/hwdef.dat:22,
+    :141 "USART6 is telem2"), verificat in hwdef, nu presupus.
 
     Si controlul de flux se pune pe 0 EXPLICIT: implicitul pe ChibiOS e 2
     (Auto), iar auto-detectia cu RTS/CTS nelegate depinde de ce se intampla
@@ -1882,9 +1882,9 @@ def test_parametrii_de_telemetrie_sunt_in_fisierul_de_zbor():
     assert valori.get('SERIAL2_PROTOCOL') == '2', (
         f"SERIAL2_PROTOCOL trebuie 2 (MAVLink2): {valori.get('SERIAL2_PROTOCOL')}")
     # SERIALx_BAUD / SERIALx_OPTIONS are set by hand by the team (user
-    # decision, 02.10.2026): in NEITHER parm file.
+    # decision, 02.10.2026): not in the parm file (one file since 04.10.2026).
     import re as _re
-    for nume_fisier in ('nova_flight.parm', 'nova_flight_4.5.parm'):
+    for nume_fisier in ('nova_flight.parm',):
         nume = [n for n, _, _ in parse_parm(
             os.path.join(REPO, 'config', nume_fisier))]
         de_mana = [n for n in nume
@@ -2228,8 +2228,8 @@ TESTS = [
      test_fereastra_de_bord_chiar_primeste_cadre),
     ('rotatia de montaj ajunge doar pe vehicul',
      test_rotatia_de_montaj_ajunge_doar_pe_vehicul),
-    ('parametrii pentru 4.5 sunt traducerea corecta',
-     test_parametrii_pentru_4_5_sunt_traducerea_corecta),
+    ('un singur fisier de parametri, pentru 4.7.1',
+     test_un_singur_fisier_de_parametri_pentru_4_7_1),
     ('scrierea pe nume ocoleste filtrul din Mission Planner',
      test_scrierea_pe_nume_ocoleste_filtrul_din_mission_planner),
     ('pragul de calibrare are o singura sursa',
@@ -2300,8 +2300,8 @@ TESTS = [
     ('G4: codul de iesire ca poarta', test_G4_codul_de_iesire_ca_poarta),
     ('preflight numeste parametrul nepotrivit',
      test_preflight_numeste_parametrul_nepotrivit),
-    ('bitii de armare sunt cei din ArduPilot',
-     test_bitii_de_armare_sunt_cei_din_ArduPilot),
+    ('check_params nu descrie armarea',
+     test_check_params_nu_descrie_armarea),
     ('autostart zbor doar explicit si cu E0',
      test_autostart_zbor_doar_explicit_si_cu_E0),
     ('motivele de monitor incap in STATUSTEXT',

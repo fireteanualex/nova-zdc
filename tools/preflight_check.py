@@ -35,11 +35,12 @@ Ce verifica, si de ce fiecare:
               caute, detectia moare exact in coborare.
   mavlink     heartbeat de la FC pe /dev/serial0.
   parametri   tools/check_params.py pe fisierul din config/nova.json
-              (`flight_parm`, azi config/nova_flight_4.5.parm), adica §5.10
-              ca pas obligatoriu, nu ca sugestie. On the CUAV X7+ this
-              includes BRD_SAFETY_DEFLT 0 / BRD_SAFETYOPTION 0 (no hardware
-              safety switch); SERIALx_BAUD / SERIALx_OPTIONS are hand-set and
-              ignored by check_params (HAND_SET), not checked here either.
+              (`flight_parm`, config/nova_flight.parm: ArduCopter 4.7.1, the
+              firmware of the CUAV X7+), adica §5.10 ca pas obligatoriu, nu
+              ca sugestie. On the CUAV X7+ this includes BRD_SAFETY_DEFLT 0 /
+              BRD_SAFETYOPTION 0 (no hardware safety switch); SERIALx_BAUD /
+              SERIALx_OPTIONS and the arming checks are hand-set and ignored
+              by check_params (HAND_SET), not checked here either.
 
 Verificarile care nu au ce cauta aici: orice armeaza, misca sau comanda
 ceva. Preflight-ul citeste.
@@ -65,8 +66,8 @@ from nova_service import StartupRefusal, check_calibration   # noqa: E402
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: Default only for a direct check_params() call; run_checks() takes the
-#: file from config/nova.json (`flight_parm`). The board runs 4.5.7.
-FLIGHT_PARM = os.path.join(REPO_ROOT, 'config', 'nova_flight_4.5.parm')
+#: file from config/nova.json (`flight_parm`). The board runs 4.7.1.
+FLIGHT_PARM = os.path.join(REPO_ROOT, 'config', 'nova_flight.parm')
 
 #: Camera: cate cadre masuram si cat de mult poate scadea rata.
 #: 0.80 x 30 = 24 fps. Sub asta, bucla de detectie nu mai tine pasul cu

@@ -19,14 +19,14 @@
   "_camera_rotation_verificat": "25.09.2026, cu poza (pi/poza.sh): markerul pus in fata nasului apare pe marginea STANGA a imaginii brute, deci imaginea se roteste 270 spre stanga (= 90 spre dreapta) ca nasul sa ajunga sus. Valoarea veche, 90, avea axele inversate cu 180 - corectiile de aterizare ar fi impins drona EXACT INVERS.",
   "camera_rotation_deg": 270,
 
-  "_flight_parm": "Fisierul de parametri care corespunde firmware-ului de pe FC. Placa ruleaza ArduCopter 4.5.7, unde trei nume si doua unitati difera de 4.7+ (CLAUDE.md §5.4). Daca urci firmware-ul la 4.7.0, schimba in config/nova_flight.parm.",
-  "flight_parm": "config/nova_flight_4.5.parm",
+  "_flight_parm": "Fisierul de parametri verificat de preflight (check_params). Placa (CUAV X7+) ruleaza ArduCopter 4.7.1, iar codul tinteste DOAR 4.7.1 (decizia din 04.10.2026): config/nova_flight.parm, cu nume si unitati verificate in tag-ul Copter-4.7.1. Nu mai exista o varianta pentru 4.5.x.",
+  "flight_parm": "config/nova_flight.parm",
 
   "_aux_channel": "Canalul RC pe care pilotul cere segmentul autonom, pe frontul crescator. Comutator cu 2 pozitii pe canalul 8: sus (peste aux_high_pwm) = cerere de handover. Il citesc si pornirea automata, si proba de coborare. RC8_OPTION trebuie sa fie 0 pe FC.",
   "aux_channel": 8,
   "aux_high_pwm": 1500,
 
-  "_guidance": "Ce ghidare zboara bordul (reproiectarea din 27.09.2026, claude-markdown/REPROIECTARE_EXTNAV.md): 'extnav' = camera devine sursa de pozitie a EKF3 (VISION_POSITION_ESTIMATE, markerul = origine), GUIDED in trepte h/2 pana la 1 m, apoi LAND vertical; PLND ramane 0, nu se trimit LANDING_TARGET / DISTANCE_SENSOR. 'plnd' = calea veche (LAND + precision landing), pastrata pentru un zbor de comparatie. Cere parametrii din config/nova_flight_4.5.parm (VISO_TYPE 1 cu REBOOT, EK3_SRC2_POSXY 6, EK3_SRC_OPTIONS 0).",
+  "_guidance": "Ce ghidare zboara bordul (reproiectarea din 27.09.2026, claude-markdown/REPROIECTARE_EXTNAV.md): 'extnav' = camera devine sursa de pozitie a EKF3 (VISION_POSITION_ESTIMATE, markerul = origine), GUIDED in trepte h/2 pana la 1 m, apoi LAND vertical; PLND ramane 0, nu se trimit LANDING_TARGET / DISTANCE_SENSOR. 'plnd' = calea veche (LAND + precision landing), pastrata pentru un zbor de comparatie. Cere parametrii din config/nova_flight.parm, ArduCopter 4.7.1 (VISO_TYPE 1 cu REBOOT, EK3_SRC2_POSXY 6, EK3_SRC_OPTIONS 0).",
   "guidance": "extnav",
 
   "_handover_alt": "Fereastra de altitudine in care poarta accepta handover-ul, m, pe ambele ghidari (02.10.2026). Regulile 15.1.2 / 15.2.3 cer activarea la 5-20 m; minimul de 4.0 m e o abatere DELIBERATA a echipei. handover_alt_min 0 = fara minim (AVERTISMENT la pornire); maximul <= minimul sau o valoare negativa = pornire refuzata. Inlocuieste cheia veche handover_alt_min_m (inca citita, cu avertisment, daca lipseste cea noua). Plafonul de 30 m al supervizorului (ceiling_agl_m) e independent de maxim. Pe extnav estimatorul refuza oricum sub 0.3 m.",

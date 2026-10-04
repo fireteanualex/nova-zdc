@@ -219,7 +219,7 @@ YAW_SEARCH_RESET_WAIT_S = 1.0
 YAW_SEARCH_RESET_CAP_S = EKF_NO_VISION_VALID_S - 1.0
 #: The team's limits (startup refused above): 180 deg (more gains nothing -
 #: 90 already sweeps the long axis through every direction), 60 deg/s (the
-#: FC's ATC_SLEW_YAW 6000 cd/s). Above 30 deg/s the detection is untested.
+#: FC's ATC_RATE_WPY_MAX 60 deg/s on 4.7.1). Above 30 deg/s the detection is untested.
 YAW_SEARCH_MAX_DEG_LIMIT = 180.0
 YAW_SEARCH_RATE_LIMIT_DPS = 60.0
 YAW_SEARCH_RATE_TESTED_DPS = 30.0

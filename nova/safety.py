@@ -72,8 +72,8 @@ CEILING_AGL_M = 30.0
 CEILING_CONFIRM_N = 3
 
 #: Rata de coborare peste care ceva e in neregula. Coborarea normala e
-#: limitata de LAND_SPEED (0.5 m/s) si WPNAV_SPEED_DN (ArduCopter 4.5.7 names;
-#: LAND_SPD_MS / WP_SPD_DN are the 4.7+ ones); 2.0 m/s inseamna ca nu mai
+#: limitata de LAND_SPD_MS (0.5 m/s) si WP_SPD_DN (ArduCopter 4.7.1 names);
+#: 2.0 m/s inseamna ca nu mai
 #: comanda controlerul de aterizare. PROVIZORIU.
 MAX_DESCENT_RATE_MS = 2.0
 DESCENT_RATE_HOLD_S = 0.5
@@ -720,8 +720,8 @@ class SafetySupervisor:
         """Coborare mai rapida decat poate comanda controlerul de aterizare.
 
         Singura parghie a unui companion e schimbarea de mod; limitarea
-        propriu-zisa a vitezei sta in FC (LAND_SPEED, WPNAV_SPEED_DN on the
-        4.5.7 board; LAND_SPD_MS / WP_SPD_DN on 4.7+). Aici doar
+        propriu-zisa a vitezei sta in FC (LAND_SPD_MS, WP_SPD_DN on the
+        4.7.1 board). Aici doar
         oprim coborarea."""
         if phase not in self.autonomous_phases:
             self._descent_since = None
@@ -806,7 +806,7 @@ EXTNAV_ENGAGED_PHASES = ('MOVE', 'CENTER_CHECK', 'DESCEND', 'FINAL_ALIGN',
 #: geometry phase (MOVE), see ExtNavSupervisor.update.
 EXTNAV_SEARCH_PHASES = ('YAW_SEARCH',)
 EXTNAV_EKF_PHASES = EXTNAV_SEARCH_PHASES + EXTNAV_ENGAGED_PHASES
-#: The climb back to alt_riseup: GUIDED takeoff climbs at WPNAV_SPEED_UP
+#: The climb back to alt_riseup: GUIDED takeoff climbs at WP_SPD_UP
 #: (2.5 m/s by default, not set in our parameter files). Faster than this,
 #: sustained, is not the takeoff controller any more -> EXIT.
 CLIMB_PHASES = ('RISEUP', 'HOVER_CONFIRM')

@@ -856,7 +856,9 @@ def test_fara_fence_nicaieri_pe_vehicul():
             if tipar.search(linie):
                 rele.append(f"{os.path.relpath(f, REPO)}:{i}: {linie.strip()}")
     assert not rele, rele
-    assert len([f for f in fisiere if f.endswith('.parm')]) == 2
+    # one parm file since 04.10.2026: config/nova_flight.parm (4.7.1 only)
+    assert [os.path.basename(f) for f in fisiere if f.endswith('.parm')] == \
+        ['nova_flight.parm']
     for injectat in ('FENCE_ENABLE,1', "v.set_param('FENCE_ALT_MAX', 30)",
                      'MAV_CMD_DO_FENCE_ENABLE', 'mavlink.MAV_MISSION_TYPE_FENCE'):
         assert tipar.search(injectat), injectat

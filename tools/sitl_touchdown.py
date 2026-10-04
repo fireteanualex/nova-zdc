@@ -4,7 +4,7 @@ NOVA - ZDC 2026
 The complete touchdown sequence in SITL ArduCopter 4.5.7, with OUR code,
 checked on the DataFlash log (PROMPT_CLAUDE_CODE_TOUCHDOWN, point 6).
 
-    python3 tools/sitl_touchdown.py --sitl ~/ardupilot-4.5.7/build/sitl/bin/arducopter
+    python3 tools/sitl_touchdown.py --sitl ~/ardupilot-4.7.1/build/sitl/bin/arducopter
 
 What runs:
 - SITL Copter-4.5.7 (quad '+'), our ExtNav parameters (SRC2 = vision
@@ -93,10 +93,10 @@ EXTRA_PARAMS = """
 DISARM_DELAY 20
 PILOT_THR_BHV 0
 FS_THR_ENABLE 1
-WPNAV_ACCEL 150
-WPNAV_SPEED 100
-WPNAV_SPEED_DN 50
-LAND_SPEED 50
+WP_ACC 1.5
+WP_SPD 1.0
+WP_SPD_DN 0.5
+LAND_SPD_MS 0.5
 EK3_SRC2_POSXY 6
 EK3_SRC2_VELXY 0
 EK3_SRC2_POSZ 1
@@ -597,7 +597,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--sitl', default=os.path.expanduser(
-        '~/ardupilot-4.5.7/build/sitl/bin/arducopter'))
+        '~/ardupilot-4.7.1/build/sitl/bin/arducopter'))
     p.add_argument('--instance', type=int, default=5)
     p.add_argument('--workdir', default=None)
     p.add_argument('--timeout', type=float, default=300.0)

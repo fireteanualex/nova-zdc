@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 NOVA - ZDC 2026
-Verifica prin CITIRE INAPOI ca fiecare parametru din config/nova_flight_4.5.parm
-exista si are valoarea ceruta.
+Verifica prin CITIRE INAPOI ca fiecare parametru din config/nova_flight.parm
+exista si are valoarea ceruta. The board (CUAV X7+) runs ArduCopter 4.7.1 and
+that file is written for 4.7.1 only.
 
 De ce exista unealta asta (vezi 5.10 din CLAUDE.md): ArduPilot accepta tacut
 PARAM_SET pe nume inexistente. Nu da eroare, nu da PARAM_VALUE, iar fisierul
@@ -20,27 +21,29 @@ dovada pentru Compliance Matrix.
 SCRIERE (--write): scrie fisierul PE NUME, cu citire inapoi pe fiecare.
 
     python3 tools/check_params.py --conn /dev/serial0 --baud 921600 \
-        --parm config/nova_flight_4.5.parm --write --reboot
+        --parm config/nova_flight.parm --write --reboot
 
 De ce nu prin Mission Planner. PLND_* si RNGFND1_* sunt ascunsi din LISTA
 de parametri cat timp PLND_ENABLED / RNGFND1_TYPE sunt 0
 (AP_PARAM_FLAG_ENABLE), iar Mission Planner scrie doar ce gaseste in lista
 pe care a descarcat-o: "No matching Params". Dar FC-ul accepta scrieri si
 citiri PE NUME oricand - AP_Param::find() nu tine cont de flag (verificat
-pe Copter-4.5.7, GCS_Param.cpp). Deci pe nume nu mai e nevoie de dansul
-activeaza-reporneste-incarca-dezactiveaza.
+pe Copter-4.7.1, GCS_Param.cpp:279 si :406). Deci pe nume nu mai e nevoie
+de dansul activeaza-reporneste-incarca-dezactiveaza.
 
 Dupa scriere FC-ul trebuie REPORNIT: driverul de telemetru si backend-ul de
 precision landing se creeaza o singura data, la boot, din RNGFND1_TYPE si
-PLND_TYPE (init_precland() pe 4.5.7). Fara repornire, un PLND_TYPE proaspat
-scris nu are niciun efect, iar LANDING_TARGET e ignorat fara niciun mesaj.
+PLND_TYPE (init_precland(), Copter-4.7.1 system.cpp:123). Fara repornire,
+un PLND_TYPE proaspat scris nu are niciun efect, iar LANDING_TARGET e
+ignorat fara niciun mesaj.
 On the CUAV X7+ the same holds for BRD_SAFETY_DEFLT (@RebootRequired,
-Copter-4.5.7 AP_BoardConfig.cpp:169): safety is only forced off at boot.
+Copter-4.7.1 AP_BoardConfig.cpp:186): safety is only forced off at boot.
 
-HAND-SET PARAMETERS. SERIALx_BAUD and SERIALx_OPTIONS are set by hand on the
-FC by the team (user decision, 02.10.2026). If such a name appears in a parm
-file anyway, it is neither written (--write) nor counted as a mismatch: it
-is listed as "setat de mana, ignorat". See HAND_SET.
+HAND-SET PARAMETERS. SERIALx_BAUD and SERIALx_OPTIONS (user decision,
+02.10.2026) and the arming-check masks ARMING_CHECK / ARMING_SKIPCHK (user
+decision, 04.10.2026) are set by hand on the FC by the team. If such a name
+appears in a parm file anyway, it is neither written (--write) nor counted
+as a mismatch: it is listed as "setat de mana, ignorat". See HAND_SET.
 """
 
 import argparse
@@ -53,7 +56,7 @@ from pymavlink import mavutil
 
 DEFAULT_PARM = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    'config', 'nova_flight_4.5.parm')
+    'config', 'nova_flight.parm')
 
 # Parametrii intregi se compara exact; cei reali au toleranta, pentru ca
 # float32 nu reprezinta exact 0.0745.
@@ -65,18 +68,9 @@ ABS_TOL = 1e-6
 # plafonul de altitudine cerut de 15.2.4. Pentru mastile de biti raportam
 # fiecare bit separat, cu ce inseamna - asa se vede ce am aprins si, mai
 # important, ce am stins.
-# Bitii verificarilor la armare, din AP_Arming.h (enum Check; identic pe
-# Copter-4.5.7 si pe 4.8-dev). Prima varianta avea 12-14 decalati: bitul 12
-# aparea ca "hardware de siguranta" cand e GPS_CONFIG - adica tocmai bitul
-# pe care echipa l-a stins pe vehicul, descris gresit.
-BITI_ARMARE = {
-    0: 'toate verificarile', 1: 'baro', 2: 'busola', 3: 'GPS',
-    4: 'INS', 5: 'parametri', 6: 'RC', 7: 'tensiune',
-    8: 'baterie', 9: 'airspeed', 10: 'logging',
-    11: 'comutator de siguranta', 12: 'GPS config', 13: 'sistem',
-    14: 'misiune', 15: 'rangefinder', 16: 'camera', 17: 'autorizare aux',
-    18: 'vizual', 19: 'FFT', 20: 'osd',
-}
+# The arming-check mask is NOT described here: arming checks are the team's,
+# set by hand (user decision, 04.10.2026), and this tool neither writes nor
+# compares them (HAND_SET).
 
 BITMASKS = {
     'FENCE_TYPE': {
@@ -84,11 +78,8 @@ BITMASKS = {
         1: 'cerc centrat pe HOME (FENCE_RADIUS)',
         2: 'cercuri/poligoane de incluziune-excluziune',
     },
-    # The 4.7+ inverse mask (ARMING_SKIPCHK) is no longer described here:
-    # the board runs 4.5.7, where it does not exist, and no tool that runs
-    # against the board may carry a 4.7+ name (tools/test_params_x7.py).
-    # Copter-4.5.7 AP_BoardConfig.cpp:234-239 (@Bitmask), enum in
-    # AP_BoardConfig.h:110-115. CUAV X7+ without a safety switch: ALL OFF
+    # Copter-4.7.1 AP_BoardConfig.cpp:282-287 (@Bitmask), enum in
+    # AP_BoardConfig.h:112-115. CUAV X7+ without a safety switch: ALL OFF
     # (config/nova_flight.parm). Bit 3 on = every disarm turns safety back
     # on and, without a button, the vehicle cannot re-arm.
     'BRD_SAFETYOPTION': {
@@ -103,17 +94,17 @@ BITMASKS = {
     'EK3_SRC_OPTIONS': {
         0: 'FuseAllVelocities: vitezele din toate seturile (GPS din 1 pe 2)',
     },
-    # 4.5/4.6: aceiasi biti, sens INVERS - aprins = verificarea se FACE
-    'ARMING_CHECK': BITI_ARMARE,
 }
 
 
-#: Parameters the team sets BY HAND on the FC (user decision, 02.10.2026):
-#: the serial port speed and options. Never written and never compared by
-#: this tool, whatever parm file it is given - a defensive guard, since the
-#: repo files no longer contain them (tools/test_params_x7.py checks both).
-#: The Pi opens the port at --baud (default 921600); the two must match.
-HAND_SET = re.compile(r'^SERIAL\d+_(BAUD|OPTIONS)$')
+#: Parameters the team sets BY HAND on the FC: the serial port speed and
+#: options (user decision, 02.10.2026) and the arming-check mask, under its
+#: 4.7 name and its pre-4.7 one (user decision, 04.10.2026: "omit everything
+#: about arming checks"). Never written and never compared by this tool,
+#: whatever parm file it is given - a defensive guard, since the repo files
+#: do not contain them (tools/test_params_x7.py checks both). The Pi opens
+#: the port at --baud (default 921600); the two must match.
+HAND_SET = re.compile(r'^(SERIAL\d+_(BAUD|OPTIONS)|ARMING_(CHECK|SKIPCHK))$')
 
 
 def is_hand_set(name):
@@ -307,8 +298,8 @@ def main():
             print(f"  ESEC  {n}: cerut {w:g}, citit "
                   f"{'-' if g is None else format(g, 'g')}")
         if esuate:
-            print("  Numele de mai sus nu exista pe acest firmware: verifica "
-                  "ca --parm corespunde versiunii (4.5 vs 4.7+).")
+            print("  Numele de mai sus nu exista pe acest firmware: fisierul "
+                  "e scris pentru ArduCopter 4.7.1, verifica versiunea FC-ului.")
             return 1
         if args.reboot:
             print("\n  Repornesc FC-ul: telemetrul, precision landing si "

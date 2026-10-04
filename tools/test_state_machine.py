@@ -61,9 +61,10 @@ class StubVehicle:
         self.params = {'RC1_TRIM': 1500, 'RC2_TRIM': 1500,
                        'RC3_TRIM': 1100, 'RC4_TRIM': 1500,
                        # valori nominale, pentru nova/authority.py
-                       'PSC_POSXY_P': 1.0, 'PSC_VELXY_D': 0.25,
-                       'WPNAV_ACCEL': 250.0, 'WPNAV_SPEED_DN': 50.0,
-                       'LAND_SPEED': 50.0, 'PLND_LAG': 0.02}
+                       # (Copter-4.7.1 names, SI units)
+                       'PSC_NE_POS_P': 1.0, 'PSC_NE_VEL_D': 0.25,
+                       'WP_ACC': 2.5, 'WP_SPD_DN': 0.5,
+                       'LAND_SPD_MS': 0.5, 'PLND_LAG': 0.02}
         #: Cand a fost vazut fiecare parametru - vezi Vehicle.params_t.
         self.params_t = {}
         #: Ceasul BUCLEI, nu cel de perete. Harness-ul il avanseaza la
@@ -764,8 +765,8 @@ def test_harness_ul_stampileaza_pe_ceasul_buclei():
     v, det, sm, sup, events, args = build_app()
     run_app(v, det, sm, sup, args, seconds=2.0)
     assert v.now >= 1000.0, f"harness-ul nu a avansat ceasul: {v.now}"
-    v.request_param('PSC_POSXY_P')
-    stampila = v.params_t['PSC_POSXY_P']
+    v.request_param('PSC_NE_POS_P')
+    stampila = v.params_t['PSC_NE_POS_P']
     assert stampila >= 1000.0, (
         f"params_t stampilat cu {stampila}, nu cu ceasul buclei")
     assert abs(stampila - _t.monotonic()) > 1.0 or _t.monotonic() > 1000.0, (
@@ -837,11 +838,12 @@ def test_autoritate_restaurata_dupa_override_in_cablajul_real():
         assert abs(v.params[nume] - orig) < 1e-6, (
             f"dupa override, {nume} = {v.params[nume]:g}, original {orig:g}")
     assert sched.restored is True, sched.status()
-    # si ANGLE_MAX nu a fost atins in tot ciclul
+    # si ATC_ANGLE_MAX nu a fost atins in tot ciclul (Copter-4.7.1 name)
     atinse = {n for n, _ in v.param_sets}
-    assert 'ANGLE_MAX' not in atinse and 'PSC_ANGLE_MAX' not in atinse, atinse
+    for interzis in ('ATC_ANGLE_MAX', 'PSC_ANGLE_MAX', 'ANGLE_MAX'):
+        assert interzis not in atinse, atinse
     return ("override la 3 m -> secventa oprita, toti parametrii inapoi la "
-            "original, ANGLE_MAX neatins")
+            "original, ATC_ANGLE_MAX neatins")
 
 
 def test_nicio_comanda_in_afara_segmentului_autonom():
