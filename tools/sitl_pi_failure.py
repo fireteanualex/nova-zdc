@@ -29,6 +29,23 @@ Invariants (pass/fail per run, see check_invariants):
   I3 no stale cmds  after SIGCONT / after a hang ends, the companion does not
                     put the FC back in GUIDED.
 
+  I4 ceiling path   when the companion reports an EXIT_RTL (rule 15.2.4 ceiling),
+                    SRC1 (EV 85) precedes the RTL mode change in the FC log and the
+                    vehicle ends landed within 2 m of home.
+  (I2 is strict for the pilot-takeover scenarios F6c / F2c / F8c / F8d / F10: ZERO
+  mode commands leave the companion, counted on the Vehicle._write tap, after the
+  pilot's request; the FC log's non-failsafe mode changes are checked as before.)
+
+Final-code wiring (e8988ea): the companion builds its camera BEFORE
+nova_pi.cablaj_extnav and passes fov_deg=camera.fov_deg - the same approach as
+sitl_touchdown.py (73 x 45.2 deg, short axis 45.2 -> h_cover = 6.5 / tan(22.6) =
+15.6 m). The detections of a synthetic camera exist only inside ITS field, so h_cover
+has to come from that field, not from the 96 x 64 deg of crop1280 in config/
+camera_pi.yaml (which would give ~29 m and a different 'auto' decision than the
+detections justify). The ceiling comes from config/nova.json through cablaj_extnav
+(30 m) and can be lowered for a run with --ceiling-m / --ceiling-when; the
+handover window 4-20 m is read from the config by cablaj_extnav itself.
+
 Declared plainly: a desktop run, idealised IMU, no wind, synthetic camera at
 ~30% of 10 fps from perfect truth. It proves the FC/companion protocol, not
 the detector, and not the real sensors.
@@ -105,6 +122,24 @@ SCENARIOS = collections.OrderedDict([
                  phases=['MOVE'])),
     ('F7', dict(desc='companion killed in GATE_SEARCH (AUX up, pilot still in LOITER on '
                      'set 1): the FC must just stay in the pilot LOITER', phases=['GATE_SEARCH'])),
+    ('F8a', dict(desc='YAW_SEARCH (marker outside the short-axis FOV): companion SIGKILL '
+                      'during the rotation', phases=['evt:yaw_search_rotate'])),
+    ('F8b', dict(desc='YAW_SEARCH: SIGSTOP --freeze-s (15) during the rotation, then SIGCONT',
+                 phases=['evt:yaw_search_rotate'])),
+    ('F8c', dict(desc='YAW_SEARCH: the pilot takes --pilot-mode at +--at-s s during the '
+                      'rotation, companion alive', phases=['evt:yaw_search_rotate'])),
+    ('F8d', dict(desc='YAW_SEARCH: main loop hangs --hang-s s during the rotation + the '
+                      'pilot takes --pilot-mode at +--at-s s DURING the hang',
+                 phases=['evt:yaw_search_rotate'])),
+    ('F9a', dict(desc='ceiling breach (ceiling lowered by the harness at --phase): '
+                      'EXIT_RTL, companion alive (I4)',
+                 phases=['MOVE', 'evt:yaw_search_rotate'])),
+    ('F9b', dict(desc='ceiling breach, companion SIGKILLed when SRC1 is acknowledged '
+                      '(evt exit_rtl_src1), before the RTL',
+                 phases=['evt:exit_rtl_src1'])),
+    ('F10', dict(desc='the pilot sets --pilot-mode (ALT_HOLD) the instant the companion '
+                      'reports ENGAGE, before its GUIDED (defect fixed in e8988ea)',
+                 phases=['ENGAGE'])),
     ('F6b', dict(desc='supervisor thread of the LIVING companion hangs --hang-s s',
                  phases=['MOVE'])),
 ])
@@ -155,6 +190,46 @@ def campaign_matrix():
     runs.append(('F6b_MOVE', ['--scenario', 'F6b', '--phase', 'MOVE', '--observe', '45']))
     runs.append(('F7_GATE_SEARCH', ['--scenario', 'F7', '--phase', 'GATE_SEARCH', '--observe', '30']))
     runs.append(('F0_baseline', ['--scenario', 'F0', '--observe', '10']))
+    # --- final code (e8988ea): F6c / F2c three times each, then F8 / F9 / F10 ---
+    for m in ('STABILIZE', 'ALT_HOLD'):
+        runs.append((f"F6c_{m}_r3", ['--scenario', 'F6c', '--phase', 'MOVE', '--pilot-mode', m,
+                                     '--at-s', '8', '--hang-s', '20', '--observe', '45',
+                                     '--seed', '3']))
+    runs.append(('F6c_ALT_HOLD_r2', ['--scenario', 'F6c', '--phase', 'MOVE', '--pilot-mode',
+                                     'ALT_HOLD', '--at-s', '8', '--hang-s', '20',
+                                     '--observe', '45', '--seed', '2']))
+    runs.append(('F2c_ALT_HOLD_r3', ['--scenario', 'F2c', '--phase', 'MOVE', '--pilot-mode',
+                                     'ALT_HOLD', '--at-s', '10', '--observe', '45',
+                                     '--seed', '3']))
+    rot = 'evt:yaw_search_rotate'
+    runs.append(('F8a_rot', ['--scenario', 'F8a', '--phase', rot, '--observe', '60']))
+    runs.append(('F8b_rot', ['--scenario', 'F8b', '--phase', rot, '--freeze-s', '15',
+                             '--observe', '60']))
+    runs.append(('F8c_rot_ALT_HOLD', ['--scenario', 'F8c', '--phase', rot, '--pilot-mode',
+                                      'ALT_HOLD', '--at-s', '0.5', '--observe', '45']))
+    runs.append(('F8d_rot_ALT_HOLD', ['--scenario', 'F8d', '--phase', rot, '--pilot-mode',
+                                      'ALT_HOLD', '--at-s', '8', '--hang-s', '20',
+                                      '--observe', '45']))
+    runs.append(('F9a_MOVE', ['--scenario', 'F9a', '--phase', 'MOVE', '--ceiling-m', '5.5',
+                              '--observe', '70']))
+    runs.append(('F9a_rot', ['--scenario', 'F9a', '--phase', rot, '--ceiling-m', '5.5',
+                             '--observe', '70']))
+    runs.append(('F9b_src1', ['--scenario', 'F9b', '--phase', 'evt:exit_rtl_src1',
+                              '--ceiling-m', '5.5', '--ceiling-when', 'MOVE',
+                              '--observe', '70']))
+    runs.append(('F10_ENGAGE', ['--scenario', 'F10', '--phase', 'ENGAGE', '--pilot-mode',
+                                'ALT_HOLD', '--observe', '30']))
+    runs.append(('F10_ENGAGE_d80', ['--scenario', 'F10', '--phase', 'ENGAGE', '--pilot-mode',
+                                    'ALT_HOLD', '--engage-delay-ms', '80', '--observe', '30']))
+    # second repetitions of the new scenarios (other seed)
+    rep = []
+    for rid, argv in list(runs):
+        if rid.startswith(('F8', 'F9', 'F10')) and not rid.endswith(('_r2', '_r3')):
+            rep.append((rid + '_r2', argv + ['--seed', '2']))
+    runs.extend(rep)
+    runs.append(('F9b_src1_r3', ['--scenario', 'F9b', '--phase', 'evt:exit_rtl_src1',
+                                 '--ceiling-m', '5.5', '--ceiling-when', 'MOVE',
+                                 '--observe', '70', '--seed', '3']))
     return runs
 
 
@@ -259,21 +334,48 @@ def companion_main(a):
     cfg = nova_config.load()
     ov = OverrideMonitor(vehicle)
     sm_ref = {}
+    seen_evt = set()
+    sup_box = {}
+    # the camera first: h_cover comes from ITS field of view (see the module
+    # docstring), the way sitl_touchdown.flight() does it
+    cam = std.SyntheticCamera(truth, seed=a.seed, marker_ne=tuple(a.marker_offset),
+                              hidden=a.marker_hidden)
+    ceil_state = {'done': False}
+
+    def ceiling_trigger(key):
+        """Lower the supervisor's ceiling for this run (config untouched) the
+        moment the companion reaches `key` (a state name or evt:<event>)."""
+        if a.ceiling_m is None or ceil_state['done'] or key != a.ceiling_when:
+            return
+        ceil_state['done'] = True
+        sup_box['sup'].ceiling_agl_m = float(a.ceiling_m)
+        phase_log.put('CEILING', f"{a.ceiling_m} at {key}")
+        print(f"[ceiling] lowered to {a.ceiling_m} m at {key}", flush=True)
 
     def on_event(n, i):
+        seen_evt.add(n)
         if n == 'state':
             phase_log.put('PHASE', i['new'])
+            ceiling_trigger(i['new'])
+            if i['new'] == 'ENGAGE' and a.engage_delay_ms:
+                # test hook (F10): a slow loop right after the ENGAGE line, so the
+                # pilot's mode is on the FC before the first step of the sub-state
+                time.sleep(a.engage_delay_ms / 1000.0)
+        else:
+            phase_log.put('EVT', f"{n} {i}")
+            ceiling_trigger('evt:' + n)
         print(f"[ev] {n}: {i}", flush=True)
     a_ns = types.SimpleNamespace(monitor_motiv=None, monitor=False, no_ascent=False,
                                  no_authority=True)
     canal, prag = 8, 1500
     gate, sup, sm, _aut = nova_pi.cablaj_extnav(
         a_ns, cfg, vehicle, ov, {}, canal, prag,
-        lambda why: print(f"!! HANDOVER REFUZAT: {why}", flush=True), on_event)
+        lambda why: print(f"!! HANDOVER REFUZAT: {why}", flush=True), on_event,
+        fov_deg=cam.fov_deg)
+    sup_box['sup'] = sup
     sm_ref['sm'] = sm
 
     # --- the supervisor thread, heartbeats, watchdog: exactly nova_pi -----
-    cam = std.SyntheticCamera(truth, seed=a.seed)
     det_latest = Latest()
     faza = Latest(sm.state)
     hb_principal = Heartbeat('principal')
@@ -307,8 +409,10 @@ def companion_main(a):
     class PasHang(nova_pi.PasPrincipal):
         def __call__(self, now):
             super().__call__(now)
-            if (a.hang_main_at and not hung_main['done']
-                    and self.sm.state == a.hang_main_at):
+            hk = a.hang_main_at
+            hit = bool(hk) and ((hk[4:] in seen_evt) if hk.startswith('evt:')
+                                else self.sm.state == hk)
+            if hit and not hung_main['done']:
                 hung_main['done'] = True
                 phase_log.put('HANG', f"main start {a.hang_s}")
                 print(f"[hang] main loop hangs {a.hang_s} s", flush=True)
@@ -488,6 +592,21 @@ def run_parent(a):
     res = {'scenario': a.scenario, 'phase': phase, 'instance': a.instance,
            'pilot_mode': a.pilot_mode, 'at_s': a.at_s, 'observe_s': a.observe,
            'status': 'started', 'notes': [], 'invariants': {}}
+    # scenario defaults for the new (final-code) scenarios
+    if a.scenario in ('F8a', 'F8b', 'F8c', 'F8d') or (a.scenario == 'F9a' and phase == 'evt:yaw_search_rotate'):
+        # 3 m to the right of a north-facing vehicle at 6 m: 26.6 deg off the nadir,
+        # outside the short half-axis (22.6), inside the long one (36.5)
+        if a.marker_offset is None:
+            a.marker_offset = [0.0, 3.0]
+    if a.marker_offset is None:
+        a.marker_offset = list(std.MARKER_NE)
+    if a.scenario in ('F9a', 'F9b') and a.ceiling_m is None:
+        a.ceiling_m = 5.5
+    if a.scenario in ('F9a', 'F9b') and a.ceiling_when is None:
+        a.ceiling_when = phase if a.scenario == 'F9a' else 'MOVE'
+    res['marker_offset'] = a.marker_offset
+    res['ceiling_m'] = a.ceiling_m
+    res['ceiling_when'] = a.ceiling_when
     port = 5760 + 10 * a.instance
     ap = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(a.sitl))))
     base = os.path.join(ap, 'Tools', 'autotest', 'default_params', 'copter.parm')
@@ -514,8 +633,17 @@ def run_parent(a):
         pilot.start()
         cargs = [sys.executable, '-u', os.path.abspath(__file__), '--role', 'companion',
                  '--port', str(port), '--phase-file', phase_file, '--tx-file', tx_file,
-                 '--hang-s', str(a.hang_s)]
+                 '--hang-s', str(a.hang_s), '--seed', str(a.seed),
+                 '--marker-offset', str(a.marker_offset[0]), str(a.marker_offset[1])]
+        if a.marker_hidden:
+            cargs += ['--marker-hidden']
+        if a.ceiling_m is not None:
+            cargs += ['--ceiling-m', str(a.ceiling_m), '--ceiling-when', a.ceiling_when]
+        if a.engage_delay_ms:
+            cargs += ['--engage-delay-ms', str(a.engage_delay_ms)]
         if a.scenario in ('F6a', 'F6c'):
+            cargs += ['--hang-main-at', phase]
+        if a.scenario == 'F8d':
             cargs += ['--hang-main-at', phase]
         if a.scenario == 'F6b':
             cargs += ['--hang-supervisor-at', phase]
@@ -561,11 +689,22 @@ def run_parent(a):
                 raise RuntimeError(f"the companion died by itself (rc {comp.returncode})")
             lines, idx = tail_phase(phase_file, idx)
             for w, kind, text in lines:
+                if kind == 'EVT':
+                    phases_seen.append((w, 'evt:' + text.split()[0]))
                 if kind == 'PHASE':
                     phases_seen.append((w, text))
-                    if text == 'ENGAGE':
-                        pilot.feed_vpe = False      # from here, OUR estimates only
-                    if phase is not None and text == phase and 'wall' not in inj:
+                    if text != 'IDLE':
+                        # from AUX up, OUR estimates only (as sitl_touchdown): the
+                        # pilot's VPE feed is an arming check, and during a yaw search
+                        # on SRC2 it would keep the EKF alive after the camera is gone
+                        pilot.feed_vpe = False
+                key = None
+                if kind == 'PHASE':
+                    key = text
+                elif kind == 'EVT':
+                    key = 'evt:' + text.split()[0]
+                if key is not None:
+                    if phase is not None and key == phase and 'wall' not in inj:
                         inj['wall'] = time.time()   # as close to the phase line as we get
                         inj['phase_line_wall'] = w
                         done = True
@@ -575,11 +714,11 @@ def run_parent(a):
                 res['phases_seen'] = phases_seen
                 raise RuntimeError(f"phase {phase} not reached in {a.phase_timeout:.0f} s "
                                    f"(seen: {[p for _, p in phases_seen]})")
-            if phase is None and phases_seen and phases_seen[-1][1] in ('DONE', 'ABORT'):
+            if phase is None and any(p_ in ('DONE', 'ABORT') for _, p_ in phases_seen):
                 inj['wall'] = time.time()
                 done = True
             if not done:
-                time.sleep(0.01)
+                time.sleep(0.003)
             if phase is None and now - t_start > a.phase_timeout:
                 break
         if 'wall' not in inj:
@@ -595,10 +734,10 @@ def run_parent(a):
         inj['truth'] = pilot.truth()
         inj['mode'] = pilot.cur_mode()
         inj['armed'] = pilot.armed
-        if sc in ('F1', 'F4', 'F7'):
+        if sc in ('F1', 'F4', 'F7', 'F8a', 'F9b'):
             os.kill(comp.pid, signal.SIGKILL)
             facts['killed_at'] = time.time()
-        elif sc in ('F2', 'F2c'):
+        elif sc in ('F2', 'F2c', 'F8b'):
             os.kill(comp.pid, signal.SIGSTOP)
             facts['stopped_at'] = time.time()
 
@@ -606,7 +745,7 @@ def run_parent(a):
                 os.kill(comp.pid, signal.SIGCONT)
                 facts['cont_at'] = time.time()
             script.append((a.freeze_s, 'SIGCONT', cont))
-        elif sc == 'F3':
+        elif sc in ('F3', 'F10'):
             pilot.request_mode(a.pilot_mode)
             facts['pilot_req_at'] = time.time()
         elif sc == 'F5a':
@@ -622,7 +761,7 @@ def run_parent(a):
                 pilot.set_param('SIM_RC_FAIL', 1)
                 facts['rcfail_at'] = time.time()
             script.append((1.0, 'RCFAIL', rcfail))
-        elif sc in ('F6a', 'F6b', 'F6c'):
+        elif sc in ('F6a', 'F6b', 'F6c', 'F8d'):
             # the injection is the hang itself: wait for the companion's line
             t_w = time.time()
             while time.time() - t_w < 15:
@@ -637,9 +776,10 @@ def run_parent(a):
                 res['notes'].append('the hang never started')
             inj['truth'] = pilot.truth()
             inj['mode'] = pilot.cur_mode()
-        if sc in ('F6c', 'F2c'):
+        if sc in ('F6c', 'F2c', 'F8c', 'F8d'):
             script.append((a.at_s, f"PILOT {a.pilot_mode}",
-                           lambda: pilot.request_mode(a.pilot_mode)))
+                           lambda: (facts.setdefault('pilot_req_at', time.time()),
+                                    pilot.request_mode(a.pilot_mode))))
         if sc == 'F4':
             if a.pilot_mode != 'NONE':
                 script.append((a.at_s, f"PILOT {a.pilot_mode}",
@@ -819,6 +959,10 @@ def analyse(a, res, pilot, df, inj, facts, tx_file, phase_file, comp_alive):
     tx = parse_tx(tx_file)
     phase_lines = parse_tx(phase_file)
     res['companion_phases_rel_s'] = [(rel(w), t) for w, k, t in phase_lines if k == 'PHASE' and w >= t_inj - 30]
+    res['companion_events_rel_s'] = [(rel(w), (t if len(t) < 160 else t[:160] + '...'))
+                                     for w, k, t in phase_lines
+                                     if k in ('EVT', 'CEILING') and w >= t_inj - 30
+                                     and not t.startswith(('yaw_search_ack',))]
     res['companion_hang_lines'] = [(rel(w), t) for w, k, t in phase_lines if k == 'HANG']
     W = facts.get('cont_at')
     hang_end = next((w for w, k, t in phase_lines if k == 'HANG' and 'end' in t), None)
@@ -841,14 +985,14 @@ def analyse(a, res, pilot, df, inj, facts, tx_file, phase_file, comp_alive):
             m['moved_after_wake_m'] = round(max(hdist(post[0][1:3], x[1:3]) for x in post), 2)
     # --- scenario specifics -------------------------------------------------
     sc = a.scenario
-    if sc in ('F3', 'F6c'):
-        t_req = facts.get('pilot_req_at', t_inj + (a.at_s if sc == 'F6c' else 0))
+    if sc in ('F3', 'F6c', 'F8c', 'F8d', 'F10'):
+        t_req = facts.get('pilot_req_at', t_inj + (a.at_s if sc in ('F6c', 'F8c', 'F8d') else 0))
         want = a.pilot_mode
         t_set = next((wall(t) for t, n, r in df['mode'] if n == want and wall(t) >= t_req - 0.2), None)
         m['t_pilot_mode_taken_s'] = None if t_set is None else round(t_set - t_req, 2)
         t_src1 = next((wall(t) for t, n in df['ev'] if n == 'SRC_PRIMARY' and wall(t) >= t_req), None)
         m['t_src1_restored_s'] = None if t_src1 is None else round(t_src1 - t_req, 2)
-        win_end = (t_set if t_set else t_req) + (a.observe if sc == 'F6c' else 20.0)
+        win_end = (t_set if t_set else t_req) + (a.observe if sc != 'F3' else 20.0)
         after_set = [(round(wall(t) - t_req, 2), n, r) for t, n, r in df['mode']
                      if t_set and wall(t) > t_set + 0.01 and wall(t) <= win_end]
         res['mode_changes_after_pilot_20s'] = after_set
@@ -884,7 +1028,7 @@ def analyse(a, res, pilot, df, inj, facts, tx_file, phase_file, comp_alive):
         m['t_src1_restored_s'] = None if src1 is None else round(src1, 2)
         if facts.get('rcfail_at'):
             m['rcfail_rel_s'] = rel(facts['rcfail_at'])
-    if sc in ('F6a', 'F6b', 'F6c'):
+    if sc in ('F6a', 'F6b', 'F6c', 'F8d'):
         src1 = next((wall(t) - t_inj for t, n in df['ev'] if n == 'SRC_PRIMARY' and wall(t) >= t_inj), None)
         m['t_src1_after_hang_s'] = None if src1 is None else round(src1, 2)
         lo = next((wall(t) - t_inj for t, n, r in df['mode'] if n in ('LOITER', 'ALT_HOLD') and wall(t) >= t_inj), None)
@@ -917,11 +1061,12 @@ def check_invariants(a, res, pilot, df, inj, facts, tx, comp_alive, off, W):
         pilot_modes = {w.split()[1] for _, w in pilot.req_log if w.startswith('MODE')}
         # the companion is "commanding" only if alive, not stopped / hung at the horizon
         hung_now = False
-        if sc in ('F6a', 'F6b', 'F6c'):
+        if sc in ('F6a', 'F6b', 'F6c', 'F8d'):
             hl = [(w, t) for w, k, t in parse_tx(os.path.join(a.workdir, 'phase.txt'))
                   if k == 'HANG']
             hung_now = bool(hl) and not any('end' in t for _, t in hl)
-        commanded = comp_alive and sc not in ('F1', 'F4', 'F5b') and not hung_now
+        commanded = (comp_alive and sc not in ('F1', 'F4', 'F5b', 'F8a', 'F9b')
+                     and not hung_now)
         if landed:
             cls, ok = 'LANDED', True
         elif mode_end in ('LAND', 'RTL', 'SMART_RTL'):
@@ -950,28 +1095,46 @@ def check_invariants(a, res, pilot, df, inj, facts, tx, comp_alive, off, W):
                if n in ('SRC_PRIMARY', 'SRC_SECONDARY') and t_inj < wall(t) <= t_inj + 20.0]
         inv['I2'] = {'pass': not chg and not any(n == 'SRC_SECONDARY' for _, n in src),
                      'mode_changes_20s': chg, 'src_events_20s': src}
-    elif sc in ('F3', 'F4', 'F6c', 'F2c'):
+    elif sc in ('F3', 'F4', 'F6c', 'F2c', 'F8c', 'F8d', 'F10'):
         reqs = [(w, x.split()[1]) for w, x in pilot.req_log if x.startswith('MODE')]
         req_times = [w for w, _ in reqs]
         bad, fsl = [], []
-        for w_req, nm in reqs[:1] if sc in ('F3', 'F6c', 'F2c') else reqs:
+        for w_req, nm in reqs[:1] if sc != 'F4' else reqs:
             t_set = next((wall(t) for t, n, r in df['mode'] if n == nm and wall(t) >= w_req - 0.2), None)
             if t_set is None:
                 continue
             for t, n, r in df['mode']:
                 wt = wall(t)
-                if t_set + 0.01 < wt <= t_set + (a.observe if sc in ('F6c', 'F2c') else 20.0):
+                if t_set + 0.01 < wt <= t_set + (a.observe if sc not in ('F3', 'F4') else 20.0):
                     if any(abs(wt - rt) < 1.5 for rt in req_times):
                         continue                              # the pilot's own request
                     (fsl if r in FAILSAFE_REASONS else bad).append((round(wt - t_inj, 2), n, r))
         companion_mode_cmds = [(round(w - t_inj, 2), t) for w, k, t in tx if k == 'MODE' and w >= t_inj]
         inv['I2'] = {'pass': not bad, 'unrequested_other': bad, 'failsafe_changes': fsl,
                      'companion_mode_cmds_after_injection': companion_mode_cmds}
+        if sc in ('F6c', 'F2c', 'F8c', 'F8d', 'F10') and reqs:
+            # strict: ZERO mode commands leave the companion after the pilot's request
+            # (the tap on Vehicle._write, ok=True or not: an attempt is a fight)
+            t_pr = reqs[0][0]
+            after_p = [(round(w - t_pr, 3), t) for w, k, t in tx if k == 'MODE' and w >= t_pr]
+            before_p = [(round(w - t_pr, 3), t) for w, k, t in tx if k == 'MODE'
+                        and t_pr - 5.0 <= w < t_pr]
+            inv['I2']['companion_mode_cmds_after_pilot_request'] = after_p
+            inv['I2']['companion_mode_cmds_before_pilot_request_5s'] = before_p
+            inv['I2']['n_companion_mode_cmds_after_pilot'] = len(after_p)
+            if sc == 'F10':
+                # the defect window: the pilot's mode reached the FC before the
+                # companion's first GUIDED (otherwise the race was lost and the
+                # run proves only the post-GUIDED rule)
+                g_before = [x for x in before_p if x[1].startswith('4 ')]
+                inv['I2']['window_hit'] = not g_before
+            if after_p:
+                inv['I2']['pass'] = False
     else:
         inv['I2'] = {'pass': True, 'note': 'not applicable'}
 
     # ---------------- I3 ----------------
-    if W is not None and sc in ('F2', 'F2c', 'F6a', 'F6b', 'F6c'):
+    if W is not None and sc in ('F2', 'F2c', 'F6a', 'F6b', 'F6c', 'F8b', 'F8d'):
         guided_after = [(round(wall(t) - t_inj, 2), r) for t, n, r in df['mode']
                         if n == 'GUIDED' and wall(t) > W]
         set_guided = [(round(w - t_inj, 2)) for w, k, t in tx if k == 'MODE' and w >= W
@@ -984,6 +1147,32 @@ def check_invariants(a, res, pilot, df, inj, facts, tx, comp_alive, off, W):
                      'wake_rel_s': round(W - t_inj, 2)}
     else:
         inv['I3'] = {'pass': True, 'note': 'not applicable'}
+
+    # ---------------- I4 (ceiling path) ----------------
+    pl = parse_tx(os.path.join(a.workdir, 'phase.txt'))
+    x_rtl = next((w for w, k, t in pl if k == 'EVT' and t.split()[0] == 'exit_rtl'), None)
+    if x_rtl is None:
+        inv['I4'] = {'pass': sc != 'F9a', 'note': 'no EXIT_RTL' + (
+            ' (EXPECTED one: F9a)' if sc == 'F9a' else ' - not applicable')}
+    else:
+        src1 = next((wall(t) for t, n in df['ev'] if n == 'SRC_PRIMARY' and wall(t) >= x_rtl - 0.5), None)
+        rtl = next(((wall(t), r) for t, n, r in df['mode'] if n == 'RTL' and wall(t) >= x_rtl - 0.5), None)
+        agl_f = tr[-1][3] if tr else None
+        landed_f = bool(hb) and ((not hb[-1][2]) or (agl_f is not None and agl_f < 0.4))
+        dist = None if not tr else round(math.hypot(tr[-1][1], tr[-1][2]), 2)
+        info = {'exit_rtl_rel_s': round(x_rtl - t_inj, 2),
+                'src1_rel_s': None if src1 is None else round(src1 - t_inj, 2),
+                'rtl_mode_rel_s': None if rtl is None else round(rtl[0] - t_inj, 2),
+                'rtl_reason': None if rtl is None else rtl[1],
+                'landed': landed_f, 'final_dist_home_m': dist, 'mode_end': hb[-1][1] if hb else None}
+        if sc == 'F9b':
+            info['note'] = ('companion killed between the SRC1 ack and the RTL: informational '
+                            '(I1 judges the outcome)')
+            inv['I4'] = {'pass': True, **info}
+        else:
+            ok4 = (src1 is not None and rtl is not None and src1 < rtl[0] and landed_f
+                   and dist is not None and dist < 2.0)
+            inv['I4'] = {'pass': bool(ok4), **info}
 
 
 def summary_line(res):
@@ -1074,6 +1263,18 @@ def main(argv=None):
     p.add_argument('--phase-file')
     p.add_argument('--tx-file')
     p.add_argument('--seed', type=int, default=1)
+    p.add_argument('--marker-offset', type=float, nargs=2, default=None,
+                   help='marker north / east of home, m (default sitl_touchdown.MARKER_NE; '
+                        'F8*: 0 3 = outside the short-axis FOV)')
+    p.add_argument('--marker-hidden', action='store_true')
+    p.add_argument('--ceiling-m', type=float, default=None,
+                   help='supervisor ceiling for this run (config untouched; F9: 5.5)')
+    p.add_argument('--ceiling-when', default=None,
+                   help='state name (MOVE, YAW_SEARCH...) or evt:<event> at which the ceiling '
+                        'is lowered')
+    p.add_argument('--engage-delay-ms', type=float, default=0.0,
+                   help='F10 hook: the companion loop stalls this long right after the '
+                        'ENGAGE line')
     p.add_argument('--hang-main-at')
     p.add_argument('--hang-supervisor-at')
     # campaign
