@@ -143,6 +143,25 @@ FC-ul e CUAV X7+, fără buton de siguranță hardware (detalii în
 - [ ] Linia de stare de pe OSD arată `h xx/30 m` când vehiculul e la mai puțin
       de 5 m de plafon (doar în secvența autonomă)
 
+**Căutarea markerului prin rotire (YAW_SEARCH, `yaw_search` în `config/nova.json`):**
+
+- [ ] În liniile de pornire apare `[bord] cautare prin rotire auto: doar sub
+      h_cover ~15.6 m; 90 grd la 25 grd/s = 3.6 s, 4.4/5.0 s de la SRC2 ...`;
+      la 90/20 pornirea e **refuzată** (nu se ocolește: se schimbă valorile)
+- [ ] **Primul test, jos, cu `yaw_search: false`**: markerul scos din cadru →
+      MARKER NEGASIT, rămâne LOITER (comportamentul de dinainte)
+- [ ] Apoi `yaw_search: "auto"`, aceeași poziție: vehiculul se întoarce pe loc
+      spre **stânga**, până la 90°, OSD `ROTIRE CAUTARE 90 grd la 25 grd/s`.
+      Marker găsit: `MARKER GASIT la N grd` apoi ENGAGE. Marker lipsă: EXIT la
+      cel mult 5.0 s, `MARKER NEGASIT dupa rotire`, LOITER. La `h ≥ h_cover`:
+      `MARKER NEGASIT: fara rotire, h >= h_cover`
+- [ ] **Mâna pe comutatorul de mod**; AUX jos / comutatorul oprește rotirea
+      imediat, throttle la mijloc înainte
+- [ ] În logul FC: **un singur** `EV 86` pe tot segmentul, niciun „is using
+      GPS" între el și `COMPLETE` (acolo `EV 85`), niciun failsafe EKF
+- [ ] Netestat pe camera reală: detecția în rotire și latența pe serial —
+      notează la ce unghi a apărut prima detecție
+
 ### 2.4 Marker
 
 - [ ] Așezat plan, fără cute, fără reflexii directe în soare

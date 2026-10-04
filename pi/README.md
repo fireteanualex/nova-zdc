@@ -420,7 +420,12 @@ Ce face vehiculul:
 pilotul aduce la 4–20 m deasupra markerului, LOITER (cu GPS), manșe libere ~1 s
 pilotul ridică AUX (8) → poarta (E0, manșe, altitudine) + GATE_SEARCH:
                          o detecție a markerului în ≤ 5 s (un retry);
-                         fără → GATE_FAIL, rămâne LOITER, STATUSTEXT
+                         fără detecție în ferestrele staționare:
+                           h < h_cover (~15.6 m) → YAW_SEARCH: EKF pe setul 2,
+                             GUIDED, rotire pe loc la STÂNGA 90° cu 25°/s;
+                             prima detecție → oprire → ENGAGE; nimic găsit →
+                             EXIT la ≤ 5.0 s de la comutare (setul 1 → LOITER)
+                           h ≥ h_cover → GATE_FAIL, rămâne LOITER, STATUSTEXT
 ENGAGE                 → EKF pe setul 2 (camera = poziție, fără GNSS),
                          VISION_POSITION_ESTIMATE, GUIDED confirmat
 MOVE / CENTER_CHECK    → deasupra markerului; centrarea cere o detecție
@@ -438,6 +443,46 @@ AUX (8) JOS, oricând după ENGAGE → EXIT: setul 1 înapoi (cu ACK), apoi
                          LOITER (ALT_HOLD dacă e refuzat). THROTTLE LA MIJLOC
                          ÎNAINTE — LOITER cu throttle jos coboară repede.
 ```
+
+**Căutarea markerului prin rotire (YAW_SEARCH, 04.10.2026).** Dacă poarta a
+acceptat (E0, manșe, altitudine) dar ferestrele staționare n-au nicio
+detecție și `h < h_cover`, vehiculul nu mai iese direct în GATE_FAIL: se
+rotește pe loc, fără GNSS, să aducă markerul în cadru. De ce: camera e 16:9,
+73×45° în `crop1280`, iar sub `h_cover` un marker aflat în raza de 6.5 m
+poate fi în afara axei **scurte**; o rotire de 90° trece axa lungă prin toate
+direcțiile. `h_cover = search_radius_m / tan(FOV_scurt / 2)` ≈ 15.6 m pentru
+raza de 6.5 m, din calibrarea efectivă a presetului. Succesiunea: setul 2 (ACK
+atribuit) → GUIDED confirmat → **o singură** comandă `CONDITION_YAW` relativă,
+spre stânga (param3 −1), fără consemn de poziție; la prima detecție pleacă
+imediat `VISION_POSITION_ESTIMATE` (EKF-ul se resetează pe cadrul markerului),
+după reset un singur consemn de poziție oprește rotirea, apoi criteriul porții
+și ENGAGE, fără a repeta comutarea.
+
+Termenul e **fix**: fără viziune, EKF-ul ține poziția 7.0 s de la comutare
+(constantă de firmware, `AP_NavEKF3.h:466`; măsurat în SITL 4.5.7), apoi
+failsafe LAND. De aceea, fără detecție la **5.0 s** de la comanda SRC2 →
+EXIT (setul 1 → LOITER), cu mult sub 7.0 s.
+
+Chei în `config/nova.json`:
+
+| cheie | implicit | sens |
+|---|---|---|
+| `yaw_search` | `"auto"` | `auto` = doar sub `h_cover`; `true` = mereu; `false` = GATE_FAIL ca înainte |
+| `yaw_search_max_deg` | 90 | cel mult 180 |
+| `yaw_search_rate_dps` | 25 | cel mult 60 (`ATC_SLEW_YAW`); peste 30, AVERTISMENT |
+| `search_radius_m` | 6.5 | raza zonei markerului (intră în `h_cover`) |
+
+La pornire se verifică `0.5 + grade/rată + 0.3 ≤ 5.0` s: 90/25 trece, 90/20
+e **refuzat**, 180/45 trece. Linia de pornire `[bord] cautare prin rotire ...`
+arată modul, durata și `h_cover`. Pe OSD: `ROTIRE CAUTARE 90 grd la 25 grd/s`,
+`MARKER GASIT la N grd`, `MARKER NEGASIT dupa rotire 90 grd` și, la `auto` cu
+`h ≥ h_cover`, `MARKER NEGASIT: fara rotire, h >= h_cover`.
+
+Ce să te aștepți ca pilot: vehiculul se **întoarce pe loc spre stânga**, până
+la 90°, cam 3.6 s la 25°/s; **AUX jos sau comutatorul de mod îl oprește imediat**.
+**Netestat pe camera reală:** detecția în timpul rotirii și latența reală pe
+serial (în SITL, marker în afara cadrului: găsit la 36–49°, ENGAGE, un singur
+EV 86).
 
 Ghidarea e **ExtNav** din 27.09.2026 (`config/nova.json: guidance`;
 `REPROIECTARE_EXTNAV.md`). Calea veche cu PLND rămâne în cod
