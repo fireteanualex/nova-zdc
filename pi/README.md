@@ -417,7 +417,7 @@ controlul în LOITER. Pregătește-te pentru urcare înainte de primul zbor.
 Ce face vehiculul:
 
 ```
-pilotul aduce la 3–20 m deasupra markerului, LOITER (cu GPS), manșe libere ~1 s
+pilotul aduce la 4–20 m deasupra markerului, LOITER (cu GPS), manșe libere ~1 s
 pilotul ridică AUX (8) → poarta (E0, manșe, altitudine) + GATE_SEARCH:
                          o detecție a markerului în ≤ 5 s (un retry);
                          fără → GATE_FAIL, rămâne LOITER, STATUSTEXT
@@ -448,6 +448,28 @@ Ieșirile, independente: comutatorul AUX (prin companion: SRC1, apoi
 LOITER) și comutatorul de mod (direct în FC; companion-ul vede modul pus
 de altcineva, restaurează SRC1 și nu mai trimite nimic — §5.66). Niciodată
 RTL cât timp EKF-ul e pe setul 2: home e în alt cadru după reset.
+
+**Plafonul de 30 m (regula 15.2.4).** Supervizorul urmărește înălțimea
+deasupra HOME (`relative_alt`) doar în secvența autonomă: de la AUX sus
+(GATE_SEARCH) până la predarea către pilot. Depășirea, confirmată pe 3
+eșantioane consecutive (`ceiling_confirm_n`), declanșează setul 1 (cu ACK) și
+apoi RTL; LAND dacă setul 1 nu e confirmat sau RTL e refuzat. **Nu există
+fence pe FC** (decizia din 02.10.2026): în cursă se zboară peste 30 m, plafonul
+există doar în secvența autonomă. Pe ecranul OSD: `PLAFON 30m DEPASIT -> RTL`,
+apoi `RTL confirmat` sau `RTL refuzat -> LAND`; linia de stare arată `h xx/30 m`
+la mai puțin de 5 m de plafon. Cheile din `config/nova.json`: `ceiling_agl_m`
+(30.0) și `ceiling_confirm_n` (3). Orice valoare în afară de 30 este o setare
+de test, avertizată la pornire (`[bord] ATENTIE: plafon de test ...`).
+
+*Test la sol / la joasă altitudine al căii RTL:*
+
+1. Coboară temporar `ceiling_agl_m` în `config/nova.json` (sub altitudinea de
+   test), redeployează pe Pi.
+2. Zboară secvența jos (AUX sus) și depășește plafonul coborât.
+3. Așteptat: `STATUSTEXT` `NOVA PLAFON ..m DEPASIT: SRC1 -> RTL`; în logul FC,
+   `EV 85` (setul 1) **înainte** de schimbarea de mod în RTL.
+4. Pune `ceiling_agl_m` înapoi la **30.0** și redeployează. Nu zbura
+   cu plafonul coborât nicio încercare punctată.
 
 ### Pe teren fără rețea
 
@@ -493,7 +515,9 @@ Apoi, la manșe:
    o dată manual pe marker. Dacă vehiculul nu aterizează curat singur,
    ghidarea nu are ce repara.
 2. Decolezi și aduci vehiculul la **3–8 m deasupra markerului** (prima
-   dată jos, apoi mai sus — brief §9). Fereastra porții e 3–20 m; peste
+   dată jos, apoi mai sus — brief §9). Fereastra porții e 4–20 m (din `config/nova.json`: `handover_alt_min` /
+   `handover_alt_max`; minimul de 4 m e o abatere deliberată de la 5–20 m din
+   regulament); peste
    ~12 m markerul are prea puțini pixeli și poarta poate refuza (GATE_FAIL).
 3. Lateral, cu **markerul în cadru**: nu mai există rază fixă — dacă se
    vede, e în rază. Mai aproape de verticală e mai bine (mai puțină
@@ -600,6 +624,15 @@ care se poate ridica dintr-un `export` se ridică din greșeală.
 | `import picamera2` → `_ARRAY_API not found` | numpy din pip peste cel din apt | recreează venv-ul cu `--system-site-packages` |
 | FPS scade după câteva minute | throttling termic | răcire; `vcgencmd get_throttled` |
 | serviciul pornește și moare imediat | repo-ul nu e la `~/nova-zdc` | editează `ExecStart` în `~/.config/systemd/user/nova-bringup.service` |
+
+**Garda predării.** După un blocaj al aplicației (> 1 s: bucla principală,
+supervizorul sau procesul) companion-ul nu mai trimite nicio comandă de mod
+până la o încercare nouă de pe AUX; trimite doar setul 1 (SRC1). Comutatorul
+de mod al pilotului câștigă mereu: dacă FC-ul nu mai e într-un mod ținut de
+noi, o ieșire nu schimbă modul. `EXIT pasiv` în log înseamnă exact asta (SRC1
+cerut, modul rămâne al pilotului). Motivul: un companion trezit după un blocaj
+trimitea SRC1 + LOITER peste ALT_HOLD-ul pus de pilot (campania S, §5.70 din
+CLAUDE.md).
 
 Pentru diagnostic în timp real:
 

@@ -435,18 +435,27 @@ def check_params(conn, baud, parm=FLIGHT_PARM, timeout=120):
 # --- orchestrare --------------------------------------------------------------
 
 def check_touchdown(cfg):
-    """The touchdown sequence settings (15.1.2, 15.1.3): a refusal is
-    ESEC, a warning stays OK but is said."""
+    """The sequence settings: touchdown (15.1.2, 15.1.3), the 15.2.4
+    ceiling and the handover altitude window. A refusal (ValueError, which
+    startup would also refuse) is ESEC; a warning stays OK but is said."""
     try:
         v, warnings = nova_config.touchdown_settings(cfg)
+        pl, pl_warn = nova_config.ceiling_settings(cfg)
+        hw, hw_warn = nova_config.handover_settings(cfg)
     except ValueError as e:
         return Result('secventa', ESEC, str(e))
+    warnings = list(warnings) + list(pl_warn) + list(hw_warn)
     det = (f"contact {v['touchdown_speed']:.2f} m/s, sol {v['touchdown_hold_s']:.1f} s, "
            f"urcare h_ref+{v['alt_riseup']:.1f} m in {v['riseup_timeout_s']:.0f} s, "
            f"hover {v['hover_confirm_s']:.1f} s")
+    det += (f" | plafon {pl['ceiling_agl_m']:g} m deasupra home "
+            f"({pl['ceiling_confirm_n']} esantioane), din GATE_SEARCH pana la "
+            f"predare -> SRC1 -> RTL; poarta {hw['alt_min_m']:.1f}-"
+            f"{hw['alt_max_m']:.1f} m")
     if warnings:
         det += ' | ATENTIE: ' + '; '.join(warnings)
-    return Result('secventa', OK, det, dict(v, warnings=warnings))
+    return Result('secventa', OK, det,
+                  dict(v, warnings=warnings, ceiling=pl, handover=hw))
 
 
 def run_checks(args, source_factory=None):

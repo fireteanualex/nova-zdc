@@ -127,6 +127,22 @@ FC-ul e CUAV X7+, fără buton de siguranță hardware (detalii în
       abia după `DISARM_DELAY`/2; **81** DISARM dezarmează imediat) — testul
       „Kill switch" de mai sus rămâne obligatoriu
 
+**Plafonul de 30 m și fereastra de handover (config):**
+
+- [ ] În liniile de pornire apar `[bord] plafon 15.2.4: 30 m deasupra home`
+      și `[bord] fereastra de handover 4.0-20.0 m`; niciun `ATENTIE: plafon
+      de test` (altfel `ceiling_agl_m` a rămas coborât din alt test)
+- [ ] `preflight_check.py`, linia `secventa`, arată `plafon 30 m` și `poarta
+      4.0-20.0 m`; orice `ATENTIE` e citit și explicat, nu ignorat
+- [ ] **Test la sol / joasă altitudine al căii RTL** (o dată pe configurație
+      nouă): coboară temporar `ceiling_agl_m` în `config/nova.json`,
+      redeployează, zboară secvența jos; așteptat `STATUSTEXT` `NOVA PLAFON ..m
+      DEPASIT: SRC1 -> RTL` și, în logul FC, `EV 85` (setul 1) **înainte** de
+      schimbarea de mod în RTL. Apoi pune `ceiling_agl_m` înapoi la **30.0** și
+      redeployează
+- [ ] Linia de stare de pe OSD arată `h xx/30 m` când vehiculul e la mai puțin
+      de 5 m de plafon (doar în secvența autonomă)
+
 ### 2.4 Marker
 
 - [ ] Așezat plan, fără cute, fără reflexii directe în soare
@@ -234,7 +250,7 @@ Simptom → cauză probabilă → ce faci. Referințele `§` sunt la `CLAUDE.md`
 |---|---|---|
 | `HANDOVER REFUZAT: autonomie dezactivată` | `autonomy_enabled=false` (E0) | **așteptat** până trece E2. Se schimbă cu un commit, nu din linia de comandă |
 | `REFUZAT: canalul 3 la ... PWM de trim` | throttle-ul nu se auto-centrează (§8) | ține throttle-ul **nemișcat** în fereastra de așezare; nu la trim |
-| `REFUZAT: altitudine ...` | în afara 3–20 m (`handover_alt_min_m` în config, plafonul 20 m) | coboară sub 20 m / urcă peste 3 m; peste ~12 m markerul are prea puțini pixeli și poarta poate refuza |
+| `REFUZAT: altitudine ...` | în afara 4–20 m (`handover_alt_min` / `handover_alt_max` din `config/nova.json`; 4 m e o abatere deliberată de la 5–20 m din regulament) | coboară sub 20 m / urcă peste 4 m; peste ~12 m markerul are prea puțini pixeli și poarta poate refuza |
 | `REFUZAT: marker nedetectat` | markerul nu e văzut în ultimele 0.3 s | apropie-te; verifică lumina |
 | Handover-ul nu pornește deloc | se cere pe **frontul crescător** al AUX (§8) | lasă comutatorul jos, apoi sus |
 | Secvența se oprește singură | supervizorul a comandat ceva | citește logul: `detection_age`, `link_age`, `geofence_radius`, `tilt` |

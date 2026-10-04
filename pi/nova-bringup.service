@@ -23,7 +23,7 @@
 #   Nu le porni pe amandoua: se bat pe /dev/serial0 (§5.27).
 
 [Unit]
-Description=NOVA ZDC - bring-up Pi 4 + Pixhawk (monitor, fara comenzi)
+Description=NOVA ZDC - bring-up Pi 4 + CUAV X7+ (monitor, fara comenzi)
 Documentation=file:///home/fireteanualex/nova-zdc/pi/README.md
 After=graphical-session.target
 PartOf=graphical-session.target
