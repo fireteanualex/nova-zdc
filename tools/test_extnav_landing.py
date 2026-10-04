@@ -146,7 +146,9 @@ class SimVeh(Vehicle):
                     outer.takeoffs.append(a[-1])
                     if (outer._live.armed and outer._live.mode == MODE_GUIDED
                             and outer._live.landed_state == LANDED_ON_GROUND):
-                        outer.takeoff_alt = float(a[-1])
+                        # above HOME (4.5.7): home may lie below the
+                        # marker's ground by rel_alt_offset
+                        outer.takeoff_alt = float(a[-1]) - outer.rel_alt_offset
                         outer.target = None
 
             def param_request_read_send(self, *a):

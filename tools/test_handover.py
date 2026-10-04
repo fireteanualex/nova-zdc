@@ -187,40 +187,41 @@ def test_accept_la_marginile_ferestrei():
 
 
 def test_pragul_de_altitudine_din_config_ajunge_in_poarta():
-    """Team, 26.09.2026: descent tests from any height. The floor comes
-    from config/nova.json (`handover_alt_min_m`) through tools/nova_pi.py,
-    the gate code itself keeps 5 m. Checked here on the real files: the
-    key is a number, the app passes it as `alt_min_m`, and a gate built
-    with it accepts from the floor up to the 20 m ceiling and refuses
-    outside it (team, 28.09.2026: 3-20 m)."""
+    """B2 (02.10.2026): the window comes from config/nova.json
+    (`handover_alt_min` / `handover_alt_max`, 4-20 m; the old key
+    `handover_alt_min_m` is gone from the file) through
+    nova_config.handover_settings and tools/nova_pi.py; the gate code keeps
+    its own 5 / 20 m defaults. A gate built with the configured window
+    accepts from the floor up to the maximum and refuses outside it."""
     import json
     import os
+    from nova import config as nova_config
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, '..', 'config', 'nova.json')) as f:
         cfg = json.load(f)
-    floor = cfg.get('handover_alt_min_m')
-    assert isinstance(floor, (int, float)) and not isinstance(floor, bool), \
-        f"handover_alt_min_m lipseste sau nu e numar: {floor!r}"
+    assert 'handover_alt_min_m' not in cfg, "cheia veche a ramas in nova.json"
+    assert cfg.get('handover_alt_min') == 4.0 and cfg.get('handover_alt_max') == 20.0
+    w, warns = nova_config.handover_settings(nova_config.load())
+    floor, top = w['alt_min_m'], w['alt_max_m']
+    assert (floor, top) == (4.0, 20.0) and warns == [], (w, warns)
     with open(os.path.join(here, 'nova_pi.py')) as f:
         src = f.read()
-    assert "cfg.get('handover_alt_min_m')" in src and "alt_min_m" in src, \
-        "nova_pi.py nu mai duce handover_alt_min_m in poarta"
+    assert 'handover_settings(cfg)' in src and "'alt_max_m'" in src, \
+        "nova_pi.py nu mai duce fereastra din config in poarta"
     assert HANDOVER_ALT_MIN_M == 5.0, "implicitul din cod trebuie sa ramana 5 m"
     assert HANDOVER_ALT_MAX_M == 20.0, "plafonul portii e 20 m (regulamentul)"
-    for alt, expect in ((float(floor) - 0.5, False), (float(floor), True),
-                        (HANDOVER_ALT_MAX_M, True),
-                        (HANDOVER_ALT_MAX_M + 0.5, False)):
+    for alt, expect in ((floor - 0.1, False), (floor, True), (top, True),
+                        (top + 0.5, False)):
         v = StubVehicle(alt)
         ov = OverrideMonitor(v)
         gate = HandoverGate(v, ov, autonomy_enabled=True,
-                            alt_min_m=float(floor))
+                            alt_min_m=floor, alt_max_m=top)
         gate.on_aux_requested(100.0)
         ov.observe(100.0, True)
         settle(gate)
         ok, why = gate.check(SETTLED, **GOOD)
         assert ok is expect, f"la {alt} m: {ok} ({why})"
-    return (f"config {floor:g} m: accepta {floor:g}-{HANDOVER_ALT_MAX_M:.0f} m, "
-            f"refuza in afara")
+    return (f"config {floor:g}-{top:g} m: accepta in fereastra, refuza in afara")
 
 
 def test_refuz_prea_departe():

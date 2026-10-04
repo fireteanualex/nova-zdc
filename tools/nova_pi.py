@@ -282,6 +282,19 @@ def extnav_config(cfg, canal, prag):
     return ExtNavConfig(aux_channel=canal, aux_high_pwm=prag, **kw)
 
 
+def fereastra_poarta(cfg, gate_kw):
+    """The gate's altitude window (B2): what main() already put in gate_kw,
+    else config/nova.json through nova_config.handover_settings (ValueError
+    on a refusal). The same for both guidance paths."""
+    if 'alt_min_m' in gate_kw and 'alt_max_m' in gate_kw:
+        return gate_kw
+    w, _warnings = nova_config.handover_settings(cfg)
+    kw = dict(gate_kw)
+    kw.setdefault('alt_min_m', w['alt_min_m'])
+    kw.setdefault('alt_max_m', w['alt_max_m'])
+    return kw
+
+
 def cablaj_extnav(a, cfg, vehicle, override, gate_kw, canal, prag,
                   signal_reject, on_sm_event):
     """The flight configuration since 27.09.2026 (REPROIECTARE_EXTNAV.md):
@@ -290,8 +303,7 @@ def cablaj_extnav(a, cfg, vehicle, override, gate_kw, canal, prag,
     DISTANCE_SENSOR, no authority modulation (4.8 names anyway). The EKF
     source manager is instantiated HERE - it is the central piece now
     (open item 36 closed on the onboard path)."""
-    if 'alt_min_m' not in gate_kw:
-        gate_kw = dict(gate_kw, alt_min_m=3.0)          # team, 28.09: 3-20 m
+    gate_kw = fereastra_poarta(cfg, gate_kw)            # B2: from the config
     gate = HandoverGate(vehicle, override, on_reject=signal_reject,
                         dist_max_m=None, detection_max_age_s=None,
                         **gate_kw, monitor=a.monitor_motiv or a.monitor)
@@ -331,6 +343,7 @@ def cablaj_plnd(a, cfg, vehicle, override, gate_kw, canal, prag,
     """The previous path: LAND + precision landing (LANDING_TARGET +
     DISTANCE_SENSOR). Kept for a comparison flight; the simulator flies it."""
     monitor = a.monitor_motiv or a.monitor
+    gate_kw = fereastra_poarta(cfg, gate_kw)            # B2: from the config
     gate = HandoverGate(vehicle, override, on_reject=signal_reject,
                         **gate_kw, monitor=monitor)
     sup = SafetySupervisor(vedere(vehicle), override=override)
@@ -512,6 +525,14 @@ def main():
         return 2
     for w in _pl_warn:
         print(f"[bord] ATENTIE: {w}")
+    # handover altitude window (B2): refused / warned here too
+    try:
+        _hw, _hw_warn = nova_config.handover_settings(cfg)
+    except ValueError as e:
+        print(f"\n[bord] NU PORNESC: {e}\n")
+        return 2
+    for w in _hw_warn:
+        print(f"[bord] ATENTIE: {w}")
 
     # H2: portul INAINTE de orice altceva. Daca e ocupat, aflam acum, nu
     # dupa ce am pornit camera si am asteptat calibrarea.
@@ -594,13 +615,11 @@ def main():
     # fiecare boot ar porni un sistem autonom viu, cu alte setari decat
     # proba de coborare.
     monitor = a.monitor_motiv or a.monitor
-    # Altitude floor from config, if set; otherwise the gate's default.
-    # Passed as a kwarg only when present, so a missing key changes nothing.
-    gate_kw = {}
-    if cfg.get('handover_alt_min_m') is not None:
-        gate_kw['alt_min_m'] = float(cfg['handover_alt_min_m'])
-        print(f"[bord] ATENTIE: handover acceptat de la "
-              f"{gate_kw['alt_min_m']:.1f} m (config handover_alt_min_m)")
+    # B2: the altitude window from the config (validated above), for both
+    # guidance paths; the startup line says the real one
+    gate_kw = {'alt_min_m': _hw['alt_min_m'], 'alt_max_m': _hw['alt_max_m']}
+    print(f"[bord] fereastra de handover {_hw['alt_min_m']:.1f}-"
+          f"{_hw['alt_max_m']:.1f} m (config: {_hw['source']})")
     # Ecranul are nevoie de ultima detectie (px si varsta). O ia dintr-un
     # invelis peste detector, nu dintr-o modificare in run_loop: bucla e
     # validata si nu vrem sa o atingem pentru afisare.

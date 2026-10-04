@@ -172,7 +172,10 @@ class OsdMesaje:
             lat = g('lateral_m')
             det = 'o detectie' if n in (None, 1) else f"{n} detectii"
             lat_s = '' if lat is None else f", lateral {lat:.2f} m"
-            return f"ENGAGE: {det}{lat_s}", VERDE
+            # B2: the altitude the handover was accepted at
+            alt = g('alt')
+            alt_s = '' if alt is None else f" la {alt:.1f} m"
+            return f"ENGAGE{alt_s}: {det}{lat_s}", VERDE
         if name == 'exit':
             pas = ' PASIV' if g('passive') else ''
             return f"EXIT{pas}: {g('reason')}", ROSU

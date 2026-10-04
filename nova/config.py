@@ -122,12 +122,15 @@ DEFAULTS = {
     # Anything else = extnav. Written in the versioned file, like E0.
     'guidance': 'extnav',
 
-    # Handover gate altitude floor, metres. None = the gate's own default
-    # (nova/handover.py: HANDOVER_ALT_MIN_M, 5 m). A number here REPLACES
-    # the floor for the onboard app only - the gate code stays untouched.
-    # Exists for descent tests from any height (team, 26.09.2026); the
-    # 20 m ceiling is not configurable. Remove the key to get 5 m back
-    # on plnd, 3 m on extnav.
+    # Handover altitude window, metres (B2, 02.10.2026), for BOTH guidance
+    # paths - validated by handover_settings(). The rules (15.1.2, 15.2.3)
+    # ask for activation at 5-20 m; the 4.0 m floor is a deliberate team
+    # deviation. 0 = no floor (a WARNING at startup). None = the default
+    # below. The supervisor's 30 m ceiling is independent of the maximum.
+    'handover_alt_min': None,           # None -> HANDOVER_ALT_MIN_DEFAULT
+    'handover_alt_max': 20.0,
+    # OLD KEY, renamed `handover_alt_min` (B2): still honoured when the new
+    # one is unset, with a startup warning; the new one wins when both are.
     'handover_alt_min_m': None,
 
     # ExtNav lateral tolerance tol(h) = max(extnav_tol_min_m,
@@ -307,6 +310,72 @@ def ceiling_settings(cfg):
             f"(regula 15.2.4). Pune-l inapoi la {CEILING_RULE_M:g} inainte de "
             f"orice incercare punctata")
     return {'ceiling_agl_m': h, 'ceiling_confirm_n': int(n)}, warnings
+
+
+#: The handover floor when `handover_alt_min` (and the old key) are unset.
+HANDOVER_ALT_MIN_DEFAULT = 4.0
+#: The rules' activation band (15.1.2 / 15.2.3), for the warnings only.
+HANDOVER_RULE_MIN_M = 5.0
+HANDOVER_RULE_MAX_M = 20.0
+
+
+def _numar(key, raw):
+    if isinstance(raw, bool):
+        raise ValueError(f"config: `{key}` = {raw!r} nu e un numar")
+    try:
+        x = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"config: `{key}` = {raw!r} nu e un numar")
+    if not (x == x and abs(x) != float('inf')):
+        raise ValueError(f"config: `{key}` = {raw!r} nu e un numar finit")
+    return x
+
+
+def handover_settings(cfg):
+    """({'alt_min_m', 'alt_max_m', 'source'}, warnings) - the handover
+    altitude window both guidance paths give the gate - or ValueError
+    (startup refused): non-numeric, negative, or max <= min.
+
+    `handover_alt_min` (default HANDOVER_ALT_MIN_DEFAULT, 4.0 m); 0 = no
+    floor, said as a WARNING. The OLD key `handover_alt_min_m` is honoured
+    when the new one is unset, with a warning that it was renamed; when
+    both are set the new one wins (and the old one is said to be ignored).
+    `handover_alt_max` (default 20.0). Warnings also for a window reaching
+    outside the rules' 5-20 m above (a maximum over 20 m)."""
+    warnings = []
+    new, old = cfg.get('handover_alt_min'), cfg.get('handover_alt_min_m')
+    if new is not None:
+        lo, source = _numar('handover_alt_min', new), 'handover_alt_min'
+        if old is not None:
+            warnings.append(
+                f"handover_alt_min_m (cheie veche) ignorata: handover_alt_min "
+                f"= {lo:g} m are prioritate; sterge cheia veche")
+    elif old is not None:
+        lo, source = _numar('handover_alt_min_m', old), 'handover_alt_min_m'
+        warnings.append(
+            f"cheia handover_alt_min_m a fost redenumita handover_alt_min; "
+            f"folosesc {lo:g} m din cheia veche - redenumeste-o in config")
+    else:
+        lo, source = HANDOVER_ALT_MIN_DEFAULT, 'implicit'
+    raw_hi = cfg.get('handover_alt_max')
+    hi = HANDOVER_RULE_MAX_M if raw_hi is None else _numar('handover_alt_max', raw_hi)
+    if lo < 0:
+        raise ValueError(f"config: `{source}` = {lo:g} m e negativ")
+    if hi < 0:
+        raise ValueError(f"config: `handover_alt_max` = {hi:g} m e negativ")
+    if hi <= lo:
+        raise ValueError(f"config: handover_alt_max = {hi:g} m <= minimul de "
+                         f"{lo:g} m: fereastra de handover e goala")
+    if lo == 0:
+        warnings.append(
+            "handover_alt_min = 0: FARA minim de altitudine la handover "
+            f"(regulile 15.1.2 / 15.2.3 cer {HANDOVER_RULE_MIN_M:g}-"
+            f"{HANDOVER_RULE_MAX_M:g} m)")
+    if hi > HANDOVER_RULE_MAX_M:
+        warnings.append(
+            f"handover_alt_max = {hi:g} m peste {HANDOVER_RULE_MAX_M:g} m "
+            f"(regulile 15.1.2 / 15.2.3)")
+    return {'alt_min_m': lo, 'alt_max_m': hi, 'source': source}, warnings
 
 
 def guidance(cfg):

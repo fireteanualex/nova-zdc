@@ -40,7 +40,9 @@ from .rc import HANDOVER_SETTLE_S
 #: per module for a 6-module 4x4 marker - below the ~5 px/module where
 #: decoding is reliable. That fails SAFE: GATE_SEARCH finds no detection in
 #: its window, GATE_FAIL, the vehicle stays in LOITER with the pilot.
-#: The floor used onboard comes from config/nova.json (handover_alt_min_m).
+#: The window used onboard comes from config/nova.json (handover_alt_min /
+#: handover_alt_max, 4-20 m; nova.config.handover_settings) on both
+#: guidance paths; these constants are the gate's own defaults only.
 HANDOVER_ALT_MIN_M = 5.0
 HANDOVER_ALT_MAX_M = 20.0
 
