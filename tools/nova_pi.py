@@ -48,7 +48,9 @@ from nova.supervisor_thread import SupervisorThread        # noqa: E402
 from nova.ekf_source import EkfSourceManager               # noqa: E402
 from nova.extnav import ExtNavEstimator                    # noqa: E402
 from nova.extnav_landing import (ExtNavConfig, ExtNavLanding,  # noqa: E402
-                                 SRC2_PHASES)
+                                 EKF_NO_VISION_VALID_S, SEARCH_BUDGET_S,
+                                 SRC2_PHASES, yaw_search_duration_s,
+                                 yaw_search_h_cover_m)
 from nova import preview as preview_mod                    # noqa: E402
 from nova import race_screen                              # noqa: E402
 from nova import serial_guard                             # noqa: E402
@@ -268,9 +270,12 @@ def anunta_modul(vehicle, gate, canal, prag):
         pass
 
 
-def extnav_config(cfg, canal, prag):
+def extnav_config(cfg, canal, prag, fov_deg=None):
     """ExtNavConfig from config/nova.json: the switch, and the lateral
-    tolerance (extnav_tol_min_m / extnav_tol_frac; absent = the brief's)."""
+    tolerance (extnav_tol_min_m / extnav_tol_frac; absent = the brief's).
+    B3: the marker search by rotation (validated: ValueError on a refusal)
+    and h_cover from `fov_deg` = (HFOV, VFOV) of the EFFECTIVE calibration
+    (the running preset's); None = unknown, then 'auto' never rotates."""
     kw = {}
     for key, field in (('extnav_tol_min_m', 'tol_min_m'),
                        ('extnav_tol_frac', 'tol_frac')):
@@ -279,7 +284,41 @@ def extnav_config(cfg, canal, prag):
     # touchdown and the climb back: validated (ValueError on a refusal)
     td, _warnings = nova_config.touchdown_settings(cfg)
     kw.update(td)
+    ys, _warnings = nova_config.yaw_search_settings(cfg)
+    kw.update({k: ys[k] for k in ('yaw_search', 'yaw_search_max_deg',
+                                  'yaw_search_rate_dps', 'search_radius_m')})
+    if fov_deg is not None:
+        kw['h_cover_m'] = yaw_search_h_cover_m(ys['search_radius_m'], *fov_deg)
     return ExtNavConfig(aux_channel=canal, aux_high_pwm=prag, **kw)
+
+
+def fov_efectiv(detector):
+    """(HFOV, VFOV) in degrees of the calibration the detector RUNS with
+    (derived / scaled for the active preset by calibration_for), or None.
+    B3: h_cover comes from it, never from a datasheet field of view."""
+    cal = getattr(getattr(detector, 'det', None), 'calib', None)
+    if cal is None or not hasattr(cal, 'hfov_deg'):
+        return None
+    return cal.hfov_deg(), cal.vfov_deg()
+
+
+def plan_cautare(c):
+    """The startup line of the marker search (B3): mode, degrees, rate,
+    duration from the SRC2 command, h_cover."""
+    hc = '-' if c.h_cover_m is None else f"{c.h_cover_m:.1f} m"
+    if c.yaw_search is False:
+        return "cautare prin rotire OPRITA (yaw_search false): GATE_FAIL ca inainte"
+    mod = ('mereu (true)' if c.yaw_search is True
+           else f"auto: doar sub h_cover {hc}" + (
+               '' if c.h_cover_m is not None
+               else ' (FOV necunoscut: fara rotire)'))
+    dur = yaw_search_duration_s(c.yaw_search_max_deg, c.yaw_search_rate_dps)
+    return (f"cautare prin rotire {mod}; {c.yaw_search_max_deg:g} grd la "
+            f"{c.yaw_search_rate_dps:g} grd/s = "
+            f"{c.yaw_search_max_deg / c.yaw_search_rate_dps:.1f} s, "
+            f"{dur:.1f}/{SEARCH_BUDGET_S:.1f} s de la SRC2 (EKF fara viziune "
+            f"{EKF_NO_VISION_VALID_S:.0f} s); raza {c.search_radius_m:g} m, "
+            f"h_cover {hc}")
 
 
 def fereastra_poarta(cfg, gate_kw):
@@ -296,7 +335,7 @@ def fereastra_poarta(cfg, gate_kw):
 
 
 def cablaj_extnav(a, cfg, vehicle, override, gate_kw, canal, prag,
-                  signal_reject, on_sm_event):
+                  signal_reject, on_sm_event, fov_deg=None):
     """The flight configuration since 27.09.2026 (REPROIECTARE_EXTNAV.md):
     camera -> VISION_POSITION_ESTIMATE -> EKF3 SRC2 (no GNSS), GUIDED in
     steps of h/2 down to 1 m, LAND vertical. No PLND, no LANDING_TARGET, no
@@ -320,7 +359,7 @@ def cablaj_extnav(a, cfg, vehicle, override, gate_kw, canal, prag,
     est = ExtNavEstimator(vehicle, verbose=False)
     ekf = EkfSourceManager(vehicle, faze=SRC2_PHASES)
     sm = ExtNavLanding(vehicle, est, ekf, gate,
-                       extnav_config(cfg, canal, prag),
+                       extnav_config(cfg, canal, prag, fov_deg=fov_deg),
                        on_event=on_sm_event)
     sm.attach_supervisor(sup)
     print("[bord] ghidare EXTNAV: camera -> VISION_POSITION_ESTIMATE -> EKF3 "
@@ -330,6 +369,7 @@ def cablaj_extnav(a, cfg, vehicle, override, gate_kw, canal, prag,
     print(f"[bord] plafon 15.2.4: {sup.ceiling_agl_m:g} m deasupra home "
           f"({sup.ceiling_confirm_n} esantioane la rand), din GATE_SEARCH pana "
           f"la predare -> SRC1 -> RTL; fara fence pe FC")
+    print(f"[bord] {plan_cautare(sm.cfg)}")
     if a.no_ascent:
         print("[bord] --no-ascent: fara efect pe extnav (secventa se "
               "incheie la contact oricum)")
@@ -339,7 +379,7 @@ def cablaj_extnav(a, cfg, vehicle, override, gate_kw, canal, prag,
 
 
 def cablaj_plnd(a, cfg, vehicle, override, gate_kw, canal, prag,
-                signal_reject, on_sm_event):
+                signal_reject, on_sm_event, fov_deg=None):
     """The previous path: LAND + precision landing (LANDING_TARGET +
     DISTANCE_SENSOR). Kept for a comparison flight; the simulator flies it."""
     monitor = a.monitor_motiv or a.monitor
@@ -533,6 +573,15 @@ def main():
         return 2
     for w in _hw_warn:
         print(f"[bord] ATENTIE: {w}")
+    # the marker search by rotation (B3): the time budget is checked here,
+    # before the port and the camera; h_cover needs the calibration (below)
+    try:
+        _ys, _ys_warn = nova_config.yaw_search_settings(cfg)
+    except ValueError as e:
+        print(f"\n[bord] NU PORNESC: {e}\n")
+        return 2
+    for w in _ys_warn:
+        print(f"[bord] ATENTIE: {w}")
 
     # H2: portul INAINTE de orice altceva. Daca e ocupat, aflam acum, nu
     # dupa ce am pornit camera si am asteptat calibrarea.
@@ -643,6 +692,7 @@ def main():
             meta_for=getattr(detector, 'metadata_at', None))
         print(f"[bord] captura de touchdown: {cap.root}/{cap.date}/{cap.session}/"
               f" (ring {ring.buf.maxlen} cadre)")
+    fov = fov_efectiv(detector)             # B3: h_cover, effective calibration
     detector = LastDetection(detector)      # on_poll: PasPrincipal, below
     if ring is None:
         print("[bord] ATENTIE: detectorul nu are ring buffer; 8.3.3 NU va "
@@ -676,7 +726,8 @@ def main():
     cablaj = (cablaj_extnav if nova_config.guidance(cfg) == 'extnav'
               else cablaj_plnd)
     gate, sup, sm, autoritate = cablaj(a, cfg, vehicle, override, gate_kw,
-                                       canal, prag, signal_reject, on_sm_event)
+                                       canal, prag, signal_reject, on_sm_event,
+                                       fov_deg=fov)
     if monitor:
         print("[bord] MONITOR: poarta inchisa pentru rularea asta, oricare "
               f"ar fi config/nova.json. Motiv: {gate.monitor_reason}")

@@ -48,6 +48,13 @@
   "ceiling_agl_m": 30.0,
   "ceiling_confirm_n": 3,
 
+  "_yaw_search": "Cautarea markerului prin rotire (B3, 04.10.2026): dupa ferestrele stationare ale portii fara nicio detectie, DACA poarta a acceptat (E0, manse, altitudine) - EKF pe SRC2 (fara GNSS, ack atribuit), GUIDED confirmat, apoi O comanda CONDITION_YAW relativa, spre stanga, de yaw_search_max_deg grade cu yaw_search_rate_dps grd/s; la prima detectie VPE imediat (resetul EKF pe cadrul markerului), oprirea rotirii cu un consemn de pozitie, apoi ENGAGE. Fara marker: EXIT (SRC1 -> LOITER) cel tarziu la 5.0 s de la comutare - EKF-ul pierde pozitia la 7.0 s fara viziune (masurat in SITL 4.5.7, constanta de firmware). 'auto' = doar sub h_cover = search_radius_m / tan(FOV_scurt/2), din calibrarea efectiva a presetului (crop1280: ~15.7 m); true = mereu; false = GATE_FAIL ca inainte. Bugetul 0.5 s + grade/rata + 0.3 s <= 5.0 s e verificat la pornire (90/20 = 5.3 s REFUZAT, 90/25 = 4.4 s ok, 180/45 = 4.8 s ok). Maxim 180 grd, 60 grd/s (ATC_SLEW_YAW); peste 30 grd/s AVERTISMENT: detectia la acea rata nu e testata. Detectia in rotire NU e testata pe camera reala (expunerea blocata <= 2 ms: neclaritate sub 1 px la 25 grd/s).",
+  "yaw_search": "auto",
+  "yaw_search_max_deg": 90,
+  "yaw_search_rate_dps": 25,
+  "_search_radius_m": "Raza zonei markerului fata de punctul de handover (regula 15.2.3), m; intra in h_cover.",
+  "search_radius_m": 6.5,
+
   "_camera_fresh_capture": "false (27.09.2026): capture_request(flush=True) astepta un cadru capturat DUPA apel, ~62 ms in serie cu detectia la fiecare cadru (etapa 'achizitie' in b29). Cadrul din coada e cu 50-90 ms mai vechi, dar ExtNav foloseste timpul capturii, nu al publicarii, deci varsta nu conteaza pentru pozitie.",
   "camera_fresh_capture": false,
 

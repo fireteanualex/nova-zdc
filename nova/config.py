@@ -164,6 +164,27 @@ DEFAULTS = {
     'ceiling_agl_m': 30.0,
     'ceiling_confirm_n': 3,
 
+    # B3 (04.10.2026): the marker search by rotation, after the gate's
+    # stationary windows found nothing (nova/extnav_landing.py YAW_SEARCH).
+    # GNSS-free (SRC2) and in GUIDED; ONE relative CONDITION_YAW of
+    # yaw_search_max_deg at yaw_search_rate_dps, counter-clockwise; a hard
+    # deadline 5.0 s after the SRC2 switch (the EKF drops the position at
+    # 7.0 s without vision - measured, a firmware constant). Validated by
+    # yaw_search_settings(): 0.5 s + max_deg / rate + 0.3 s must fit in
+    # 5.0 s, else startup refused.
+    #   yaw_search            'auto' (only below h_cover, the height from
+    #                         which the short camera axis already covers
+    #                         search_radius_m) | true | false
+    #   yaw_search_max_deg    90 sweeps the long axis through every
+    #                         direction; at most 180 (more = refused)
+    #   yaw_search_rate_dps   at most 60 (ATC_SLEW_YAW); above 30 a WARNING:
+    #                         detection at that rate is untested
+    #   search_radius_m       rule 15.2.3's zone around the handover point
+    'yaw_search': 'auto',
+    'yaw_search_max_deg': 90.0,
+    'yaw_search_rate_dps': 25.0,
+    'search_radius_m': 6.5,
+
     # OLD KEY, replaced by `exposure` (27.09.2026): true = 'auto_lock',
     # false = 'fixed'. Read only when `exposure` is unset. None = not set:
     # the preset decides (a default of True here would override every
@@ -376,6 +397,67 @@ def handover_settings(cfg):
             f"handover_alt_max = {hi:g} m peste {HANDOVER_RULE_MAX_M:g} m "
             f"(regulile 15.1.2 / 15.2.3)")
     return {'alt_min_m': lo, 'alt_max_m': hi, 'source': source}, warnings
+
+
+def yaw_search_settings(cfg):
+    """(values, warnings) for the marker search by rotation (B3), or
+    ValueError (startup refused). values: yaw_search ('auto' / True /
+    False), yaw_search_max_deg, yaw_search_rate_dps, search_radius_m and
+    duration_s - SWITCH_OVERHEAD_S + max_deg / rate + STOP_MARGIN_S, the
+    time from the SRC2 command to the rotation stopped.
+
+    Refused: yaw_search not one of 'auto' / true / false; a non-numeric or
+    non-positive degree, rate or radius; more than 180 deg or 60 deg/s; and,
+    with the search enabled, a duration over SEARCH_BUDGET_S (5.0 s) - the
+    EKF keeps a position only 7.0 s after the switch without vision. With
+    yaw_search false the budget is not checked (the rotation never runs).
+    Warned: a rate above 30 deg/s (detection untested there)."""
+    from . import extnav_landing as xl          # lazy: pymavlink behind it
+    mode = cfg.get('yaw_search', DEFAULTS['yaw_search'])
+    mode = DEFAULTS['yaw_search'] if mode is None else mode
+    if not (mode is True or mode is False or mode == 'auto'):
+        raise ValueError(f"config: `yaw_search` = {mode!r} trebuie sa fie "
+                         f"'auto', true sau false")
+
+    def val(key):
+        raw = cfg.get(key, DEFAULTS[key])
+        x = _numar(key, DEFAULTS[key] if raw is None else raw)
+        if not x > 0:
+            raise ValueError(f"config: `{key}` = {x:g} trebuie sa fie pozitiv")
+        return x
+    deg = val('yaw_search_max_deg')
+    rate = val('yaw_search_rate_dps')
+    radius = val('search_radius_m')
+    if deg > xl.YAW_SEARCH_MAX_DEG_LIMIT:
+        raise ValueError(
+            f"config: yaw_search_max_deg = {deg:g} grd peste maximul de "
+            f"{xl.YAW_SEARCH_MAX_DEG_LIMIT:g} grd (90 acopera deja toate "
+            f"directiile cu axa lunga a camerei)")
+    if rate > xl.YAW_SEARCH_RATE_LIMIT_DPS:
+        raise ValueError(
+            f"config: yaw_search_rate_dps = {rate:g} grd/s peste "
+            f"{xl.YAW_SEARCH_RATE_LIMIT_DPS:g} grd/s (ATC_SLEW_YAW 6000 cd/s "
+            f"al FC-ului)")
+    dur = xl.yaw_search_duration_s(deg, rate)
+    if mode is not False and dur > xl.SEARCH_BUDGET_S + 1e-9:
+        need = deg / (xl.SEARCH_BUDGET_S - xl.SWITCH_OVERHEAD_S - xl.STOP_MARGIN_S)
+        raise ValueError(
+            f"config: cautarea prin rotire nu incape in buget: "
+            f"{xl.SWITCH_OVERHEAD_S:g} s (SRC2 + GUIDED) + {deg:g} grd / "
+            f"{rate:g} grd/s = {deg / rate:.2f} s + {xl.STOP_MARGIN_S:g} s "
+            f"(oprire) = {dur:.2f} s > {xl.SEARCH_BUDGET_S:g} s de la "
+            f"comutarea pe SRC2 (EKF-ul pierde pozitia la "
+            f"{xl.EKF_NO_VISION_VALID_S:g} s fara viziune). Pentru {deg:g} grd "
+            f"trebuie cel putin {need:.1f} grd/s, sau mai putine grade")
+    warnings = []
+    if rate > xl.YAW_SEARCH_RATE_TESTED_DPS:
+        warnings.append(
+            f"yaw_search_rate_dps = {rate:g} grd/s peste "
+            f"{xl.YAW_SEARCH_RATE_TESTED_DPS:g}: detectia la aceasta rata nu "
+            f"e testata")
+    return {'yaw_search': mode, 'yaw_search_max_deg': deg,
+            'yaw_search_rate_dps': rate, 'search_radius_m': radius,
+            'duration_s': dur}, warnings
 
 
 def guidance(cfg):

@@ -786,6 +786,11 @@ class Vehicle:
         elif msg.command == mavutil.mavlink.MAV_CMD_DO_SET_MODE:
             if msg.result != mavutil.mavlink.MAV_RESULT_ACCEPTED:
                 print(f"!! DO_SET_MODE respins (result={msg.result})")
+        elif msg.command == mavutil.mavlink.MAV_CMD_CONDITION_YAW:
+            # B3: said only - the search's own deadline ends a rotation
+            # that never starts
+            if msg.result != mavutil.mavlink.MAV_RESULT_ACCEPTED:
+                print(f"!! CONDITION_YAW respins (result={msg.result})")
         elif msg.command == mavutil.mavlink.MAV_CMD_SET_EKF_SOURCE_SET:
             # 15.2.5: comutarea de surse e o afirmatie de conformitate, deci
             # raspunsul FC-ului se pastreaza, nu doar se tipareste.
@@ -1171,6 +1176,28 @@ class Vehicle:
                           float(x), float(y), float(z), 0.0, 0.0, 0.0,
                           0.0, 0.0, 0.0, float(yaw), 0.0,
                           periodic='pos_target', counter='n_pos_target')
+
+    def send_condition_yaw(self, angle_deg, rate_dps, direction=-1,
+                           relative=True):
+        """MAV_CMD_CONDITION_YAW (B3, the marker search), COMMAND_LONG on
+        the normal TX queue: in GUIDED the FC turns by / to `angle_deg` at
+        `rate_dps`. param3 `direction`: -1 = counter-clockwise (left seen
+        from above, yaw decreasing), +1 = clockwise; param4 1 = relative to
+        the current yaw, 0 = absolute (ArduCopter autoyaw.cpp:116). Measured
+        on 4.5.7: the angle overshoots by ~2.4 deg; the FC caps the rate at
+        ATC_SLEW_YAW (6000 cd/s). A later SET_POSITION_TARGET with a yaw
+        ends it."""
+        if direction not in (-1, 1):
+            raise ValueError(f"directia CONDITION_YAW e -1 sau 1, nu {direction}")
+        angle = float(angle_deg)
+        rate = float(rate_dps)
+        if not (0.0 <= angle <= 360.0) or not rate > 0.0:
+            raise ValueError(f"CONDITION_YAW: unghi {angle_deg} / rata {rate_dps}")
+        return self._send('command_long_send',
+                          self._sysid, self._compid,
+                          mavutil.mavlink.MAV_CMD_CONDITION_YAW, 0,
+                          angle, rate, float(direction),
+                          1.0 if relative else 0.0, 0, 0, 0)
 
     def send_landing_target(self, angle_x, angle_y, dist):
         return self._send('landing_target_send',

@@ -452,10 +452,22 @@ def check_touchdown(cfg):
             f"({pl['ceiling_confirm_n']} esantioane), din GATE_SEARCH pana la "
             f"predare -> SRC1 -> RTL; poarta {hw['alt_min_m']:.1f}-"
             f"{hw['alt_max_m']:.1f} m")
+    # B3: the marker search by rotation - the same validation as startup
+    # (the 5.0 s budget from the SRC2 switch); a refusal is ESEC
+    try:
+        ys, ys_warn = nova_config.yaw_search_settings(cfg)
+    except ValueError as e:
+        return Result('secventa', ESEC, str(e))
+    mod = {True: 'mereu', False: 'oprita'}.get(ys['yaw_search'], ys['yaw_search'])
+    det += (f"; rotire {mod}, {ys['yaw_search_max_deg']:g} grd la "
+            f"{ys['yaw_search_rate_dps']:g} grd/s, {ys['duration_s']:.1f}/5.0 s "
+            f"de la SRC2")
+    warnings = list(warnings) + list(ys_warn)
     if warnings:
         det += ' | ATENTIE: ' + '; '.join(warnings)
     return Result('secventa', OK, det,
-                  dict(v, warnings=warnings, ceiling=pl, handover=hw))
+                  dict(v, warnings=warnings, ceiling=pl, handover=hw,
+                       yaw_search=ys))
 
 
 def run_checks(args, source_factory=None):

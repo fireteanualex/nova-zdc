@@ -64,6 +64,19 @@ class SimVeh(Vehicle):
         self.src = 1
         self.bias = None                 # EKF: marker = truth + bias
         self.target = None               # (x, y, z, yaw) din SET_POSITION_TARGET
+        #: B3: the GNSS frame relative to the marker's (the frame jump at
+        #: the first VPE on SRC2); GPS_OFFSET unless a test sets it
+        self.gps_offset = list(GPS_OFFSET)
+        #: B3: MAV_CMD_CONDITION_YAW in GUIDED - the active turn (target
+        #: yaw, rate rad/s, direction) until reached / a position target /
+        #: another mode; every command received, with the FC time
+        self.cond_yaw = None
+        self.cond_yaws = []
+        #: B3: (t, x, y, z, yaw) of every SET_POSITION_TARGET, FC time
+        self.target_log = []
+        #: B3: when set 2 took effect (the EKF's 7.0 s without vision count
+        #: from the last fused position: this, or the last VPE after it)
+        self.src2_t = None
         live.armed = True
         live.mode = MODE_LOITER
         self.mode_delay_s = 0.15
@@ -140,8 +153,22 @@ class SimVeh(Vehicle):
             def set_position_target_local_ned_send(self, *a):
                 outer.targets.append(a)
                 outer.target = (a[5], a[6], a[7], a[14])
+                outer.target_log.append((outer.now, a[5], a[6], a[7], a[14]))
+                outer.cond_yaw = None    # a position target with yaw ends it
 
             def command_long_send(self, *a):
+                if a[2] == mavutil.mavlink.MAV_CMD_CONDITION_YAW:
+                    # (sys, comp, cmd, conf, angle, rate, dir, relative, ...)
+                    ang, rate, dr, rel = a[4], a[5], a[6], a[7]
+                    outer.cond_yaws.append((outer.now, ang, rate, dr, rel))
+                    outer.wire.append(('cyaw', ang, outer.now, rate, dr, rel))
+                    if outer._live.mode == MODE_GUIDED:
+                        d = 1.0 if dr >= 0 else -1.0
+                        rest = (math.radians(ang) if rel else
+                                (ex.wrap_pi(math.radians(ang) - outer.yaw_true)
+                                 * d) % (2 * math.pi))
+                        # [remaining rad, rate rad/s, direction]
+                        outer.cond_yaw = [rest, math.radians(rate), d]
                 if a[2] == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
                     outer.takeoffs.append(a[-1])
                     if (outer._live.armed and outer._live.mode == MODE_GUIDED
@@ -165,9 +192,10 @@ class SimVeh(Vehicle):
 
     # -- ce vede companion-ul ----------------------------------------------
     def _publish(self, now):
+        go = self.gps_offset
         if self.src == 1 or self.bias is None:
-            x = self.p[0] + GPS_OFFSET[0]
-            y = self.p[1] + GPS_OFFSET[1]
+            x = self.p[0] + go[0]
+            y = self.p[1] + go[1]
         else:
             x = self.p[0] + self.bias[0]
             y = self.p[1] + self.bias[1]
@@ -181,7 +209,7 @@ class SimVeh(Vehicle):
         live.lat = LAT0 + x / M_PER_DEG
         live.lon = LON0 + y / (M_PER_DEG * math.cos(math.radians(LAT0)))
         live.n_gpi += 1
-        gx, gy = self.p[0] + GPS_OFFSET[0], self.p[1] + GPS_OFFSET[1]
+        gx, gy = self.p[0] + go[0], self.p[1] + go[1]
         live.gps_lat = LAT0 + gx / M_PER_DEG
         live.gps_lon = LON0 + gy / (M_PER_DEG * math.cos(math.radians(LAT0)))
         live.gps_fix = 3
@@ -189,9 +217,12 @@ class SimVeh(Vehicle):
         live.rc_t = now
         self.hb_t = now                  # legatura vie (monitorul de link)
         valid = self.ekf_valid if self.src == 1 else self.ekf_valid_after_switch
-        if (self.src == 2 and self.vpe_t is not None
-                and now - self.vpe_t > self.vpe_timeout_s):
-            valid = False                # SITL 4.5.7: 7.0 s without vision
+        last_fix = [t for t in (self.vpe_t, self.src2_t) if t is not None]
+        if (self.src == 2 and last_fix
+                and now - max(last_fix) > self.vpe_timeout_s):
+            # SITL 4.5.7: 7.0 s without vision, from the last fused position
+            # - the last VPE, or (B3) the switch itself when none came after
+            valid = False
         live.ekf_flags = (mavutil.mavlink.EKF_ATTITUDE
                           | (mavutil.mavlink.EKF_POS_HORIZ_REL if valid else 0))
         live.ekf_t = now
@@ -217,9 +248,11 @@ class SimVeh(Vehicle):
             return True
 
         def apply():
-            self.src = n
+            prev, self.src = self.src, n
             if n == 1:
                 self.bias = None
+            elif n == 2 and prev != 2:
+                self.src2_t = self.now
 
         def ack():
             self._live.ekf_src_ack = self.src_result
@@ -266,6 +299,16 @@ class SimVeh(Vehicle):
         while self.mode_pending and self.mode_pending[0][0] <= now:
             live.mode = self.mode_pending.pop(0)[1]
         on_ground = live.landed_state == LANDED_ON_GROUND
+        if live.mode != MODE_GUIDED:
+            self.cond_yaw = None
+        elif self.cond_yaw is not None and not on_ground:
+            # CONDITION_YAW: turn at the rate until the angle is done
+            rest, rate, d = self.cond_yaw
+            step_ = min(rest, rate * dt)
+            self.yaw_true = ex.wrap_pi(self.yaw_true + d * step_)
+            self.cond_yaw[0] = rest - step_
+            if self.cond_yaw[0] <= 1e-9:
+                self.cond_yaw = None
         if live.mode == MODE_GUIDED and self.takeoff_alt is not None:
             # GUIDED takeoff: vertical, xy held
             self.vel = [0.0, 0.0, -self.climb_ms]
@@ -281,7 +324,7 @@ class SimVeh(Vehicle):
         elif live.mode == MODE_GUIDED and self.target is not None:
             tx, ty, tz, tyaw = self.target
             # consemnul e in cadrul EKF; il traducem in adevar prin bias
-            bx, by = self.bias if self.bias is not None else GPS_OFFSET
+            bx, by = self.bias if self.bias is not None else self.gps_offset
             gx, gy, gh = tx - bx, ty - by, -tz
             for i, (cur, goal) in enumerate(((self.p[0], gx), (self.p[1], gy))):
                 v = max(-1.0, min(1.0, 1.2 * (goal - cur)))
@@ -319,8 +362,12 @@ class SimVeh(Vehicle):
 class TruthDetector:
     """Detectii din adevar, la `rate` din cadre (10 cadre/s), cu latenta."""
 
-    def __init__(self, veh, rate=0.05, latency_s=0.08, seed=1, fps=10.0):
+    def __init__(self, veh, rate=0.05, latency_s=0.08, seed=1, fps=10.0,
+                 fov_half_deg=None):
         self.v = veh
+        #: B3: (forward, right) half field of view, degrees; None = the
+        #: marker is seen in any direction (the tests before B3)
+        self.fov_half_deg = fov_half_deg
         self.rate = rate
         self.latency = latency_s
         self.rng = random.Random(seed)
@@ -348,6 +395,10 @@ class TruthDetector:
             d = (-self.v.p[0], -self.v.p[1], self.v.h)      # spre marker, NED
             b = ex.ned_to_body(d, 0.0, 0.0, self.v.yaw_true)
             if b[2] <= 0.05:
+                continue
+            if self.fov_half_deg is not None and (
+                    abs(math.degrees(math.atan2(b[0], b[2]))) > self.fov_half_deg[0]
+                    or abs(math.degrees(math.atan2(b[1], b[2]))) > self.fov_half_deg[1]):
                 continue
             self.n_dets += 1
             out.append(Detection(

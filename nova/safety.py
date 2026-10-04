@@ -778,7 +778,11 @@ class SafetySupervisor:
 
 #: Phases of nova/extnav_landing.py in which the supervisor is armed.
 #: Positive list, like AUTONOMOUS_PHASES.
-EXTNAV_PHASES = ('GATE_SEARCH', 'ENGAGE', 'MOVE', 'CENTER_CHECK', 'DESCEND',
+EXTNAV_PHASES = ('GATE_SEARCH',
+                 # B3 (04.10.2026): the marker search by rotation - armed,
+                 # so the ceiling, the override and the mode rule hold there
+                 'YAW_SEARCH',
+                 'ENGAGE', 'MOVE', 'CENTER_CHECK', 'DESCEND',
                  'FINAL_ALIGN', 'LAND', 'TOUCHDOWN',
                  # touchdown without disarming and the climb back (15.1.2):
                  # the segment goes on after contact, so does supervision
@@ -793,6 +797,15 @@ EXTNAV_PHASES = ('GATE_SEARCH', 'ENGAGE', 'MOVE', 'CENTER_CHECK', 'DESCEND',
 EXTNAV_ENGAGED_PHASES = ('MOVE', 'CENTER_CHECK', 'DESCEND', 'FINAL_ALIGN',
                          'LAND', 'TOUCHDOWN', 'TOUCHDOWN_DESCENT', 'CONTACT',
                          'GROUND_HOLD', 'RISEUP', 'HOVER_CONFIRM')
+#: B3 (04.10.2026): YAW_SEARCH runs on SRC2 and in GUIDED like the phases
+#: above, so the link, the EKF position (valid for 7.0 s after the switch
+#: without vision, measured - an invalid one there is a fault -> EXIT) and
+#: the threads are watched there. NOT the geometry: the EKF frame jumps by
+#: tens of metres at the first detection during the search, so the radius
+#: origin may only be anchored after that reset - on entering the first
+#: geometry phase (MOVE), see ExtNavSupervisor.update.
+EXTNAV_SEARCH_PHASES = ('YAW_SEARCH',)
+EXTNAV_EKF_PHASES = EXTNAV_SEARCH_PHASES + EXTNAV_ENGAGED_PHASES
 #: The climb back to alt_riseup: GUIDED takeoff climbs at WPNAV_SPEED_UP
 #: (2.5 m/s by default, not set in our parameter files). Faster than this,
 #: sustained, is not the takeoff controller any more -> EXIT.
@@ -842,12 +855,13 @@ class ExtNavSupervisor(SafetySupervisor):
         super().__init__(vehicle, **kw)
         self.on_exit = on_exit
         self.autonomous_phases = EXTNAV_PHASES
-        self.link_phases = EXTNAV_ENGAGED_PHASES
-        self.ekf_phases = EXTNAV_ENGAGED_PHASES
+        self.link_phases = EXTNAV_EKF_PHASES
+        self.ekf_phases = EXTNAV_EKF_PHASES
         self.gate_phases = ('GATE_SEARCH',)
         # Radius only once the frame is the marker's and the origin has
         # been re-anchored (see update): in GATE_SEARCH the vehicle is the
-        # pilot's, in ENGAGE the EKF position is being reset. The ceiling
+        # pilot's, in ENGAGE the EKF position is being reset, in YAW_SEARCH
+        # (B3) it is reset at the first detection, mid-phase. The ceiling
         # does not use this origin any more (B1): it is above HOME.
         self.geometry_phases = EXTNAV_ENGAGED_PHASES
         self.ceiling_phases = CEILING_PHASES
@@ -855,6 +869,9 @@ class ExtNavSupervisor(SafetySupervisor):
         self._ceil_reset()
         self.ekf_report_max_age_s = EKF_REPORT_MAX_AGE_S
         self._engaged_since = None
+        #: B3: when the current run of geometry phases began (the radius
+        #: origin is re-anchored at its start), None outside them
+        self._geometry_since = None
         self.max_climb_rate_ms = MAX_CLIMB_RATE_MS
         self._climb_since = None
         #: B1.9 (G2): this thread's previous update() time, and the sticky
@@ -948,12 +965,22 @@ class ExtNavSupervisor(SafetySupervisor):
         if phase in self.ekf_phases:
             if self._engaged_since is None:
                 self._engaged_since = now
+        else:
+            self._engaged_since = None
+        if phase in self.geometry_phases:
+            if self._geometry_since is None:
+                self._geometry_since = now
                 # The EKF position has just been RESET onto the marker frame
                 # (the state machine enters MOVE only after observing it).
                 # The radius origin captured at arm time was in
                 # the previous frame: measured against it, the reset alone
                 # reads as tens of metres and would EXIT at once. Re-anchor
                 # here; from now on the frame is stable.
+                # B3: on entering the first GEOMETRY phase, no longer the
+                # first EKF one - YAW_SEARCH is an EKF phase, and its reset
+                # comes mid-phase, at the first detection: anchored on
+                # entering YAW_SEARCH, the origin would sit in the GNSS frame
+                # and MOVE would trip the radius by the frame jump.
                 if self.armed and self.v.have_pos:
                     self.origin_n, self.origin_e = self.v.x, self.v.y
                     self.origin_alt = self.v.alt
@@ -962,7 +989,7 @@ class ExtNavSupervisor(SafetySupervisor):
                                f"EKF: N={self.v.x:.2f} E={self.v.y:.2f} "
                                f"alt={self.v.alt:.2f}", phase)
         else:
-            self._engaged_since = None
+            self._geometry_since = None
 
         if self.latched != Action.NONE:
             # EXIT was asked once; the state machine owns it from there.

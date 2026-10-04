@@ -12,7 +12,26 @@ PLND machine in nova/state_machine.py stays for the simulator.
      |                         segment (team decision 27.09.2026; two
      |                         consistent ones with gate_detections=2);
      |                         none -> one retry -> GATE_FAIL (stays in
-     |                         LOITER, STATUSTEXT).
+     |                         LOITER, STATUSTEXT) - or YAW_SEARCH (B3).
+     |
+     |-(none found, gate ok, yaw_search on / 'auto' and h < h_cover)->
+    YAW_SEARCH    B3 (04.10.2026), GNSS-free from its first command:
+                  1. 'src2'   EKF on SRC2 (read back, ATTRIBUTED ack), the
+                              time of the command = t_switch
+                  2. 'mode'   GUIDED, confirmed from HEARTBEAT
+                  3. 'rotate' ONE CONDITION_YAW, relative, counter-
+                              clockwise, yaw_search_max_deg at
+                              yaw_search_rate_dps; NO position target
+                  4. 'found'  first detection -> VPE at once (the EKF
+                              resets onto the marker frame); the reset
+                              observed -> ONE position target at the EKF
+                              position (new frame), current yaw: stops it
+                  5. 'confirm' the gate criterion (gate_detections) within
+                              YAW_SEARCH_CONFIRM_S of the first detection
+                  -> ENGAGE (switch and mode already done: verified only)
+                  Nothing found by t_switch + SEARCH_BUDGET_S (5.0 s), or
+                  the rotation done without a detection -> EXIT, long
+                  before the EKF drops the position (7.0 s, measured).
      v
     ENGAGE        1. EKF on SRC2 (no GNSS), read back before switching
                   2. first VISION_POSITION_ESTIMATE right away
@@ -161,6 +180,76 @@ HOVER_CORRECTION_TIMEOUT_S = 10.0
 THROTTLE_LOW_PWM = 1100      # pilot's throttle at the bottom: disarm risk
 YAW_ALIGN_TOL_DEG = 5.0
 
+# --- B3: the marker search by rotation (04.10.2026) ---------------------------
+# Measured in SITL Copter-4.5.7, phases A2 / A2b, in the real scenario (no
+# VISION_POSITION_ESTIMATE before the switch, a frame jump of ~38 m at the
+# first detection):
+#: On EKF source set 2 (EK3_SRC2_POSXY 6, no GNSS) with no vision sample,
+#: the EKF keeps a valid horizontal position for 7.0 s counted from the LAST
+#: FUSED POSITION - the last GPS fusion, i.e. the SRC2 switch - then loses
+#: it (posRetryTimeNoVel_ms = 7000, AP_NavEKF3.h:466: a constant, not a
+#: parameter); ~0.9 s later the EKF failsafe lands. The variance gives NO
+#: early warning. Every deadline of YAW_SEARCH is derived from this number.
+EKF_NO_VISION_VALID_S = 7.0
+#: The ack of SET_EKF_SOURCE_SET(2) + GUIDED confirmed from HEARTBEAT,
+#: budgeted for the serial link (measured 0.04 s on TCP: ack 0.01 s,
+#: GUIDED accepted on set 2 without any ExtNav sample in 0.03 s).
+SWITCH_OVERHEAD_S = 0.5
+#: Stopping the rotation with a position target: 0.30 s measured.
+STOP_MARGIN_S = 0.3
+#: HARD deadline, from the SRC2 command, for the first accepted detection.
+#: SWITCH_OVERHEAD_S + max_deg / rate + STOP_MARGIN_S must fit in it (a
+#: startup check, nova.config.yaw_search_settings). 2.0 s below the EKF's
+#: 7.0 s: the first VPE must reach the FC before ~6.8 s (a VPE after the
+#: position loss resets dirty: a 1.5 m lurch, measured).
+SEARCH_BUDGET_S = 5.0
+#: After the first detection, the gate criterion (gate_detections) must be
+#: met within this. The 7 s rule now counts from the LAST fused VPE, and
+#: one goes out with every detection, so 4 s stays inside it.
+YAW_SEARCH_CONFIRM_S = 4.0
+#: The rotation counts as done this close to yaw_search_max_deg (the FC
+#: overshoots the target by ~2.4 deg, it never undershoots by 5).
+YAW_SEARCH_DONE_TOL_DEG = 5.0
+#: First detection -> the reset must be seen in LOCAL_POSITION_NED within
+#: EKF_SETTLE_S + this (measured 14-54 ms) ...
+YAW_SEARCH_RESET_WAIT_S = 1.0
+#: ... and in any case before this, from the switch: if the first VPE was
+#: not fused, the EKF still counts from the switch and drops the position at
+#: EKF_NO_VISION_VALID_S - the exit (SRC1, ms) must come well before.
+YAW_SEARCH_RESET_CAP_S = EKF_NO_VISION_VALID_S - 1.0
+#: The team's limits (startup refused above): 180 deg (more gains nothing -
+#: 90 already sweeps the long axis through every direction), 60 deg/s (the
+#: FC's ATC_SLEW_YAW 6000 cd/s). Above 30 deg/s the detection is untested.
+YAW_SEARCH_MAX_DEG_LIMIT = 180.0
+YAW_SEARCH_RATE_LIMIT_DPS = 60.0
+YAW_SEARCH_RATE_TESTED_DPS = 30.0
+#: Rule 15.2.3's zone: the marker lies within this of the handover point.
+SEARCH_RADIUS_M = 6.5
+#: NOT TESTED ON THE REAL CAMERA: detection while yawing at these rates.
+#: The exposure is locked at <= 2000 us (crop1280), so at 25 deg/s the
+#: motion blur is under one pixel - fine on paper, unmeasured in flight.
+
+
+def yaw_search_h_cover_m(search_radius_m, hfov_deg, vfov_deg):
+    """The height from which the camera's SHORT half-axis alone covers the
+    search radius: r / tan(min(HFOV, VFOV) / 2). Below it a marker inside
+    the radius may be outside the frame - the rotation is worth doing; at
+    or above it, it is not. min() so the camera's mounting rotation does
+    not matter. From the EFFECTIVE calibration of the running preset
+    (crop1280: ~73 x 45 deg -> ~15.7 m for 6.5 m). None if unknown."""
+    if hfov_deg is None or vfov_deg is None or search_radius_m is None:
+        return None
+    short = min(float(hfov_deg), float(vfov_deg))
+    if not 0.0 < short < 180.0:
+        return None
+    return float(search_radius_m) / math.tan(math.radians(short) / 2.0)
+
+
+def yaw_search_duration_s(max_deg, rate_dps):
+    """The startup budget's left side, s, counted from the SRC2 command:
+    SWITCH_OVERHEAD_S + max_deg / rate + STOP_MARGIN_S."""
+    return SWITCH_OVERHEAD_S + float(max_deg) / float(rate_dps) + STOP_MARGIN_S
+
 AUX_CHANNEL = 8
 AUX_HIGH_PWM = 1500
 
@@ -188,6 +277,8 @@ class Phase:
     COMPLETE = 'COMPLETE'
     #: B1: the ceiling's exit - SRC1 (acknowledged), frame gate, RTL
     EXIT_RTL = 'EXIT_RTL'
+    #: B3: the marker search by rotation, GNSS-free (SRC2, GUIDED)
+    YAW_SEARCH = 'YAW_SEARCH'
 
 
 #: After FINAL_ALIGN: descent to contact, the ground and the climb back.
@@ -199,12 +290,19 @@ GROUND_PHASES = (Phase.CONTACT, Phase.GROUND_HOLD, Phase.RISEUP)
 
 
 #: Phases in which the EKF must be on SRC2 (given to EkfSourceManager).
-SRC2_PHASES = (Phase.ENGAGE, Phase.MOVE, Phase.CENTER_CHECK, Phase.DESCEND,
-               Phase.FINAL_ALIGN, Phase.LAND, Phase.TOUCHDOWN, Phase.EXIT) \
-    + TOUCHDOWN_PHASES + (Phase.COMPLETE,)
+#: B3: YAW_SEARCH too - the manager is armed from the phase and switches
+#: there; going on to ENGAGE (same set, already ACTIV) it does not switch
+#: again: one SET_EKF_SOURCE_SET(2) per attempt.
+SRC2_PHASES = (Phase.YAW_SEARCH, Phase.ENGAGE, Phase.MOVE, Phase.CENTER_CHECK,
+               Phase.DESCEND, Phase.FINAL_ALIGN, Phase.LAND, Phase.TOUCHDOWN,
+               Phase.EXIT) + TOUCHDOWN_PHASES + (Phase.COMPLETE,)
 #: Phases from which AUX down or a supervisor request means EXIT.
-ENGAGED_PHASES = (Phase.ENGAGE, Phase.MOVE, Phase.CENTER_CHECK, Phase.DESCEND,
-                  Phase.FINAL_ALIGN, Phase.LAND, Phase.TOUCHDOWN) + TOUCHDOWN_PHASES
+#: B3: YAW_SEARCH is engaged from its first command (SRC2, GUIDED); before
+#: the switch is sent, a request goes back to IDLE (request_exit), like one
+#: in GATE_SEARCH - nothing was commanded yet.
+ENGAGED_PHASES = (Phase.YAW_SEARCH, Phase.ENGAGE, Phase.MOVE,
+                  Phase.CENTER_CHECK, Phase.DESCEND, Phase.FINAL_ALIGN,
+                  Phase.LAND, Phase.TOUCHDOWN) + TOUCHDOWN_PHASES
 #: Phases in which estimates are sent to the EKF (D5: from ENGAGE on).
 #: EXIT_RTL like EXIT: while set 2 may still be active the EKF keeps its
 #: vision (with the supervisor's abort up the I/O thread drops it anyway).
@@ -214,8 +312,11 @@ VPE_PHASES = ENGAGED_PHASES + (Phase.EXIT, Phase.COMPLETE, Phase.EXIT_RTL)
 #: ceiling holds there as well (rule 15.2.4).
 EXIT_RTL_FROM = (Phase.GATE_SEARCH,) + ENGAGED_PHASES
 #: Phases in which we hold a mode of our own and watch it.
-GUIDED_PHASES = (Phase.MOVE, Phase.CENTER_CHECK, Phase.DESCEND,
-                 Phase.FINAL_ALIGN) + TOUCHDOWN_PHASES
+#: B3: YAW_SEARCH holds GUIDED from its 'mode' sub-step on (the watch is
+#: armed once GUIDED is confirmed; before that the sub-steps check the
+#: pilot's mode themselves).
+GUIDED_PHASES = (Phase.YAW_SEARCH, Phase.MOVE, Phase.CENTER_CHECK,
+                 Phase.DESCEND, Phase.FINAL_ALIGN) + TOUCHDOWN_PHASES
 
 
 @dataclass
@@ -247,6 +348,17 @@ class ExtNavConfig:
     touchdown_hold_s: float = 1.5
     riseup_timeout_s: float = 15.0
     hover_confirm_s: float = 1.0
+    #: B3, the marker search by rotation (nova.config.yaw_search_settings):
+    #: 'auto' | True | False. False HERE (the dataclass default, i.e. a
+    #: caller that does not configure it): the previous behaviour. The app
+    #: passes the config's value, 'auto' by default.
+    yaw_search: object = False
+    yaw_search_max_deg: float = 90.0
+    yaw_search_rate_dps: float = 25.0
+    search_radius_m: float = SEARCH_RADIUS_M
+    #: yaw_search_h_cover_m() from the effective calibration; None =
+    #: unknown, and then 'auto' does not search (only True does).
+    h_cover_m: object = None
 
 
 class ExtNavLanding:
@@ -258,7 +370,10 @@ class ExtNavLanding:
 
     Events (on_event(name, info)): 'state', 'handover_reject', 'gate_fail',
     'engage', 'scoring_capture' (t = capture time of the detection),
-    'touchdown' (t = now), 'exit', 'exit_done', 'aux_ignored_disarmed'.
+    'touchdown' (t = now), 'exit', 'exit_done', 'aux_ignored_disarmed';
+    B3: 'yaw_search' (begin), 'yaw_search_src2' / '_ack' / '_rotate' /
+    '_found' / '_stop' (s = seconds from the SRC2 command) and
+    'yaw_search_end' (result 'gasit' / 'negasit' / 'neconfirmat' / 'abort').
     """
 
     def __init__(self, vehicle, estimator, ekf, gate, cfg=None,
@@ -321,6 +436,10 @@ class ExtNavLanding:
         self._clear_rtl()
         self.n_vpe_sent = 0
         self._clear_touchdown()
+        self._clear_yaw_search()
+        #: B3 counters, for the logs and the tests (never reset)
+        self.n_condition_yaw = 0
+        self.n_stop_targets = 0
 
     # -- events ------------------------------------------------------------
     def _emit(self, name, **info):
@@ -359,6 +478,26 @@ class ExtNavLanding:
         self._exit_step = None
         self._clear_rtl()
         self._clear_touchdown()
+        self._clear_yaw_search()
+
+    def _clear_yaw_search(self):
+        """State of YAW_SEARCH (B3). Times on the loop clock."""
+        self._ys_sub = None             # 'src2', 'mode', 'rotate', 'found', 'confirm'
+        self._ys_t0 = None              # YAW_SEARCH entered
+        self._ys_t_switch = None        # SET_EKF_SOURCE_SET(2) sent: THE clock
+        self._ys_ack_t = None
+        self._ys_guided_t = None
+        self._ys_rot_t = None           # CONDITION_YAW sent
+        self._ys_yaw0 = None
+        self._ys_yaw_last = None
+        self._ys_turn = 0.0             # accumulated rotation, rad (signed)
+        self._ys_det_t = None           # first detection after the switch
+        self._ys_det_deg = None         # degrees rotated at that moment
+        self._ys_first_est = None       # its estimate
+        self._ys_vpe_t = None           # first VPE of the search sent
+        self._ys_reset_t = None         # the reset seen in LOCAL_POSITION_NED
+        self._ys_stop_t = None          # the stop target sent
+        self._ys_stop = None            # (x, y, z, yaw) of that target
 
     def _clear_rtl(self):
         """State of the EXIT_RTL path (B1)."""
@@ -400,9 +539,23 @@ class ExtNavLanding:
         self.last_marker_yaw = getattr(det, 'marker_yaw_deg', None)
         if self.window_since is not None and e.t >= self.window_since:
             self.window.add(e)
+        ys = self.state == Phase.YAW_SEARCH
+        if ys and self._ys_t_switch is None:
+            # B3: before SET_EKF_SOURCE_SET(2) is out, no vision to the EKF
+            # (the measured scenario: the first VPE after the switch resets
+            # it onto the marker frame; on SRC1 it would only sit in the
+            # buffer). The estimate stays in the window.
+            return
         if self.state in VPE_PHASES:
+            # B3: in YAW_SEARCH every estimate goes out at once - the frame
+            # is built with the attitude AT CAPTURE (extnav.estimate), so
+            # it is valid while the vehicle yaws
             if self.est.send(e):
                 self.n_vpe_sent += 1
+                if ys and self._ys_vpe_t is None:
+                    self._ys_vpe_t = now
+        if ys and self._ys_det_t is None:
+            self._ys_first_detection(now, e)
 
     # -- helpers -----------------------------------------------------------
     def aux_state(self):
@@ -513,10 +666,36 @@ class ExtNavLanding:
         if self._mode_req_n >= MODE_TRIES:
             self._mode_want = None
             return 'fail'
+        if (self._mode_want == MODE_GUIDED and self._guided_pending_phase()
+                and self._pilot_mode_lost()):
+            # B3 fix (§5.66 class): a GUIDED re-send only over the pilot's
+            # own mode, recorded at AUX up - never over one set between two
+            # retries (normally caught as 'taken' above; this holds even if
+            # _mode_before were ever not the pilot's mode)
+            self._mode_want = None
+            return 'taken'
         self._mode_req_t = now
         self._mode_req_n += 1
         self._request_mode(self._mode_want)
         return None
+
+    def _guided_pending_phase(self):
+        """ENGAGE / YAW_SEARCH before GUIDED is confirmed: the FC is in
+        the pilot's mode and nothing of ours watches it (no _mode_expected)
+        - the window of the §5.66 class found in B3."""
+        return (self.state in (Phase.ENGAGE, Phase.YAW_SEARCH)
+                and self._mode_expected != MODE_GUIDED)
+
+    def _pilot_mode_lost(self):
+        """True when the FC is no longer in the pilot's mode recorded at
+        AUX up (_search_mode): the pilot's switch (sticks neutral, so no
+        override) or a failsafe (LAND, RTL) - theirs, not ours to override.
+        No recorded mode at all (should not happen) = not owned either."""
+        return self._search_mode is None or self.v.mode != self._search_mode
+
+    def _exit_pilot_mode(self, where):
+        self.request_exit(f"mod schimbat de pilot/failsafe inainte de GUIDED "
+                          f"({self.v.mode_name()}, {where})", passive=True)
 
     def _mode_watch(self):
         """A held mode left without our request: someone else's decision."""
@@ -574,6 +753,17 @@ class ExtNavLanding:
         if self.state in (Phase.EXIT, Phase.ABORT, Phase.IDLE, Phase.DONE,
                           Phase.COMPLETE):
             # COMPLETE is already the ordered hand-back (SRC1, LOITER)
+            return
+        if (self.state == Phase.YAW_SEARCH and self._ys_t_switch is None
+                and self.ekf.state != self.ekf.ACTIV):
+            # B3: the search had not sent its first command yet (the set
+            # was still being read back): nothing to undo, nothing to send -
+            # like a request in GATE_SEARCH. The manager lets go so it does
+            # not switch after the fact.
+            self.ekf.release(self.now, reason)
+            self._emit('yaw_search_end', result='abort', reason=reason,
+                       deg=0.0, s=None)
+            self.reset(f"iesire inainte de comutare, in cautare: {reason}")
             return
         if self.state not in ENGAGED_PHASES:
             # nothing engaged: back to IDLE, nothing to send
@@ -686,8 +876,13 @@ class ExtNavLanding:
             owned.add(self._mode_want)
             if self._mode_before is not None:
                 owned.add(self._mode_before)
-        if (self.state in (Phase.GATE_SEARCH, Phase.ENGAGE)
-                and self._search_mode is not None):
+        # B3: in YAW_SEARCH (and the ENGAGE that follows it) the pilot's
+        # mode is owned only until GUIDED is confirmed: from then on the
+        # companion holds GUIDED, and a return to the pilot's mode is the
+        # pilot's switch, not ours to override.
+        if (self.state in (Phase.GATE_SEARCH, Phase.ENGAGE, Phase.YAW_SEARCH)
+                and self._search_mode is not None
+                and self._mode_expected != MODE_GUIDED):
             owned.add(self._search_mode)
         return owned
 
@@ -956,6 +1151,8 @@ class ExtNavLanding:
 
         if st == Phase.GATE_SEARCH:
             self._run_gate_search(now)
+        elif st == Phase.YAW_SEARCH:
+            self._run_yaw_search(now)
         elif st == Phase.ENGAGE:
             self._run_engage(now)
         elif st == Phase.MOVE:
@@ -982,7 +1179,20 @@ class ExtNavLanding:
             self._run_hover_confirm(now)
         # The EKF set manager arms and releases from the phase (§5.14); the
         # machine owns it, so the shared run_loop needs no new hook.
+        self._ekf_step(now)
+
+    def _ekf_step(self, now):
+        """EkfSourceManager.update from the phase, and (B3) the time the
+        SRC2 command left, if it left in this very call while searching:
+        YAW_SEARCH's deadlines all count from it."""
         self.ekf.update(now, self.state)
+        if (self.state == Phase.YAW_SEARCH and self._ys_t_switch is None
+                and self.ekf.state == self.ekf.ACTIV):
+            self._ys_t_switch = now
+            # estimates from before the switch do not open the segment
+            self.window.clear()
+            self.window_since = now
+            self._emit('yaw_search_src2', s=now - self._ys_t0)
 
     # -- phases ------------------------------------------------------------
     def _start_search(self, now):
@@ -1022,7 +1232,18 @@ class ExtNavLanding:
                           f"estimari, {self._gate_need()}; reincerc")
                 self._open_window(now)
                 return
-            self._emit('gate_fail', n=len(self.window), alt=self.h_now())
+            # B3: no marker in the stationary windows. The rotation only
+            # when the gate itself accepted (E0, sticks, altitude: ok is
+            # True) and the configuration asks for it at this height.
+            go, why = self._yaw_search_wanted(ok)
+            if go:
+                self._begin_yaw_search(now, why)
+                return
+            self._emit('gate_fail', n=len(self.window), alt=self.h_now(),
+                       no_rotation=why, h_cover=self.cfg.h_cover_m)
+            if why == 'h_cover':
+                self._say(f"  .. MARKER NEGASIT: fara rotire, h {self.h_now():.1f} m "
+                          f">= h_cover {self.cfg.h_cover_m:.1f} m")
             self._statustext("NOVA: marker negasit, raman in LOITER")
             self.set_state(Phase.GATE_FAIL, self._gate_need())
 
@@ -1038,10 +1259,295 @@ class ExtNavLanding:
         return ('nicio detectie' if self.cfg.gate_detections <= 1
                 else 'fara pereche consistenta')
 
+    # -- YAW_SEARCH (B3, 04.10.2026) ----------------------------------------
+    def _yaw_search_wanted(self, gate_ok):
+        """(go, why) at the end of the gate's windows without a detection.
+        why: 'fortat' (yaw_search true), 'auto' (below h_cover), or why NOT:
+        None (the gate did not accept / yaw_search false - GATE_FAIL as
+        before B3), 'h_cover' (auto, at or above h_cover: the short axis
+        already covers the search radius), 'h_cover_necunoscut' (auto
+        without a calibration to compute it from)."""
+        if gate_ok is not True:
+            return False, None
+        if self._pilot_mode_lost():
+            # the pilot / a failsafe changed the mode during the gate's
+            # windows (or none was recorded): their decision - no command
+            # of ours over it
+            return False, 'mod_schimbat'
+        mode = self.cfg.yaw_search
+        if mode is True:
+            return True, 'fortat'
+        if mode != 'auto':
+            return False, None
+        hc = self.cfg.h_cover_m
+        if hc is None:
+            return False, 'h_cover_necunoscut'
+        if self.h_now() >= hc:
+            return False, 'h_cover'
+        return True, 'auto'
+
+    def _ys_progress_deg(self):
+        return abs(math.degrees(self._ys_turn))
+
+    def _ys_track_yaw(self):
+        """Accumulated rotation since CONDITION_YAW, from every new yaw
+        (wrapped steps summed, so 180 deg does not fold back to 0)."""
+        if self._ys_yaw_last is None:
+            return
+        y = self.v.yaw
+        self._ys_turn += extnav.wrap_pi(y - self._ys_yaw_last)
+        self._ys_yaw_last = y
+
+    def _begin_yaw_search(self, now, why):
+        self._clear_yaw_search()
+        self._ys_t0 = now
+        self._ys_sub = 'src2'
+        self.window.clear()
+        self.window_since = now
+        c = self.cfg
+        self._emit('yaw_search', alt=self.h_now(), deg=c.yaw_search_max_deg,
+                   rate=c.yaw_search_rate_dps, h_cover=c.h_cover_m, why=why)
+        self._say(f"  == marker negasit in {self.window_tries} ferestre: CAUTARE "
+                  f"prin rotire ({why}), {c.yaw_search_max_deg:.0f} grd la "
+                  f"{c.yaw_search_rate_dps:.0f} grd/s")
+        self.set_state(Phase.YAW_SEARCH, f"{why}, h {self.h_now():.2f} m")
+        # the manager is armed from the phase - this very step
+        self._ekf_step(now)
+
+    def _ys_end(self, now, result, reason):
+        """The search did not reach ENGAGE: OSD / STATUSTEXT, normal EXIT
+        (SRC1 acknowledged, then LOITER)."""
+        deg = self._ys_progress_deg()
+        s = None if self._ys_t_switch is None else now - self._ys_t_switch
+        self._emit('yaw_search_end', result=result, reason=reason, deg=deg, s=s)
+        if result == 'negasit':
+            self._statustext(f"NOVA MARKER NEGASIT dupa rotire {deg:.0f} grd",
+                             warn=False)
+        self.request_exit(reason)
+
+    def _ys_first_detection(self, now, e):
+        """First estimate after the SRC2 command (called from on_detection,
+        after its VPE went out): the EKF resets onto the marker frame."""
+        self._ys_det_t = now
+        self._ys_first_est = e
+        self._ys_det_deg = self._ys_progress_deg()
+        self._emit('yaw_search_found', deg=self._ys_det_deg,
+                   s=now - self._ys_t_switch, lateral_m=e.lateral_m,
+                   sub=self._ys_sub)
+        self._say(f"  == MARKER GASIT la {self._ys_det_deg:.0f} grd "
+                  f"({now - self._ys_t_switch:.2f} s de la SRC2, "
+                  f"{e.lateral_m:.2f} m lateral)")
+        self._statustext(f"NOVA MARKER GASIT la {self._ys_det_deg:.0f} grd",
+                         warn=False)
+
+    def _ys_deadline(self):
+        """(time, why) of the exit that applies NOW, or (None, '') before
+        the switch (bounded by engage_timeout_s then).
+
+        Before the first detection: t_switch + SEARCH_BUDGET_S - the HARD
+        deadline, 2.0 s before the EKF drops the position (7.0 s without
+        vision, counted from the switch).
+        First detection, reset not yet seen: EKF_SETTLE_S +
+        YAW_SEARCH_RESET_WAIT_S after it, capped at t_switch +
+        YAW_SEARCH_RESET_CAP_S (6.0 s): if that VPE was not fused the EKF
+        still counts from the switch.
+        Reset seen (the VPE was fused: the EKF clock restarted from it):
+        YAW_SEARCH_CONFIRM_S after the first detection.
+
+        DELIBERATE DEVIATION from the simplest rule ("exit at t_switch +
+        5.0 s unless ENGAGE was reached"): with it a detection at 4.9 s
+        could never be confirmed (the reset alone needs EKF_SETTLE_S) and
+        the 4.0 s confirmation window would always be cut at 5.0 s. Every
+        bound above stays under the 7.0 s of the vision sample it relies
+        on."""
+        ts = self._ys_t_switch
+        if ts is None:
+            return None, ''
+        if self._ys_det_t is None:
+            return ts + SEARCH_BUDGET_S, (f"termen {SEARCH_BUDGET_S:.1f} s de la "
+                                          f"SRC2 fara detectie")
+        if self._ys_reset_t is None:
+            return (min(self._ys_det_t + EKF_SETTLE_S + YAW_SEARCH_RESET_WAIT_S,
+                        ts + YAW_SEARCH_RESET_CAP_S),
+                    'resetul EKF pe cadrul markerului neobservat')
+        return (self._ys_det_t + YAW_SEARCH_CONFIRM_S,
+                f"marker neconfirmat in {YAW_SEARCH_CONFIRM_S:.0f} s de la gasire")
+
+    def _run_yaw_search(self, now):
+        c = self.cfg
+        self._ys_track_yaw()
+        sub = self._ys_sub
+        # 1. the deadline first, whatever the sub-step
+        dl, why = self._ys_deadline()
+        if dl is not None and now >= dl:
+            deg = self._ys_progress_deg()
+            if self._ys_det_t is None:
+                self._ys_end(now, 'negasit',
+                             f"marker negasit dupa rotire {deg:.0f} grd ({why})")
+            else:
+                self._ys_end(now, 'neconfirmat', f"cautare: {why}")
+            return
+        if sub == 'src2':
+            if self._pilot_mode_lost():
+                # nothing of ours holds a mode yet: the pilot's switch / a
+                # failsafe (the mode rule of §6) - passive
+                self._exit_pilot_mode('cautare, pas src2')
+                return
+            if self._ys_t_switch is None:
+                self._ekf_step(now)
+                if self.ekf.state == self.ekf.REFUZAT:
+                    self.request_exit(f"setul EKF refuzat: "
+                                      f"{'; '.join(self.ekf.motive_refuz)}")
+                    return
+                if self._ys_t_switch is None:
+                    if now - self.state_since > c.engage_timeout_s:
+                        self.request_exit(f"cautare: SRC2 necomutat in "
+                                          f"{c.engage_timeout_s:.0f} s")
+                    return
+            ack = self.ekf.ack                   # ATTRIBUTED (ekf_source)
+            if ack is not None and not self.ekf.ack_ok:
+                self.request_exit(f"cautare: SET_EKF_SOURCE_SET(2) respins "
+                                  f"(result={ack})")
+                return
+            if not self.ekf.ack_ok:
+                return                           # the deadline bounds the wait
+            self._ys_ack_t = now
+            if self._pilot_mode_lost():            # re-checked right before
+                self._exit_pilot_mode('cautare, inainte de GUIDED')
+                return
+            self._ys_sub = 'mode'
+            self._emit('yaw_search_ack', s=now - self._ys_t_switch)
+            self._mode_begin(now, MODE_GUIDED)
+            return
+        if sub == 'mode':
+            r = self._mode_drive(now)
+            if r is None:
+                return
+            if r == 'taken':
+                self.request_exit(f"mod pus de altcineva in cautare "
+                                  f"({self.v.mode_name()})", passive=True)
+                return
+            if r == 'fail':
+                self.request_exit('cautare: FC-ul nu a confirmat GUIDED')
+                return
+            self._ys_guided_t = now
+            if self._ys_det_t is not None:
+                # found already (between the switch and GUIDED): no rotation
+                self._ys_sub = 'found'
+                return
+            self._ys_start_rotation(now)
+            return
+        if sub == 'rotate':
+            if self._ys_det_t is not None:
+                self._ys_sub = 'found'
+                sub = 'found'
+            else:
+                deg = self._ys_progress_deg()
+                dur = c.yaw_search_max_deg / c.yaw_search_rate_dps + STOP_MARGIN_S
+                if (deg >= c.yaw_search_max_deg - YAW_SEARCH_DONE_TOL_DEG
+                        or now - self._ys_rot_t >= dur):
+                    self._ys_end(now, 'negasit',
+                                 f"marker negasit dupa rotire {deg:.0f} grd")
+                return
+        if sub == 'found':
+            # the reset onto the marker frame, observed the way ENGAGE does:
+            # EKF valid and within EKF_RESET_TOL_M of our newest estimate,
+            # EKF_SETTLE_S after the first VPE
+            if self._ys_vpe_t is None or now - self._ys_vpe_t < EKF_SETTLE_S:
+                return
+            ok = getattr(self.v, 'ekf_pos_horiz_ok', lambda: None)()
+            e = self.last_est
+            if not ok or e is None:
+                return
+            if math.hypot(self.v.x - e.x, self.v.y - e.y) > EKF_RESET_TOL_M:
+                return
+            self._ys_reset_t = now
+            # ONE position target at the EKF position in the NEW frame and
+            # the current yaw: stops the rotation (0.30 s measured), no lurch
+            stop = (self.v.x, self.v.y, self.v.z, self.v.yaw)
+            self.v.send_position_target(*stop)
+            self._ys_stop = stop
+            self._ys_stop_t = now
+            self.n_stop_targets += 1
+            self._emit('yaw_search_stop', x=stop[0], y=stop[1], z=stop[2],
+                       yaw=stop[3], deg=self._ys_progress_deg(),
+                       s_reset=now - (self._ys_vpe_t or now))
+            if c.gate_detections >= 2:
+                # pairs must not straddle the frame reset: the marker of an
+                # estimate is placed with LOCAL_POSITION_NED at its capture
+                # (position_at), i.e. in two different frames
+                self.window.clear()
+                self.window_since = now
+            self._ys_sub = 'confirm'
+            sub = 'confirm'
+        if sub == 'confirm':
+            if c.gate_detections <= 1:
+                found = (self._ys_first_est,)
+            else:
+                found = self._gate_found()
+            if found is None:
+                return
+            self._ys_to_engage(now, found)
+
+    def _ys_start_rotation(self, now):
+        c = self.cfg
+        self._ys_sub = 'rotate'
+        self._ys_yaw0 = self._ys_yaw_last = self.v.yaw
+        self._ys_turn = 0.0
+        self._ys_rot_t = now
+        # ONE command, relative, counter-clockwise (param3 = -1: left seen
+        # from above, yaw decreasing). No position target during the
+        # rotation: GUIDED holds the position from the EKF
+        self.v.send_condition_yaw(c.yaw_search_max_deg, c.yaw_search_rate_dps,
+                                  direction=-1, relative=True)
+        self.n_condition_yaw += 1
+        self._emit('yaw_search_rotate', deg=c.yaw_search_max_deg,
+                   rate=c.yaw_search_rate_dps, s=now - self._ys_t_switch)
+        self._statustext(f"NOVA ROTIRE CAUTARE {c.yaw_search_max_deg:.0f} grd la "
+                         f"{c.yaw_search_rate_dps:.0f} grd/s", warn=False)
+
+    def _ys_to_engage(self, now, found):
+        e = found[-1]
+        self._emit('engage', alt=self.h_now(), n=len(found),
+                   pair_dt=(found[-1].t - found[0].t) if len(found) > 1 else None,
+                   lateral_m=e.lateral_m, from_search=True,
+                   deg=self._ys_det_deg, s=now - self._ys_t_switch)
+        self._emit('yaw_search_end', result='gasit', reason='',
+                   deg=self._ys_progress_deg(), s=now - self._ys_t_switch)
+        self._say(f"  == cautare: marker confirmat ({len(found)} detectii, "
+                  f"{now - self._ys_t_switch:.2f} s de la SRC2): ENGAGE")
+        # ENGAGE's 'verify' sub-step: the switch and the mode are done
+        self._sub = 'verify'
+        self.set_state(Phase.ENGAGE, f"din cautare, alt {self.h_now():.2f} m")
+
     def _run_engage(self, now):
         if now - self.state_since > self.cfg.engage_timeout_s:
             self.request_exit(f"ENGAGE fara succes in {self.cfg.engage_timeout_s:.0f} s "
                               f"(pas {self._sub})")
+            return
+        if self._sub == 'verify':
+            # B3: from YAW_SEARCH the switch and the mode are DONE - only
+            # verified here, never repeated (one SRC2 command per attempt)
+            if self.v.mode != MODE_GUIDED or self._mode_expected != MODE_GUIDED:
+                self.request_exit(f"ENGAGE dupa cautare: FC in {self.v.mode_name()}, "
+                                  f"nu GUIDED", passive=True)
+                return
+            if not (self.ekf.state == self.ekf.ACTIV and self.ekf.ack_ok):
+                self.request_exit(f"ENGAGE dupa cautare: setul EKF 2 neconfirmat "
+                                  f"({self.ekf.state})")
+                return
+            self._pick_yaw_target()
+            self.h_target = self.h_now()
+            self._send_setpoint(now, -self.h_target, force=True)
+            self.set_state(Phase.MOVE, f"din cautare: SRC2 + GUIDED verificate, "
+                                       f"h {self.h_target:.2f} m")
+            return
+        if self._sub in ('src2', 'ekf') and self._pilot_mode_lost():
+            # B3 fix (§5.66 class): no mode watch before GUIDED is asked -
+            # a mode the pilot / a failsafe set here would otherwise be
+            # recorded as "before" by _mode_begin and overridden by GUIDED.
+            # Passive: SRC1 back if SRC2 was sent, no mode command.
+            self._exit_pilot_mode(f"ENGAGE, pas {self._sub}")
             return
         if self._sub == 'src2':
             # EkfSourceManager reads the set back and switches from phase

@@ -166,7 +166,23 @@ class OsdMesaje:
         if name == 'handover_reject':
             return f"REFUZ: {g('reason')}", ROSU
         if name == 'gate_fail':
+            if g('no_rotation') == 'h_cover':
+                # B3: 'auto' at or above h_cover - the short axis already
+                # covered the search radius, a rotation would add nothing
+                return "MARKER NEGASIT: fara rotire, h >= h_cover", ROSU
             return "MARKER NEGASIT: raman in LOITER, AUX jos apoi sus", ROSU
+        if name == 'yaw_search_rotate':
+            return (f"ROTIRE CAUTARE {g('deg', 0.0):.0f} grd la "
+                    f"{g('rate', 0.0):.0f} grd/s", GALBEN)
+        if name == 'yaw_search_found':
+            return f"MARKER GASIT la {g('deg', 0.0):.0f} grd", VERDE
+        if name == 'yaw_search_end':
+            r = g('result')
+            if r == 'negasit':
+                return f"MARKER NEGASIT dupa rotire {g('deg', 0.0):.0f} grd", ROSU
+            if r == 'neconfirmat':
+                return f"MARKER NECONFIRMAT: {g('reason')}", ROSU
+            return None, None           # found: 'engage' says it
         if name == 'engage':
             n = g('n')
             lat = g('lateral_m')
@@ -175,6 +191,9 @@ class OsdMesaje:
             # B2: the altitude the handover was accepted at
             alt = g('alt')
             alt_s = '' if alt is None else f" la {alt:.1f} m"
+            if g('from_search'):
+                d = g('deg')
+                det = f"{det} dupa rotire" + ('' if d is None else f" {d:.0f} grd")
             return f"ENGAGE{alt_s}: {det}{lat_s}", VERDE
         if name == 'exit':
             pas = ' PASIV' if g('passive') else ''
