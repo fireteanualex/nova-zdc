@@ -183,7 +183,8 @@ FS_THR_ENABLE,1
 #    castigurile NU se copiaza de pe o axa pe alta. Reglaj dupa asamblare.
 #
 # 5. ~~SERIALn pentru legatura cu Pi-ul~~ - adaugat mai jos, pentru
-#    CUAV X7+ / TELEM2 (SERIAL2).
+#    CUAV X7+. Since 05.10.2026 the Pi is on SERIAL4 (UART4, GPS2 port) and
+#    every serial-port setting is set by hand - see the block below.
 
 # WP_ACC 1.5 - acelasi motiv ca in nova_sitl.parm si aceeasi derivare: e o
 # constrangere a CAMEREI (VFOV si dimensiunea markerului), nu a simularii.
@@ -252,7 +253,7 @@ WP_SPD_DN,0.5
 # LAND-ul final, vertical de la 1 m: 0.5 m/s (m/s, @Range 0.3 2,
 # mode_land.cpp:9-10).
 LAND_SPD_MS,0.5
-# LAND_ALT_LOW: de revazut (brief §7); nu se seteaza pana nu e decis.
+# LAND_ALT_LOW_M: de revazut (brief §7); nu se seteaza pana nu e decis.
 
 # ---------------------------------------------------------------------------
 # Link to the Raspberry Pi 4, on TELEM2 of the CUAV X7+.
@@ -267,9 +268,8 @@ LAND_SPD_MS,0.5
 #   :142-145). The X7, X7 Pro, X7+ and X7+ Pro share this one hwdef. The
 #   order is the same as on Copter-4.5.7 (there at hwdef.dat:24 / :144).
 #
-#   So TELEM1 = SERIAL1, TELEM2 = **SERIAL2** - the same index as on the
-#   Pixhawk 6C we flew before (there TELEM2 was UART5), so the Pi link stays
-#   on SERIAL2. Do not assume the numbers printed on a case match the
+#   So TELEM1 = SERIAL1, TELEM2 = **SERIAL2** (history: the Pi link was on
+#   TELEM2 until 05.10.2026; it is on SERIAL4 now, see below). Do not assume the numbers printed on a case match the
 #   parameter index - on other boards they do not. "USART6 is telem2" is a
 #   hwdef comment: it holds for the standard CUAV X7+ carrier board.
 #

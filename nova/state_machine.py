@@ -497,7 +497,7 @@ class LandingStateMachine:
 
     def abort_to_rtl(self, reason, now=None):
         """Singura cale catre RTL. Dezactiveaza intai PLND: RTL urca la
-        RTL_ALT inainte sa coboare, deci parametrul are timp sa se propage."""
+        RTL_ALT_M inainte sa coboare, deci parametrul are timp sa se propage."""
         now = now if now is not None else self.now
         self.now = now
         self.set_precland(False, now)

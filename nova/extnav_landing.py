@@ -91,7 +91,7 @@ PLND machine in nova/state_machine.py stays for the simulator.
          received after the ack (the EKF position reset is the only proof
          the EKF is back in the GNSS frame; no STATUSTEXT is ever waited
          for). 1.0 s at most, then RTL anyway (measured: still reaches
-         home, without the RTL_ALT climb).
+         home, without the RTL_ALT_M climb).
       3. RTL, confirmed from HEARTBEAT; refused -> LAND; LAND refused ->
          reported. A third mode at any point -> passive, nothing more.
     After the hand-back (ABORT) nothing is re-sent, whatever the FC does.
