@@ -97,14 +97,16 @@ BITMASKS = {
 }
 
 
-#: Parameters the team sets BY HAND on the FC: the serial port speed and
-#: options (user decision, 02.10.2026) and the arming-check mask, under its
+#: Parameters the team sets BY HAND on the FC: every serial-port setting -
+#: speed, options (user decision, 02.10.2026), protocol and flow control
+#: (05.10.2026: the Pi link moved to SERIAL4, set by hand) and the arming-check mask, under its
 #: 4.7 name and its pre-4.7 one (user decision, 04.10.2026: "omit everything
 #: about arming checks"). Never written and never compared by this tool,
 #: whatever parm file it is given - a defensive guard, since the repo files
 #: do not contain them (tools/test_params_x7.py checks both). The Pi opens
 #: the port at --baud (default 921600); the two must match.
-HAND_SET = re.compile(r'^(SERIAL\d+_(BAUD|OPTIONS)|ARMING_(CHECK|SKIPCHK))$')
+HAND_SET = re.compile(r'^(SERIAL\d+_(BAUD|OPTIONS|PROTOCOL)|BRD_SER\d+_RTSCTS'
+                      r'|ARMING_(CHECK|SKIPCHK))$')
 
 
 def is_hand_set(name):

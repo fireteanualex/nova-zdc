@@ -34,8 +34,7 @@
 #   VISO_TYPE / _DELAY_MS (ms) / _POS_M_NSE (m)
 #                    libraries/AP_VisualOdom/AP_VisualOdom.cpp:31, 77, 93
 #                    (group "VISO", AP_Vehicle.cpp:50)
-#   SERIAL2_PROTOCOL libraries/AP_SerialManager/AP_SerialManager.cpp:203
-#   BRD_SER2_RTSCTS / BRD_SAFETY_DEFLT / BRD_SAFETYOPTION
+#   BRD_SAFETY_DEFLT / BRD_SAFETYOPTION
 #                    libraries/AP_BoardConfig/AP_BoardConfig.cpp:126, 182, 282
 #
 # A name that does not exist on the firmware is accepted in silence: no
@@ -284,11 +283,20 @@ LAND_SPD_MS,0.5
 #   TX si RX se INCRUCISEAZA. Pinul de 5 V al lui TELEM2 NU se leaga la Pi:
 #   Pi-ul are alimentarea lui, iar doua surse legate impreuna se bat.
 #   Nivelurile sunt 3.3 V pe ambele capete, deci nu trebuie convertor.
-SERIAL2_PROTOCOL,2
-# SERIALx_BAUD and SERIALx_OPTIONS are set by hand by the team (user
-# decision, 02.10.2026): never written and never checked from this file.
-# The Pi side opens the port at --baud (default 921600); the two must match.
+#
+# 05.10.2026: the Pi link MOVED to SERIAL4 (user). On the X7+ that is UART4,
+# the GPS2 port (Copter-4.7.1 CUAV-X7/hwdef.dat:22 SERIAL_ORDER index 4,
+# :137 "UART4 GPS2"). The TELEM2 notes above are history. Note: UART4 is
+# NODMA (:138-139) - at high baud rates a NODMA UART can drop bytes under
+# load; the baud rate is the team's choice.
+# ALL serial-port settings are set BY HAND by the team (user decisions
+# 02.10 and 05.10.2026): SERIALx_PROTOCOL, SERIALx_BAUD, SERIALx_OPTIONS
+# and BRD_SERx_RTSCTS are never written and never checked from this file
+# (tools/check_params.py HAND_SET).
+# The Pi side opens the port at --baud (default 921600); it must match the
+# SERIAL4_BAUD set by hand on the FC.
 
+# HISTORY (TELEM2 link, until 05.10.2026) - not written any more:
 # Controlul de flux: implicit 2 = AUTO pe placile ChibiOS
 # (Copter-4.7.1 AP_BoardConfig.cpp:126-130, default 2 written literally;
 # the X7 defines USART6_CTS/RTS, hwdef.dat:144-145, so the parameter
@@ -300,7 +308,6 @@ SERIAL2_PROTOCOL,2
 # Se pune 0 EXPLICIT. Simptomul, daca nu: legatura pare moarta intr-un
 # sens, fara niciun mesaj de eroare nicaieri - exact clasa de esec din
 # §5.10, unde "nu a dat eroare" nu inseamna "e configurat".
-BRD_SER2_RTSCTS,0
 
 # ---------------------------------------------------------------------------
 # Hardware safety switch: NONE on this vehicle (CUAV X7+).

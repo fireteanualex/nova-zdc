@@ -46,12 +46,14 @@ NAMES_FILE = os.path.join(REPO, 'tools', 'params_copter_4.7.1.txt')
 
 #: What the X7+ without a safety switch needs.
 X7_SET = {'BRD_SAFETY_DEFLT': 0.0, 'BRD_SAFETYOPTION': 0.0}
-#: The Pi link (TELEM2 = SERIAL2, Copter-4.7.1 CUAV-X7/hwdef.dat:22, :141).
-LINK_SET = {'SERIAL2_PROTOCOL': 2.0, 'BRD_SER2_RTSCTS': 0.0}
+#: The Pi link: since 05.10.2026 on SERIAL4, every serial-port setting set
+#: by hand by the team - nothing of it in the parm file.
+LINK_SET = {}
 #: Names that must have NO line in the parm file: hand-set by the team
 #: (serial speed/options, 02.10.2026; arming checks, 04.10.2026) or never
 #: put on the FC (no fence, 02.10.2026).
-INTERZISE_RE = re.compile(r'^(SERIAL\d+_(BAUD|OPTIONS)|ARMING_\w+|FENCE_\w+)$')
+INTERZISE_RE = re.compile(r'^(SERIAL\d+_(BAUD|OPTIONS|PROTOCOL)|BRD_SER\d+_RTSCTS'
+                          r'|ARMING_\w+|FENCE_\w+)$')
 
 
 def _parm(path):
@@ -93,8 +95,8 @@ def test_setul_X7_in_fisier():
     # the user's own comment on the arming checks, in place of the old line
     assert ('# Arming checks are set by hand by the team (user decision '
             '04.10.2026).') in txt
-    return "BRD_SAFETY_DEFLT 0, BRD_SAFETYOPTION 0, SERIAL2_PROTOCOL 2, " \
-           "BRD_SER2_RTSCTS 0; fara SERIALx_BAUD/OPTIONS, ARMING_*, FENCE_*"
+    return "BRD_SAFETY_DEFLT 0, BRD_SAFETYOPTION 0; fara SERIALx_*, " \
+           "BRD_SERx_RTSCTS, ARMING_*, FENCE_*"
 
 
 def test_NEGATIV_setul_X7_stricat_e_prins():
@@ -241,13 +243,14 @@ def test_NEGATIV_BRD_SAFETY_DEFLT_1_e_nepotrivire():
 #: Every hand-set name, with the value a parm file asks for and the value
 #: the team left on the FC (different on purpose).
 DE_MANA = {'SERIAL2_BAUD': (57.0, 921.0), 'SERIAL2_OPTIONS': (4.0, 0.0),
+           'SERIAL4_PROTOCOL': (1.0, 2.0), 'BRD_SER4_RTSCTS': (2.0, 0.0),
            'ARMING_CHECK': (1.0, 0.0), 'ARMING_SKIPCHK': (32768.0, 0.0)}
 
 
 def _parm_cu_de_mana(tmp):
     cale = os.path.join(tmp, 'de_mana.parm')
     with open(cale, 'w') as f:
-        f.write("SERIAL2_PROTOCOL,2\n")
+        f.write("FS_THR_ENABLE,1\n")
         for n, (cerut, _) in DE_MANA.items():
             f.write(f"{n},{cerut:g}\n")
         f.write("BRD_SAFETY_DEFLT,0\n")
@@ -256,7 +259,7 @@ def _parm_cu_de_mana(tmp):
 
 def _fc_de_mana():
     p = {n: pe_fc for n, (_, pe_fc) in DE_MANA.items()}
-    p.update({'SERIAL2_PROTOCOL': 2.0, 'BRD_SAFETY_DEFLT': 1.0})
+    p.update({'FS_THR_ENABLE': 1.0, 'BRD_SAFETY_DEFLT': 1.0})
     return FakeFC(p)
 
 
@@ -282,11 +285,12 @@ def test_NEGATIV_garda_setati_de_mana():
     assert not mismatch and not missing, (mismatch, missing)
     assert [m[0] for m in manual] == list(DE_MANA), manual
     assert out.count('setat de mana, ignorat') == len(DE_MANA), out
-    for da in ('SERIAL12_BAUD', 'SERIAL0_OPTIONS', 'ARMING_CHECK',
+    for da in ('SERIAL12_BAUD', 'SERIAL0_OPTIONS', 'SERIAL2_PROTOCOL',
+               'SERIAL4_PROTOCOL', 'BRD_SER2_RTSCTS', 'ARMING_CHECK',
                'ARMING_SKIPCHK'):
         assert cp.is_hand_set(da), da
     # only those: the rest of the ARMING_ group and look-alikes are not
-    for nu in ('SERIAL2_PROTOCOL', 'XSERIAL2_BAUD', 'ARMING_RUDDER',
+    for nu in ('SERIAL2_PROTOCOLX', 'XSERIAL2_BAUD', 'ARMING_RUDDER',
                'ARMING_OPTIONS', 'ARMING_CHECKX', 'XARMING_CHECK',
                'BRD_SAFETY_DEFLT'):
         assert not cp.is_hand_set(nu), nu

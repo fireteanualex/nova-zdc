@@ -1879,8 +1879,6 @@ def test_parametrii_de_telemetrie_sunt_in_fisierul_de_zbor():
             k, _, v = linie.partition(',')
             valori[k.strip()] = v.strip()
 
-    assert valori.get('SERIAL2_PROTOCOL') == '2', (
-        f"SERIAL2_PROTOCOL trebuie 2 (MAVLink2): {valori.get('SERIAL2_PROTOCOL')}")
     # SERIALx_BAUD / SERIALx_OPTIONS are set by hand by the team (user
     # decision, 02.10.2026): not in the parm file (one file since 04.10.2026).
     import re as _re
@@ -1888,13 +1886,11 @@ def test_parametrii_de_telemetrie_sunt_in_fisierul_de_zbor():
         nume = [n for n, _, _ in parse_parm(
             os.path.join(REPO, 'config', nume_fisier))]
         de_mana = [n for n in nume
-                   if _re.match(r'^SERIAL\d+_(BAUD|OPTIONS)$', n)]
+                   if _re.match(r'^(SERIAL\d+_(BAUD|OPTIONS|PROTOCOL)'
+                                r'|BRD_SER\d+_RTSCTS)$', n)]
         assert not de_mana, (
             f"{nume_fisier}: {de_mana} - setati de mana de echipa, nu se "
             f"scriu si nu se verifica din fisier")
-    assert valori.get('BRD_SER2_RTSCTS') == '0', (
-        "BRD_SER2_RTSCTS trebuie 0 explicit; implicitul 2 (Auto) cu RTS/CTS "
-        "nelegate da o legatura care pare moarta intr-un sens")
 
     # the Pi side still opens the port at 921600; the hand-set SERIAL2_BAUD
     # on the FC must match it (921)
@@ -1902,8 +1898,8 @@ def test_parametrii_de_telemetrie_sunt_in_fisierul_de_zbor():
     assert '921600' in pi_src, (
         "nova_pi.py nu mai foloseste 921600: parametrul de pe FC si "
         "aplicatia ar vorbi la viteze diferite")
-    return ("SERIAL2 = TELEM2 pe X7+, fara control de flux; "
-            "SERIAL2_BAUD setat de mana, nu in fisiere")
+    return ("legatura cu Pi-ul pe SERIAL4 (05.10.2026): protocol, baud, "
+            "optiuni si RTS/CTS setate de mana, nu in fisiere")
 
 
 # --- pornirea automata in modul de zbor (teren fara retea) ----------------
