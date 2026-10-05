@@ -539,7 +539,7 @@ def test_niciun_nume_inexistent_pe_4_7_1():
             'RNGFND1_GNDCLR'} <= set(pe_fisier['config/nova_flight.parm'])
     assert 'WP_SPD_DN' in pe_fisier['tools/sitl_touchdown.py']
     assert 'SIM_RC_FAIL' in pe_fisier['tools/sitl_pi_failure.py']
-    assert {'FLTMODE_CH', 'FENCE_ENABLE'} <= set(
+    assert {'FENCE_ENABLE'} <= set(
         pe_fisier['pi/descent_test.sh']), pe_fisier['pi/descent_test.sh']
     # the 4.5 file and its generator are gone, and nothing points at them
     for rel in ('config/nova_flight_4.5.parm', 'tools/make_parm_45.py'):

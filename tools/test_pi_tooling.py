@@ -1404,9 +1404,8 @@ def test_proba_de_coborare_cere_caile_de_abort():
     `y` se apasa din reflex, un cuvant nu."""
     src = open(os.path.join(REPO, 'pi', 'descent_test.sh')).read()
 
-    assert 'FLTMODE_CH' in src, (
-        "nu verifica comutatorul de mod, singurul abort care nu trece "
-        "prin Raspberry Pi")
+    # FLTMODE_CH is set by hand by the team and no longer checked by the
+    # script (user decision, 05.10.2026)
     assert 'ZBOR' in src, "nu cere confirmare tastata inainte de a zbura"
     assert '--check' in src, "nu se pot verifica preconditiile fara sa zboare"
 
@@ -1424,7 +1423,7 @@ def test_proba_de_coborare_cere_caile_de_abort():
     assert '--fast-descent' not in cod, (
         "PROFIL_RAPID e blocat pana la distanta de franare pe fiecare "
         "treapta de viteza (§6/15.2.9)")
-    return "cere FLTMODE_CH si confirmare tastata; fara urcare implicit"
+    return "cere confirmare tastata; fara urcare implicit"
 
 
 def test_canalul_de_handover_e_reglabil_si_LAND_nu_declanseaza():

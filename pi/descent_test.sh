@@ -34,7 +34,8 @@
 #   1. COMUTATORUL DE MOD de pe emitator (FLTMODE_CH).
 #      Merge direct in FC. NU trece prin Raspberry Pi, deci functioneaza si
 #      daca Pi-ul e mort, blocat sau deconectat. Asta e abortul real.
-#      Scriptul REFUZA sa porneasca daca nu e configurat.
+#      Setat de mana de echipa; scriptul NU il mai verifica (decizia
+#      utilizatorului, 05.10.2026).
 #
 #   2. MANSELE. Companion-ul le vede in RC_CHANNELS si comanda LOITER.
 #      Masurat in SITL: 150 ms de la miscare pana la mod confirmat de FC.
@@ -195,7 +196,9 @@ t0 = time.monotonic()
 aux_ch = int(os.environ.get('NOVA_AUX_CH', '7'))
 # Arming checks are not queried: they are set by hand by the team (user
 # decision, 04.10.2026), so this check says nothing about them.
-for nume in ('FLTMODE_CH', f'RC{aux_ch}_OPTION', 'FENCE_ENABLE'):
+# FLTMODE_CH is not queried either: the mode switch is set by hand by the
+# team (user decision, 05.10.2026).
+for nume in (f'RC{aux_ch}_OPTION', 'FENCE_ENABLE'):
     v.request_param(nume)
 while time.monotonic() - t0 < 4.0:
     v.pump()
@@ -203,23 +206,6 @@ while time.monotonic() - t0 < 4.0:
 
 p = v.params
 probleme = 0
-
-# 1. Comutatorul de mod: abortul care NU trece prin Pi (16.2.3).
-ch = p.get('FLTMODE_CH')
-if ch is None:
-    print("  ? FLTMODE_CH nu a raspuns (FC vechi sau legatura lenta)")
-elif int(ch) == 0:
-    print("  LIPSA FLTMODE_CH = 0: NU exista comutator de mod pe emitator.")
-    print("        Asta e singura cale de abort care functioneaza si daca")
-    print("        Pi-ul e mort. Fara ea nu se zboara autonom.")
-    probleme += 1
-elif int(ch) == aux_ch:
-    print(f"  LIPSA FLTMODE_CH = {aux_ch}, ACELASI canal cu handover-ul.")
-    print(f"        Comutatorul ar schimba modul de zbor SI ar cere segmentul")
-    print(f"        autonom deodata. Muta unul dintre ele pe alt canal.")
-    probleme += 1
-else:
-    print(f"  OK    FLTMODE_CH = {int(ch)} (abort hardware, ocoleste Pi-ul)")
 
 # 2. Canalul de handover: singura cale de INTRARE in segment (§8).
 opt = p.get(f'RC{aux_ch}_OPTION')
