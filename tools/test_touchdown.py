@@ -48,26 +48,6 @@ def test_configul_secventei_si_validarea():
     return "implicit 5.5 / 0.4 / 1.5 / 15 / 1.0; hold 0.8 refuzat; alt 4.5 -> avertisment"
 
 
-def test_parametrii_FC_ai_secventei_in_fisierele_verificate():
-    """check_params.py verifica fisierul de parametri PE NUME: DISARM_DELAY
-    20 (dezarmarea automata dupa 20 s cu throttle la zero pe sol, masurat
-    21.1 s in SITL 4.5.7) si PILOT_THR_BHV 0 (cu throttle arcuit, "jos" ar
-    insemna sub mijloc si drona s-ar dezarma pe marker)."""
-    out = {}
-    # one parm file since 04.10.2026 (ArduCopter 4.7.1 only)
-    for f in ('nova_flight.parm',):
-        vals = {}
-        for line in open(os.path.join(REPO, 'config', f)):
-            line = line.split('#')[0].strip()
-            if ',' in line:
-                k, val = line.split(',', 1)
-                vals[k.strip()] = float(val)
-        assert vals.get('DISARM_DELAY') == 20 and vals.get('PILOT_THR_BHV') == 0, (f, vals.get('DISARM_DELAY'), vals.get('PILOT_THR_BHV'))
-        assert vals['DISARM_DELAY'] > nova_config.DEFAULTS['touchdown_hold_s'] + 5
-        out[f] = len(vals)
-    return f"DISARM_DELAY 20, PILOT_THR_BHV 0 in {', '.join(out)}"
-
-
 
 def _extra_params(text):
     """{name: value} of a SITL EXTRA_PARAMS block ('NAME value' lines)."""
@@ -100,37 +80,6 @@ def diferente_sitl_zbor(extra, zbor):
 SITL_471 = re.compile(r"~/ardupilot-4\.7\.1/build/sitl/bin/arducopter")
 
 
-def test_SITL_zboara_parametrii_de_zbor_4_7_1():
-    """tools/sitl_touchdown.py (and sitl_pi_failure.py, which imports its
-    EXTRA_PARAMS) sets the same 4.7.1 names and SI values as
-    config/nova_flight.parm: WP_ACC 1.5 m/s/s, WP_SPD 1.0, WP_SPD_DN 0.5,
-    LAND_SPD_MS 0.5 m/s; and both tools default to the 4.7.1 SITL build.
-    Negative: the old cm/s values or a 4.5.7 default path are caught."""
-    import ast
-    src = open(os.path.join(HERE, 'sitl_touchdown.py')).read()
-    extra_txt = next(
-        n.value.value for n in ast.walk(ast.parse(src))
-        if isinstance(n, ast.Assign) and any(
-            getattr(t, 'id', None) == 'EXTRA_PARAMS' for t in n.targets))
-    extra = _extra_params(extra_txt)
-    zbor = _parm_vals(os.path.join(REPO, 'config', 'nova_flight.parm'))
-    comune = set(extra) & set(zbor)
-    assert {'WP_ACC', 'WP_SPD', 'WP_SPD_DN', 'LAND_SPD_MS'} <= comune, comune
-    assert diferente_sitl_zbor(extra, zbor) == [], diferente_sitl_zbor(
-        extra, zbor)
-    # NEGATIVE: the pre-4.7 cm/s numbers under the 4.7 names
-    rau = _extra_params(extra_txt.replace('WP_SPD_DN 0.5', 'WP_SPD_DN 50')
-                        .replace('WP_ACC 1.5', 'WP_ACC 150'))
-    assert diferente_sitl_zbor(rau, zbor) == [
-        'WP_ACC: SITL 150, zbor 1.5', 'WP_SPD_DN: SITL 50, zbor 0.5'], (
-        diferente_sitl_zbor(rau, zbor))
-    pf = open(os.path.join(HERE, 'sitl_pi_failure.py')).read()
-    for nume, text in (('sitl_touchdown.py', src), ('sitl_pi_failure.py', pf)):
-        assert SITL_471.search(text), f"{nume}: --sitl implicit nu e 4.7.1"
-        assert 'ardupilot-4.5.7' not in text, nume
-    assert not SITL_471.search(src.replace('4.7.1', '4.5.7'))
-    return (f"{len(comune)} nume comune, aceleasi valori SI; "
-            f"--sitl implicit ~/ardupilot-4.7.1")
 
 def test_supervizorul_vegheaza_fazele_noi():
     """Punctul 5: fazele de dupa contact sunt in segmentul supravegheat.
@@ -361,8 +310,6 @@ def test_throttle_la_minim_pe_sol_avertizeaza():
 
 
 TESTS = [
-    ('SITL zboara parametrii de zbor 4.7.1',
-     test_SITL_zboara_parametrii_de_zbor_4_7_1),
     ('contact fara detectie recenta', test_contact_fara_detectie_recenta),
     ('dezarmare pe sol fara comenzi', test_dezarmare_pe_sol_fara_comenzi),
     ('timeout de urcare si decolare care nu porneste',
@@ -375,8 +322,6 @@ TESTS = [
     ('throttle la minim pe sol avertizeaza', test_throttle_la_minim_pe_sol_avertizeaza),
     ('supervizorul vegheaza fazele noi', test_supervizorul_vegheaza_fazele_noi),
     ('configul secventei si validarea', test_configul_secventei_si_validarea),
-    ('parametrii FC ai secventei in fisierele verificate',
-     test_parametrii_FC_ai_secventei_in_fisierele_verificate),
 ]
 
 

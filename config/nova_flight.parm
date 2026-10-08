@@ -1,338 +1,40 @@
-# NOVA - ZDC 2026 - configuratie VEHICUL REAL (CUAV X7+)
+# NOVA - ZDC 2026 - parametrii FC pe care ii cere companion-ul (Pi)
 #
-# Flight controller: CUAV X7+ (firmware target CUAV-X7), running ArduCopter
-# 4.7.1 (user, 04.10.2026), no hardware safety switch. This file is loaded
-# on the board AS IT IS: there is no generated variant for another firmware
-# (the 4.5.7 file and its generator were removed on 04.10.2026). Before the
-# X7+ the vehicle used a Pixhawk 6C; that board is history - nothing below
-# depends on it.
+# Placa: CubePilot Cube Orange+, ArduCopter 4.6.2 (de la 08.10.2026).
+# Fisierul anterior (CUAV X7+, ArduCopter 4.7.1, 37 de parametri) e la
+# commit-ul f228786 - vezi docs/FC_REFERINTE.txt.
 #
-# ===========================================================================
-# ArduCopter 4.7.1 ONLY - every name and unit checked in tag Copter-4.7.1
-# ===========================================================================
+# MINIMAL, decizia echipei (08.10.2026): doar ce trebuie ca FC-ul sa poata
+# urma instructiunile Pi-ului - pozitia din camera (VISION_POSITION_ESTIMATE)
+# ca sursa EKF3 si setul de surse 2 fara GNSS, comutat de Pi in segment.
+# Tot restul il seteaza echipa de mana in ArduPilot: cadru, viteze si
+# acceleratii (WPNAV_*, LAND_SPEED), failsafe-uri, safety switch (BRD_SAFETY*),
+# porturile seriale (SERIALx_*, BRD_SERx_RTSCTS), verificarile de armare
+# (ARMING_CHECK), FLTMODE_CH. tools/check_params.py ignora oricum seriale si
+# armare (HAND_SET), chiar daca ar aparea aici.
 #
-# Names and units, Copter-4.7.1 source (not from memory, §5.10):
-#   FRAME_CLASS / FRAME_TYPE, DISARM_DELAY (s), PILOT_THR_BHV,
-#     FS_THR_ENABLE, SURFTRAK_MODE   ArduCopter/Parameters.cpp:680, :230,
-#                                    :242, :53, :124, :881
-#   RNGFND1_TYPE / _ORIENT / _MIN / _MAX / _GNDCLR (m)
-#                    libraries/AP_RangeFinder/AP_RangeFinder_Params.cpp:
-#                    14, 184, 101, 109, 142 (group "RNGFND",
-#                    Parameters.cpp:493)
-#   TERRAIN_ENABLE   libraries/AP_Terrain/AP_Terrain.cpp:43
-#   PLND_* (ALT_MIN m, YAW_ALIGN cdeg)
-#                    libraries/AC_PrecLand/AC_PrecLand.cpp:33, 40, 74, 138,
-#                    164, 47 (group "PLND_", Parameters.cpp:511)
-#   WP_RFND_USE / WP_SPD (m/s) / WP_SPD_DN (m/s) / WP_ACC (m/s/s)
-#                    libraries/AC_WPNav/AC_WPNav.cpp:24, 49, 76, 85
-#                    (group "WP_", Parameters.cpp:369)
-#   LAND_SPD_MS (m/s)  ArduCopter/mode_land.cpp:6-13 (group "LAND_",
-#                    Parameters.cpp:1128)
-#   EK3_SRC2_* / EK3_SRC_OPTIONS
-#                    libraries/AP_NavEKF/AP_NavEKF_Source.cpp:63-96, 136-141
-#                    (subgroup "SRC" of "EK3_", AP_NavEKF3.cpp:663)
-#   VISO_TYPE / _DELAY_MS (ms) / _POS_M_NSE (m)
-#                    libraries/AP_VisualOdom/AP_VisualOdom.cpp:31, 77, 93
-#                    (group "VISO", AP_Vehicle.cpp:50)
-#   BRD_SAFETY_DEFLT / BRD_SAFETYOPTION
-#                    libraries/AP_BoardConfig/AP_BoardConfig.cpp:126, 182, 282
+# Scriere + citire inapoi, apoi REBOOT (VISO_TYPE se aplica doar la boot):
+#   python3 tools/check_params.py --conn /dev/serial0 --baud <baud> \
+#       --parm config/nova_flight.parm --write --reboot
 #
-# A name that does not exist on the firmware is accepted in silence: no
-# error, no PARAM_VALUE, and Mission Planner says "No matching Params" and
-# writes the rest. tools/test_params_x7.py checks every name here against
-# the Copter-4.7.1 name list (tools/params_copter_4.7.1.txt).
-#
-# Arming checks (ARMING_SKIPCHK on 4.7) are NOT in this file: they are set
-# by hand by the team (user decision, 04.10.2026).
-#
-# ===========================================================================
-# ORDINEA DE INCARCARE - NU tot fisierul dintr-o data
-# ===========================================================================
-#
-# PLND_ENABLED si RNGFND1_TYPE sunt declarati cu AP_PARAM_FLAG_ENABLE
-# (Copter-4.7.1 AC_PrecLand.cpp:38, AP_RangeFinder_Params.cpp:68):
-# restul grupului nu e VIZIBIL pentru o statie de sol cat timp parametrul
-# de activare e 0. Iar aici PLND_ENABLED e 0 deliberat (§5.8), deci
-# sub-parametrii PLND_* nu ar aparea niciodata.
-#
-#   1. RNGFND1_TYPE = 10 si PLND_ENABLED = 1, Write, REBOOT
-#   2. incarca fisierul asta
-#   3. PLND_ENABLED inapoi pe 0     <- se uita usor, si nu da niciun semn
-#
-# In SITL capcana nu se vede: --add-param-file devine --defaults, aplicate
-# inaintea initializarii obiectelor.
-#
-# Perechea de zbor a lui config/nova_sitl.parm. Se incarca prin Mission
-# Planner / QGroundControl si se verifica OBLIGATORIU prin citire inapoi:
-#
-#     python3 tools/check_params.py --conn /dev/serial0 --baud 921600 \
-#                                   --parm config/nova_flight.parm
-#
-# §5.10 si §5.13: incarcarea unui fisier de parametri NU garanteaza ca s-au
-# aplicat. Pe FC-ul real nu exista `--wipe`; un parametru deja salvat poate
-# ramane neschimbat, iar interfata raporteaza "upload complete". Cod de
-# iesire 0 de la check_params e singura dovada.
-#
-# !! NEVERIFICAT PE HARDWARE. Fisierul e derivat din nova_sitl.parm, care e
-# !! validat in SITL. Diferentele fata de el sunt marcate cu [ZBOR] mai jos.
-# !! Prima rulare a lui check_params.py pe FC-ul real e si prima verificare a
-# !! acestui fisier; pana atunci, trateaza-l ca pe o propunere.
+# Nume verificate in tag-ul Copter-4.6.2 (identice pe 4.7.1):
+#   libraries/AP_VisualOdom/AP_VisualOdom.cpp:37, :83, :99
+#   libraries/AP_NavEKF/AP_NavEKF_Source.cpp:62-100, :140
 
-# --- Frame: Quad in X ---
-FRAME_CLASS,1
-FRAME_TYPE,1
+# Camera ca sursa de pozitie: MAVLink VISION_POSITION_ESTIMATE (cere REBOOT).
+VISO_TYPE,1
+# Varsta estimarii la sosire (~100 ms de la captura); implicit 10 ms.
+VISO_DELAY_MS,100
+VISO_POS_M_NSE,0.5
 
-# --- Telemetru: MAVLink de la companion (camera face solvePnP, §5.3) ---
-RNGFND1_TYPE,10
-RNGFND1_ORIENT,25
-RNGFND1_MIN,0.05
-RNGFND1_MAX,30
-# Camera la 74.5 mm deasupra solului la contact (§2). De remasurat pe
-# vehiculul asamblat, cu trenul de aterizare montat: o eroare de 1 cm aici
-# se transfera direct in altitudinea raportata la contact.
-RNGFND1_GNDCLR,0.0745
-
-# Urmarirea de suprafata dezactivata: telemetrul nostru e intermitent prin
-# constructie (dispare cand markerul iese din cadru) si ar declansa
-# "Failsafe: Terrain Rangefinder Unhealthy" (§5.4).
-SURFTRAK_MODE,0
-TERRAIN_ENABLE,0
-
-# --- Precision landing (§5.8) ---
-# Porneste DEZACTIVAT; il armeaza companion-ul doar pentru segmentul autonom
-# (nova/state_machine.py: set_precland). Motivul e in §5.8: aceeasi functie
-# e apelata din LAND, RTL si AUTO, deci PLND activ permanent ar face un RTL
-# sa aterizeze pe marker in loc de home - fix opusul a ce cere 15.2.4.
-PLND_ENABLED,0
-PLND_TYPE,1
-PLND_EST_TYPE,1
-PLND_STRICT,2
-PLND_ALT_MIN,0.35
-PLND_YAW_ALIGN,0
-
-# Arming checks are set by hand by the team (user decision 04.10.2026).
-
-# --- 15.2.7: urcare la 5 m dupa touchdown (§5.7) ---
-# Numele e WP_RFND_USE, nu WPNAV_RFND_USE - obiectul AC_WPNav e inregistrat
-# cu prefixul "WP_". Un PARAM_SET pe numele gresit nu da eroare si nu face
-# nimic; asa l-am pierdut in toate cele 13 rulari din Faza 1.
-WP_RFND_USE,0
-
-# Dupa contact ramanem armati pe sol (touchdown_hold_s, 1.5 s) si urcam
-# in GUIDED la h_ref + alt_riseup (15.1.2, 15.2.7). Masurat in SITL
-# Copter-4.5.7 (27.09.2026): in GUIDED dezarmarea automata cere throttle-ul
-# pilotului la ZERO, pe sol, timp de DISARM_DELAY - 21.1 s cu 20 aici; cu
-# throttle-ul la mijloc nu dezarmeaza deloc. 20 s >> 1.5 s de sol.
-# The same logic is in Copter-4.7.1 (ArduCopter/motors.cpp:11-47,
-# auto_disarm_check); the SITL measurement itself was on 4.5.7.
-DISARM_DELAY,20
-# Throttle NE-arcuit (bitul 0 = 0): cu bitul 0 aprins, in GUIDED "throttle
-# jos" inseamna sub MIJLOC (motors.cpp:38-44, auto_disarm_check) si un pilot cu
-# stick-ul la mijloc ar dezarma drona pe marker dupa DISARM_DELAY.
-PILOT_THR_BHV,0
-
-# --- [ZBOR] Failsafe de emitator ---
-# SINGURA diferenta functionala fata de nova_sitl.parm, si e deliberata.
-# In SITL e 0 pentru ca puntea de gamepad tine canalele vii prin
-# RC_CHANNELS_OVERRIDE si orice pauza ar arata ca pierdere de emitator.
-# Pe vehiculul real canalele vin de la un receptor adevarat, iar pierderea
-# emitatorului e exact evenimentul pentru care exista failsafe-ul.
-# 1 = activat, actiunea implicita a firmware-ului.
-FS_THR_ENABLE,1
-
-# --- 15.2.4: geofence ---
-# No fence on the FC: no fence parameter here, none written in flight
-# (user decision 02.10.2026: in the race the vehicle flies above 30 m AGL).
-# The 30 m ceiling of rule 15.2.4 exists only inside the autonomous
-# sequence, in the companion's supervisor (nova/safety.py, ExtNavSupervisor):
-# height above home over the ceiling -> abort, action SRC1 -> RTL.
-
-# =========================================================================
-# DECIZII DESCHISE - de completat inainte de primul zbor
-# =========================================================================
-#
-# Ce urmeaza depinde de hardware si de emitatorul de concurs, pe care nu le
-# am. Le las NECOMPLETATE deliberat: un parametru inventat care trece
-# check_params e mai rau decat unul lipsa, pentru ca arata ca o afirmatie
-# verificata in Compliance Matrix (§5.10).
-#
-# 1. FLTMODE_CH + FLTMODE1..6
-#    In SITL sunt legate de puntea de gamepad (canal 5, pozitii 1100/1500/
-#    1900). Pe emitatorul de concurs, canalul si treptele sunt altele.
-#    16.2.3 cere un mod de urgenta comutabil direct de la emitator, iar
-#    §5.8/15.3.1 recomanda un abort mapat pe FLTMODE_CH, ca sa nu treaca
-#    prin Pi. De stabilit odata cu emitatorul, apoi adaugat AICI.
-#
-# 2. BATT_MONITOR, BATT_CAPACITY, BATT_LOW_VOLT, BATT_FS_LOW_ACT
-#    2x 6S LiPo 4000 mAh, 25.2 V max (§2). Senzorul de curent si divizorul
-#    depind de placa de putere, care nu e finalizata (§7 pozitia 3).
-#    On the CUAV X7+ the firmware default is BATT_MONITOR 8 = DroneCAN
-#    (Copter-4.7.1 hwdef/CUAV-X7/defaults.parm:12, with CAN_P1_DRIVER 1 at
-#    :11). Without a CAN power module connected, the battery arming check
-#    (bit 8) fails arming with "Battery 1 unhealthy". Still the team's
-#    decision, like every arming check.
-#
-# 3. MOT_SPOOL_TIM_DN
-#    §5.6: fereastra intre land_complete si GROUND_IDLE e cea in care
-#    comutam in GUIDED. In SITL implicitul de 0.5 s da o marja de ~5x. Daca
-#    pe Pi reactia iese mai lenta, se MARESTE acesta - nu MOT_SPOOL_TIME,
-#    care ar incetini si spool-up-ul la decolare. De masurat pe banc.
-#
-# 4. INS_*, ATC_* (reglaj PID)
-#    Iyy (pitch) > Ixx (roll) cu 8% conform tensorului din Onshape (§7), deci
-#    castigurile NU se copiaza de pe o axa pe alta. Reglaj dupa asamblare.
-#
-# 5. ~~SERIALn pentru legatura cu Pi-ul~~ - adaugat mai jos, pentru
-#    CUAV X7+. Since 05.10.2026 the Pi is on SERIAL4 (UART4, GPS2 port) and
-#    every serial-port setting is set by hand - see the block below.
-
-# WP_ACC 1.5 - acelasi motiv ca in nova_sitl.parm si aceeasi derivare: e o
-# constrangere a CAMEREI (VFOV si dimensiunea markerului), nu a simularii.
-# Pe vehiculul real bugetul e mai strans, nu mai larg: erorile de pozitie
-# sunt mai mari. Vezi §5.48.
-WP_ACC,1.5
-
-# ---------------------------------------------------------------------------
-# 15.2.5: setul de surse EKF3 folosit in segmentul autonom, FARA GNSS.
-#
-# Regula: din momentul activarii autonome, niciun estimator care contribuie
-# la ghidare sau control nu are voie sa primeasca date GNSS. Companion-ul
-# comuta pe setul 2 la handover (nova/ekf_source.py) si il pune inapoi pe 1
-# la handback, abort sau dezarmare.
-#
-# Toate cinci sunt scrise EXPLICIT, desi patru coincid cu implicitul. §5.10:
-# un parametru pe care nu l-ai scris e o presupunere, iar aici presupunerea
-# e chiar afirmatia din Compliance Matrix.
-#
-# ATENTIE la YAW. Predicatul din firmware (AP_NavEKF_Source::usingGPS())
-# verifica doar YAW == GSF (8) si NU semnaleaza YAW == GPS (2) sau
-# GPS_COMPASS_FALLBACK (3) - amandoua alimenteaza estimatorul de cap cu
-# GNSS. Un set cu YAW = 2 ar fi raportat de firmware ca "fara GPS" si ar
-# incalca regula. Verificarea noastra e mai stricta, deliberat.
-#
-#   POSXY 6 = ExtNav    (REPROIECTARE ExtNav, 27.09.2026: camera trimite
-#                        VISION_POSITION_ESTIMATE in cadrul markerului;
-#                        in SITL ramane 0 - simulatorul nu e pe ExtNav)
-#   VELXY 0 = None
-#   POSZ  1 = Baro      (altitudinea barometrica nu e GNSS)
-#   VELZ  0 = None
-#   YAW   1 = Compass   (busola nu e GNSS; 2, 3 si 8 ar fi)
+# Setul EKF3 2, activat de Pi in segmentul autonom (regula 15.2.5: fara GNSS):
+# pozitie orizontala din camera, inaltime din barometru, cap din busola.
 EK3_SRC2_POSXY,6
 EK3_SRC2_VELXY,0
 EK3_SRC2_POSZ,1
 EK3_SRC2_VELZ,0
 EK3_SRC2_YAW,1
-
-# EK3_SRC_OPTIONS bitul 0 = FuseAllVelocities: EKF-ul fuzioneaza vitezele
-# din TOATE seturile, deci viteza GPS din setul 1 ar intra si pe setul 2.
-# Stins EXPLICIT (0): altfel 15.2.5 ar fi incalcat cu parametrii de set
-# perfect curati. Predicatul din nova/ekf_source.py refuza comutarea daca
-# bitul e aprins (verificat in AP_NavEKF_Source.h: FUSE_ALL_VELOCITIES = 1<<0).
+# Bit 0 (FuseAllVelocities) STINS: pe 4.6.2 implicitul e 1
+# (AP_NavEKF_Source.cpp:140) si ar fuziona viteza GPS din setul 1 si pe
+# setul 2. Cu el aprins, nova/ekf_source.py refuza comutarea.
 EK3_SRC_OPTIONS,0
-
-# ---------------------------------------------------------------------------
-# REPROIECTARE ExtNav (27.09.2026, claude-markdown/REPROIECTARE_EXTNAV.md):
-# camera e sursa de pozitie a EKF3 in segmentul autonom, prin
-# VISION_POSITION_ESTIMATE, cu markerul ca origine. PLND ramane 0 permanent.
-#
-# VISO_TYPE 1 = MAVLink. Ca RNGFND1_TYPE, e parametru de activare: backend-ul
-# se creeaza la boot, deci REBOOT dupa setare (§5.4).
-VISO_TYPE,1
-# Latenta captura -> trimitere, ms. PROVIZORIU: p50 masurat pe Pi este
-# ~35-120 ms in functie de fereastra (§5.65); de masurat pe calea noua si
-# corectat (brief §10).
-VISO_DELAY_MS,100
-# Zgomotul de pozitie al masuratorii, m. Conservator la inceput (implicit
-# 0.3); de reglat pe loguri.
-VISO_POS_M_NSE,0.5
-# Viteze mici in GUIDED (MOVE / DESCEND in trepte): limiteaza inclinarea,
-# deci tin markerul in cadru. WP_SPD orizontal 1.0 m/s, WP_SPD_DN 0.5 m/s
-# (m/s on 4.7.1: AC_WPNav.cpp:52 and :79, @Units m/s).
-WP_SPD,1.0
-WP_SPD_DN,0.5
-# LAND-ul final, vertical de la 1 m: 0.5 m/s (m/s, @Range 0.3 2,
-# mode_land.cpp:9-10).
-LAND_SPD_MS,0.5
-# LAND_ALT_LOW_M: de revazut (brief §7); nu se seteaza pana nu e decis.
-
-# ---------------------------------------------------------------------------
-# Link to the Raspberry Pi 4, on TELEM2 of the CUAV X7+.
-#
-# WHICH SERIAL IS TELEM2, checked in the Copter-4.7.1 source, not from
-# memory (§5.10):
-#
-#   libraries/AP_HAL_ChibiOS/hwdef/CUAV-X7/hwdef.dat:22
-#     SERIAL_ORDER OTG1 USART2 USART6 USART1 UART4 UART8 UART7 OTG2
-#                    0     1      2      3     4     5     6     7
-#   and hwdef.dat:141 in the same file: "# USART6 is telem2" (pins
-#   :142-145). The X7, X7 Pro, X7+ and X7+ Pro share this one hwdef. The
-#   order is the same as on Copter-4.5.7 (there at hwdef.dat:24 / :144).
-#
-#   So TELEM1 = SERIAL1, TELEM2 = **SERIAL2** (history: the Pi link was on
-#   TELEM2 until 05.10.2026; it is on SERIAL4 now, see below). Do not assume the numbers printed on a case match the
-#   parameter index - on other boards they do not. "USART6 is telem2" is a
-#   hwdef comment: it holds for the standard CUAV X7+ carrier board.
-#
-# Wiring, 3 wires, NOT 5. Standard Pixhawk connector pinout, NOT confirmed
-# for the X7+ carrier: confirm on the board before wiring (CUAV pinout sheet
-# or a multimeter: GND first, then the FC TX idles at ~3.3 V).
-#   FC TELEM2 pin 2 (TX)  ->  Pi GPIO 15 / pin 10 (RXD)
-#   FC TELEM2 pin 3 (RX)  ->  Pi GPIO 14 / pin 8  (TXD)
-#   FC TELEM2 pin 6 (GND) ->  Pi GND    / pin 6
-#
-#   TX si RX se INCRUCISEAZA. Pinul de 5 V al lui TELEM2 NU se leaga la Pi:
-#   Pi-ul are alimentarea lui, iar doua surse legate impreuna se bat.
-#   Nivelurile sunt 3.3 V pe ambele capete, deci nu trebuie convertor.
-#
-# 05.10.2026: the Pi link MOVED to SERIAL4 (user). On the X7+ that is UART4,
-# the GPS2 port (Copter-4.7.1 CUAV-X7/hwdef.dat:22 SERIAL_ORDER index 4,
-# :137 "UART4 GPS2"). The TELEM2 notes above are history. Note: UART4 is
-# NODMA (:138-139) - at high baud rates a NODMA UART can drop bytes under
-# load; the baud rate is the team's choice.
-# ALL serial-port settings are set BY HAND by the team (user decisions
-# 02.10 and 05.10.2026): SERIALx_PROTOCOL, SERIALx_BAUD, SERIALx_OPTIONS
-# and BRD_SERx_RTSCTS are never written and never checked from this file
-# (tools/check_params.py HAND_SET).
-# The Pi side opens the port at --baud (default 921600); it must match the
-# SERIAL4_BAUD set by hand on the FC.
-
-# HISTORY (TELEM2 link, until 05.10.2026) - not written any more:
-# Controlul de flux: implicit 2 = AUTO pe placile ChibiOS
-# (Copter-4.7.1 AP_BoardConfig.cpp:126-130, default 2 written literally;
-# the X7 defines USART6_CTS/RTS, hwdef.dat:144-145, so the parameter
-# exists there). Auto-detectia
-# testeaza daca bufferul de iesire se umple la pornire - cu RTS/CTS
-# nelegate, cum e cablajul de 3 fire de mai sus, rezultatul depinde de ce
-# se intampla sa fie pe pini in acel moment.
-#
-# Se pune 0 EXPLICIT. Simptomul, daca nu: legatura pare moarta intr-un
-# sens, fara niciun mesaj de eroare nicaieri - exact clasa de esec din
-# §5.10, unde "nu a dat eroare" nu inseamna "e configurat".
-
-# ---------------------------------------------------------------------------
-# Hardware safety switch: NONE on this vehicle (CUAV X7+).
-#
-# The X7 hwdef has a safety input (CUAV-X7/hwdef.dat:295-297:
-# HAL_HAVE_SAFETY_SWITCH 1, PE10 SAFETY_IN), so on Copter-4.7.1 the
-# defaults are BRD_SAFETY_DEFLT 1 and BRD_SAFETYOPTION 3
-# (AP_BoardConfig.cpp:47-50 and :67-69). With DEFLT 1 and no button the
-# outputs stay blocked and arming fails on "Hardware safety switch"
-# (AP_Arming.cpp:795-806, arming check bit 11).
-#
-# BRD_SAFETY_DEFLT 0: safety starts OFF at boot (board_drivers.cpp:34-49
-# forces it off). @RebootRequired (AP_BoardConfig.cpp:182-188): REBOOT the
-# FC after writing it, then read it back.
-BRD_SAFETY_DEFLT,0
-# BRD_SAFETYOPTION 0: no button may toggle safety (AP_BoardConfig.cpp:
-# 282-287, filter at :568-589, DroneCAN button too). With the default 3 a
-# button on the GPS module, held 1 s on the ground, would turn safety back
-# ON and arming would fail on bit 11 until reboot or a MAVLink command.
-# Bit 3 ("Force safety on when the aircraft disarms") must stay OFF: with
-# it, every disarm re-enables safety (AP_Arming.cpp:1967-1973) and without
-# a button the vehicle cannot re-arm - that would break the touchdown
-# sequence if a disarm ever happened on the marker.
-BRD_SAFETYOPTION,0
-# BRD_SAFETY_MASK stays at its default 0 and is not written (irrelevant
-# with safety off). The arming checks, the safety-switch one (bit 11)
-# included, are set by hand by the team: with BRD_SAFETY_DEFLT 0 that check
-# passes, and it still catches safety switched back on.

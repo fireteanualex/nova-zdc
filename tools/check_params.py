@@ -103,7 +103,7 @@ BITMASKS = {
 #: 4.7 name and its pre-4.7 one (user decision, 04.10.2026: "omit everything
 #: about arming checks"). Never written and never compared by this tool,
 #: whatever parm file it is given - a defensive guard, since the repo files
-#: do not contain them (tools/test_params_x7.py checks both). The Pi opens
+#: do not contain them (tools/test_params.py checks both). The Pi opens
 #: the port at --baud (default 921600); the two must match.
 HAND_SET = re.compile(r'^(SERIAL\d+_(BAUD|OPTIONS|PROTOCOL)|BRD_SER\d+_RTSCTS'
                       r'|ARMING_(CHECK|SKIPCHK))$')

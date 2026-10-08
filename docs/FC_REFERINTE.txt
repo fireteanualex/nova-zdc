@@ -1,0 +1,22 @@
+NOVA - ZDC 2026 - placi de zbor si commit-ul de referinta pentru fiecare
+========================================================================
+
+CUAV X7+ cu ArduCopter 4.7.1
+  Commit de referinta: f228786 (ramura feat/safety-x7)
+  Deployat pe Pi la f5e1bba (05.10.2026); f228786 schimba doar comentarii.
+  Preflight si descent_test --check TREC pe placa reala (05.10.2026).
+  Verificat in SITL Copter-4.7.1 (dbe79216): plafon SRC1 -> RTL, rotire
+  90 grd la 25 grd/s, touchdown complet cu alt_riseup 5.5 (4/4).
+  Fisier de parametri: config/nova_flight.parm la acel commit (37 de nume
+  4.7.1, cu BRD_SAFETY_DEFLT 0 si BRD_SAFETYOPTION 0, fara linii de serial).
+  config/nova.json pe desktop avea atunci modificari NECOMISE ale echipei:
+    "alt_riseup": 5.5, "camera_rotation_deg": 0
+  Legatura Pi-ului: SERIAL4 (UART4, portul GPS2, NODMA), setat de mana.
+  Revenire:  git checkout --detach f228786  si apoi  pi/deploy.sh <gazda>
+
+CubePilot Cube Orange+ cu ArduCopter 4.6.2 (de la 08.10.2026)
+  Ramura feat/safety-x7, de la commit-ul care adauga acest fisier.
+  Fisier de parametri: config/nova_flight.parm, MINIMAL - doar ce trebuie
+  ca FC-ul sa urmeze comenzile Pi-ului (ExtNav + setul EKF 2). Restul
+  (cadru, viteze, failsafe-uri, siguranta, seriale, armare, FLTMODE) le
+  seteaza echipa de mana in ArduPilot.

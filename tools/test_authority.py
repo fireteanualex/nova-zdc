@@ -488,51 +488,6 @@ def probleme_nume_unitati(managed, profile):
     return out
 
 
-def test_numele_si_unitatile_sunt_cele_de_pe_4_7_1():
-    """The board runs Copter-4.7.1 (CUAV X7+): a pre-4.7 name gets no
-    PARAM_VALUE there, so the scheduler would mark it unavailable and the
-    modulation would be silently inert (§5.4); a cm/s value written to an
-    m/s parameter would be 100x too fast. The test pins names AND units;
-    the repo-wide name check is in tools/test_params_x7.py."""
-    profile = {'PROFIL_IMPLICIT': PROFIL_IMPLICIT,
-               'PROFIL_RAPID': PROFIL_RAPID}
-    p = probleme_nume_unitati(MANAGED, profile)
-    assert p == [], p
-    known = _nume_471()
-    nume = {s.name for s in MANAGED}
-    for vechi in NUME_45:
-        assert vechi not in nume and vechi not in known, vechi
-    for interzis in auth.FORBIDDEN:
-        assert interzis in known, f"{interzis} nu exista pe 4.7.1"
-    assert auth.DESCENT_VALIDATED_MS == 0.5
-    assert not hasattr(auth, 'DESCENT_VALIDATED_CMS')
-    # the shipped profile, value by value, in m/s and factors
-    assert [b.valori['WP_SPD_DN'] for b in PROFIL_IMPLICIT] == \
-        [0.5, 0.5, 0.35, 0.35]
-    assert [b.valori['WP_ACC'] for b in PROFIL_IMPLICIT] == \
-        [1.0, 1.0, 0.7, 0.5]
-    return ', '.join(sorted(nume)) + " (SI, @Range 4.7.1)"
-
-
-def test_NEGATIV_nume_45_sau_unitati_cm_sunt_prinse():
-    """The check above must be able to fail: a 4.5 name, a profile in cm/s
-    and clamp limits in cm/s/s are each caught."""
-    S = auth.Spec
-    rau_nume = [s for s in MANAGED if s.name != 'WP_ACC'] + [
-        S('WPNAV_ACCEL', 'mul', 50.0, 500.0)]
-    p = probleme_nume_unitati(rau_nume, {})
-    assert any('WPNAV_ACCEL' in x for x in p), p
-
-    rau_cm = (auth.Band('sus', 8.0, WP_SPD_DN=50, LAND_SPD_MS=50),)
-    p = probleme_nume_unitati(MANAGED, {'cm': rau_cm})
-    assert len(p) == 2 and all('nu e m/s' in x for x in p), p
-
-    rau_lim = [s for s in MANAGED if s.name not in ('WP_ACC', 'LAND_SPD_MS')]
-    rau_lim += [S('WP_ACC', 'mul', 50.0, 500.0),
-                S('LAND_SPD_MS', 'abs', 10.0, 500.0)]
-    p = probleme_nume_unitati(rau_lim, {})
-    assert len(p) == 2, p
-    return "WPNAV_ACCEL; 50 'm/s'; limite cm -> prinse"
 
 
 def test_profilele_difera_doar_pe_viteza():
@@ -602,10 +557,6 @@ TESTS = [
     ('ATC_ANGLE_MAX nu e atins niciodata',
      test_ATC_ANGLE_MAX_nu_e_atins_niciodata),
     ('benzile acopera toata plaja', test_benzile_acopera_toata_plaja),
-    ('numele si unitatile sunt cele de pe 4.7.1',
-     test_numele_si_unitatile_sunt_cele_de_pe_4_7_1),
-    ('NEGATIV: nume 4.5 sau unitati cm sunt prinse',
-     test_NEGATIV_nume_45_sau_unitati_cm_sunt_prinse),
 ]
 
 

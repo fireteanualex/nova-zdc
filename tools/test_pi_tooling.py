@@ -934,31 +934,6 @@ def test_G4_NEGATIV_controale_neaplicate():
     return "control limitat de driver -> ESEC; sursa fara metadate -> SARIT"
 
 
-def test_G4_parametrii_de_zbor():
-    """nova_flight.parm se parseaza si are valorile de vehicul real."""
-    flight = os.path.join(REPO, 'config', 'nova_flight.parm')
-    f = {n: v for n, v, _ in parse_parm(flight)}
-    assert f.get('FS_THR_ENABLE') == 1.0, (
-        "FS_THR_ENABLE trebuie 1 pe vehiculul real: acolo pierderea "
-        "emitatorului e exact evenimentul pentru care exista failsafe-ul")
-    # EK3_SRC2_POSXY: 6 (ExtNav) pe vehicul din 27.09.2026 - camera e sursa
-    # de pozitie a EKF3 in segment.
-    assert f['EK3_SRC2_POSXY'] == 6.0 and f.get('VISO_TYPE') == 1.0
-    assert f.get('EK3_SRC_OPTIONS') == 0.0
-
-    # Numele care ne-au costat deja o data (§5.4/§5.10).
-    assert 'WP_RFND_USE' in f and 'WPNAV_RFND_USE' not in f
-    # arming checks: set by hand by the team (user decision, 04.10.2026)
-    assert not [n for n in f if n.startswith('ARMING')], f
-
-    # FLTMODE_* depinde de emitator: mai bine lipsa decat inventat.
-    assert not any(n.startswith('FLTMODE') for n in f), (
-        "FLTMODE_* nu se inventeaza; depinde de emitatorul de concurs")
-    txt = open(flight).read()
-    assert 'DECIZII DESCHISE' in txt and 'NEVERIFICAT PE HARDWARE' in txt
-    return (f"{len(f)} parametri; FS_THR_ENABLE 1, EK3_SRC2_POSXY 6 "
-            f"(ExtNav), VISO_TYPE 1")
-
 
 def test_preflight_numeste_parametrul_nepotrivit():
     """Pe vehicul, pornirea automata a cazut in monitor cu "1 nepotriviri"
@@ -1169,48 +1144,13 @@ def unitati_gresite(valori):
                   if n not in valori or not lo <= valori[n] <= hi)
 
 
-def test_un_singur_fisier_de_parametri_pentru_4_7_1():
-    """The board (CUAV X7+) runs ArduCopter 4.7.1 and the code targets
-    4.7.1 ONLY (user decision, 04.10.2026). config/nova_flight.parm is the
-    one parm file, loaded as it is; the generated 4.5 file and its
-    generator are gone. Its units are the 4.7.1 ones: a cm value under a
-    4.7 name (WP_ACC 150 for 1.5 m/s/s) would pass any name check and fly
-    100x too hard. Arming checks are not in it: the team's, set by hand.
-    Negative: the old cm values are caught by the unit check."""
-    for vechi in ('config/nova_flight_4.5.parm', 'tools/make_parm_45.py'):
-        assert not os.path.exists(os.path.join(REPO, vechi)), vechi
-    flight = os.path.join(REPO, 'config', 'nova_flight.parm')
-    f = {n: v for n, v, _ in parse_parm(flight)}
-    assert unitati_gresite(f) == [], unitati_gresite(f)
-    assert f['WP_ACC'] == 1.5 and f['WP_SPD_DN'] == 0.5 and \
-        f['LAND_SPD_MS'] == 0.5 and f['RNGFND1_GNDCLR'] == 0.0745
-    assert not [n for n in f if n.startswith('ARMING')], f
-
-    # NEGATIVE: the 4.5.7 file's cm numbers under the 4.7 names
-    rau = dict(f, RNGFND1_MIN=5, RNGFND1_GNDCLR=7, WP_ACC=150, WP_SPD_DN=50,
-               LAND_SPD_MS=50)
-    assert unitati_gresite(rau) == ['LAND_SPD_MS', 'RNGFND1_GNDCLR',
-                                    'RNGFND1_MIN', 'WP_ACC', 'WP_SPD_DN'], (
-        unitati_gresite(rau))
-
-    # config/nova.json, check_params and preflight all point at that file
-    import check_params as cp
-    import preflight_check as pf
-    from nova import config as nova_config
-    cfg = nova_config.load()
-    for cale in (nova_config.resolve(cfg, 'flight_parm'), cp.DEFAULT_PARM,
-                 pf.FLIGHT_PARM):
-        assert os.path.samefile(cale, flight), cale
-    return (f"WP_ACC {f['WP_ACC']:g} m/s/s, WP_SPD_DN {f['WP_SPD_DN']:g} m/s, "
-            f"{len(f)} parametri, unitati 4.7.1; valorile cm -> prinse")
-
 
 def test_check_params_nu_descrie_armarea():
     """Arming checks are the team's, set by hand (user decision,
     04.10.2026: "incearca sa omiti tot ce tine de arming checks"). The tool
     no longer carries a table of arming bits, does not describe the mask,
     and treats ARMING_CHECK / ARMING_SKIPCHK as hand-set (never written,
-    never compared - tools/test_params_x7.py checks that on a fake FC)."""
+    never compared - tools/test_params.py checks that on a fake FC)."""
     import check_params as cp
     assert not hasattr(cp, 'BITI_ARMARE')
     assert not [n for n in cp.BITMASKS if n.startswith('ARMING')]
@@ -2223,8 +2163,6 @@ TESTS = [
      test_fereastra_de_bord_chiar_primeste_cadre),
     ('rotatia de montaj ajunge doar pe vehicul',
      test_rotatia_de_montaj_ajunge_doar_pe_vehicul),
-    ('un singur fisier de parametri, pentru 4.7.1',
-     test_un_singur_fisier_de_parametri_pentru_4_7_1),
     ('scrierea pe nume ocoleste filtrul din Mission Planner',
      test_scrierea_pe_nume_ocoleste_filtrul_din_mission_planner),
     ('pragul de calibrare are o singura sursa',
@@ -2291,7 +2229,6 @@ TESTS = [
      test_G4_NEGATIV_rezolutie_nepotrivita),
     ('G4 NEGATIV: controale neaplicate',
      test_G4_NEGATIV_controale_neaplicate),
-    ('G4: parametrii de zbor', test_G4_parametrii_de_zbor),
     ('G4: codul de iesire ca poarta', test_G4_codul_de_iesire_ca_poarta),
     ('preflight numeste parametrul nepotrivit',
      test_preflight_numeste_parametrul_nepotrivit),
