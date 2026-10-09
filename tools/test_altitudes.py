@@ -136,7 +136,7 @@ def test_alt_riseup_sub_5_avertisment_la_pornire_si_in_preflight():
     v, w = nova_config.touchdown_settings({'alt_riseup': 4.9})
     assert len(w) == 1 and 'alt_riseup = 4.9 m < 5.0 m' in w[0] and '15.1.2' in w[0], w
     assert nova_config.touchdown_settings({'alt_riseup': 5.0})[1] == []
-    assert nova_config.load().get('alt_riseup') == 2.5
+    assert nova_config.load().get('alt_riseup') == 5.5   # team, d38f23c
     rc, out = porneste_main({'alt_riseup': 4.9})
     assert rc == 3, (rc, out[-400:])
     assert '[bord] ATENTIE: alt_riseup = 4.9 m < 5.0 m' in out, out[-600:]

@@ -278,7 +278,8 @@ def extnav_config(cfg, canal, prag, fov_deg=None):
     (the running preset's); None = unknown, then 'auto' never rotates."""
     kw = {}
     for key, field in (('extnav_tol_min_m', 'tol_min_m'),
-                       ('extnav_tol_frac', 'tol_frac')):
+                       ('extnav_tol_frac', 'tol_frac'),
+                       ('descend_drift_factor', 'descend_drift_factor')):
         if cfg.get(key) is not None:
             kw[field] = float(cfg[key])
     # touchdown and the climb back: validated (ValueError on a refusal)

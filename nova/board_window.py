@@ -240,6 +240,9 @@ class OsdMesaje:
             return f"CONTACT: h_ref {g('h_ref', 0.0):.2f} m, armat pe sol", VERDE
         if name == 'riseup':
             return f"URCARE la {g('target_above_home', 0.0):.1f} m (home)", VERDE
+        if name == 'descend_drift':
+            return (f"DERIVA in coborare: {g('lateral_m', 0.0):.2f} m -> MOVE la "
+                    f"{g('h', 0.0):.1f} m"), GALBEN
         if name == 'hover_correction':
             return f"CORECTIE: {g('lateral_m', 0.0):.2f} m de marker", GALBEN
         if name == 'sequence_complete':

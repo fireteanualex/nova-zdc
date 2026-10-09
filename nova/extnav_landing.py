@@ -178,6 +178,12 @@ TOUCHDOWN_BELOW_M = 1.5
 #: Without it the EKF drops the position 7 s after the last detection
 #: (flight 09.10.2026 b121: EXIT just above the marker, then LOITER on GPS).
 TD_BLIND_S = 0.3
+#: Drift during DESCEND (10.10.2026, team): bad position gains or a strong
+#: side wind push the vehicle off the marker while it goes straight down,
+#: and at the next CENTER_CHECK it is too far. A fresh camera measurement
+#: above descend_drift_factor x tol(h) on DESCEND_DRIFT_N consecutive
+#: detections stops the descent where it is and goes back to MOVE.
+DESCEND_DRIFT_N = 2
 GROUND_VPE_S = 0.1           # vision on the ground: 10 Hz, like detections
 TAKEOFF_RETRY_S = 3.0        # still on the ground this long -> takeoff again
 TAKEOFF_TRIES = 2
@@ -359,6 +365,9 @@ class ExtNavConfig:
     touchdown_hold_s: float = 1.5
     riseup_timeout_s: float = 15.0
     hover_confirm_s: float = 1.0
+    #: DESCEND -> MOVE when the measured offset exceeds this x tol(h)
+    #: (DESCEND_DRIFT_N detections in a row). 0 = off.
+    descend_drift_factor: float = 2.0
     #: B3, the marker search by rotation (nova.config.yaw_search_settings):
     #: 'auto' | True | False. False HERE (the dataclass default, i.e. a
     #: caller that does not configure it): the previous behaviour. The app
@@ -1649,11 +1658,41 @@ class ExtNavLanding:
         if now - self.state_since > self.cfg.descend_timeout_s:
             self.request_exit(f"DESCEND fara a atinge {self.h_target:.2f} m")
             return
+        if self._descend_drift(now):
+            return
         if (abs(self.h_now() - self.h_target) <= ALT_TOL_M
                 and abs(self.v.vz) < STILL_VZ_MS):
             self.window_tries = 0
             self._open_window(now)
             self.set_state(Phase.CENTER_CHECK, f"la {self.h_now():.2f} m")
+
+    def _descend_drift(self, now):
+        """True when the descent was stopped for drift (-> MOVE). Counts
+        DISTINCT fresh detections (capture time) since DESCEND began; one
+        under the limit resets the count, so a single outlier does nothing."""
+        if getattr(self, '_drift_since', None) != self.state_since:
+            self._drift_since = self.state_since
+            self._drift_n = 0
+            self._drift_last_t = None
+        k = self.cfg.descend_drift_factor
+        e = self._fresh_est(self.state_since)
+        if k <= 0 or e is None or e.t == self._drift_last_t:
+            return False
+        self._drift_last_t = e.t
+        lim = k * self.tol_now()
+        self._drift_n = self._drift_n + 1 if e.lateral_m > lim else 0
+        if self._drift_n < DESCEND_DRIFT_N:
+            return False
+        # stop where we are, re-centre at this height; the ladder then halves
+        # from here (CENTER_CHECK -> DESCEND uses h_target)
+        self.h_target = max(self.h_now(), self.cfg.final_h_m)
+        self._pick_yaw_target()
+        self._send_setpoint(now, -self.h_target, force=True)
+        self._emit('descend_drift', lateral_m=e.lateral_m, limit_m=lim,
+                   h=self.h_target)
+        self.set_state(Phase.MOVE, f"deriva in coborare: {e.lateral_m:.2f} m > "
+                                   f"{lim:.2f}; opresc la {self.h_target:.2f} m")
+        return True
 
     def _run_final_align(self, now):
         self.h_target = self.cfg.final_h_m
