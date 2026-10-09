@@ -16,8 +16,8 @@
   "roi_size_px": [640, 480],
 
   "_camera_rotation_deg": "Cum e montata camera pe vehicul: cu cate grade rotesti imaginea bruta SPRE STANGA ca nasul dronei sa ajunga sus (0/90/180/270). Se aplica pe axe, nu pe pixeli. VERIFICA inainte de orice zbor autonom: markerul pus in fata nasului trebuie sa apara in fereastra ca '+X m in fata', nu 'la dreapta'. Daca apare lateral, valoarea corecta e 270. O rotatie gresita face vehiculul sa corecteze perpendicular pe eroare si sa orbiteze (§5.1).",
-  "_camera_rotation_verificat": "25.09.2026, cu poza (pi/poza.sh): markerul pus in fata nasului apare pe marginea STANGA a imaginii brute, deci imaginea se roteste 270 spre stanga (= 90 spre dreapta) ca nasul sa ajunga sus. Valoarea veche, 90, avea axele inversate cu 180 - corectiile de aterizare ar fi impins drona EXACT INVERS.",
-  "camera_rotation_deg": 270,
+  "_camera_rotation_verificat": "09.10.2026: camera remontata pe montajul cu Cube Orange+, rotatia e 0 (confirmat de echipa). Istoric: 25.09.2026, cu poza (pi/poza.sh): markerul pus in fata nasului apare pe marginea STANGA a imaginii brute, deci imaginea se roteste 270 spre stanga (= 90 spre dreapta) ca nasul sa ajunga sus. Valoarea veche, 90, avea axele inversate cu 180 - corectiile de aterizare ar fi impins drona EXACT INVERS.",
+  "camera_rotation_deg": 0,
 
   "_flight_parm": "Fisierul de parametri verificat de preflight (check_params). Placa (CUAV X7+) ruleaza ArduCopter 4.7.1, iar codul tinteste DOAR 4.7.1 (decizia din 04.10.2026): config/nova_flight.parm, cu nume si unitati verificate in tag-ul Copter-4.7.1. Nu mai exista o varianta pentru 4.5.x.",
   "flight_parm": "config/nova_flight.parm",
@@ -38,7 +38,7 @@
   "extnav_tol_frac": 0.0667,
 
   "_touchdown": "Dupa FINAL_ALIGN (27.09.2026, regulile 15.1.2/15.1.3/15.2.7): coborare GUIDED cu touchdown_speed m/s pana la contact (ON_GROUND de la FC), armat pe sol touchdown_hold_s (refuz sub 1 s: 15.1.3), apoi decolare GUIDED la h_ref + alt_riseup deasupra markerului (h_ref = altitudinea baro la contact; avertisment sub 5 m: 15.1.2), confirmare de hover hover_confirm_s cu detectie proaspata centrata, apoi SRC1 -> LOITER. Urcarea trebuie sa ajunga in riseup_timeout_s. Modul LAND nu mai e folosit in secventa.",
-  "alt_riseup": 2.5,
+  "alt_riseup": 5.5,
   "touchdown_speed": 0.4,
   "touchdown_hold_s": 1.5,
   "riseup_timeout_s": 15.0,

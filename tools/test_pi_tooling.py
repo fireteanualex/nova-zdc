@@ -2127,8 +2127,10 @@ def test_poza_de_verificare_e_cablata_corect():
         assert lit not in src, f"rotatie scrisa de mana: {lit}"
     # si valoarea de zbor e cea verificata cu poza
     from nova import config as nova_config
-    assert nova_config.load()['camera_rotation_deg'] == 270, (
-        "config: rotatia verificata cu poza pe 25.09.2026 e 270")
+    # The mounting changed with the Cube Orange+ build: 0 deg, confirmed by
+    # the team on 09.10.2026 (was 270, verified with a photo on 25.09.2026).
+    assert nova_config.load()['camera_rotation_deg'] == 0, (
+        "config: rotatia camerei confirmata de echipa pe 09.10.2026 e 0")
     return "poza rotita din config; serviciul oprit+repornit; config 270"
 
 
