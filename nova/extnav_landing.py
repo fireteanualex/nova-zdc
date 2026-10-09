@@ -166,7 +166,18 @@ FRAME_TIMEOUT_S = 1.0
 STALL_MAX_S = THREAD_HEARTBEAT_MAX_S
 # touchdown and the climb back (27.09.2026)
 TOUCHDOWN_SETPOINT_S = 0.1   # the z ramp is re-sent at 10 Hz
-TOUCHDOWN_BELOW_M = 0.5      # the ramp ends this far below the ground
+#: The ramp ends this far below the estimated ground. Was 0.5 m (enough in
+#: SITL, perfect baro); flight 09.10.2026 b121: baro read -0.4..-0.5 m on
+#: the ground, the target was reached, the throttle never went to its lower
+#: limit and the FC never declared ON_GROUND. Deeper = the vehicle keeps
+#: descending at touchdown_speed until the FC sees the contact.
+TOUCHDOWN_BELOW_M = 1.5
+#: In TOUCHDOWN_DESCENT, no detection for this long = the camera is blind
+#: (the marker overflows the frame below ~0.6 m): from then on the EKF gets
+#: the position frozen at that moment, at GROUND_VPE_S, like on the ground.
+#: Without it the EKF drops the position 7 s after the last detection
+#: (flight 09.10.2026 b121: EXIT just above the marker, then LOITER on GPS).
+TD_BLIND_S = 0.3
 GROUND_VPE_S = 0.1           # vision on the ground: 10 Hz, like detections
 TAKEOFF_RETRY_S = 3.0        # still on the ground this long -> takeoff again
 TAKEOFF_TRIES = 2
@@ -516,6 +527,7 @@ class ExtNavLanding:
         self._td_setpoint_t = float('-inf')
         self._ground_xy = None
         self._ground_vpe_t = float('-inf')
+        self._td_blind_xy = None
         self._takeoff_t = None
         self._takeoff_n = 0
         self._riseup_t0 = None
@@ -1702,15 +1714,35 @@ class ExtNavLanding:
         if now - self.state_since > self.touchdown_timeout_s():
             self.request_exit(f"fara contact in {self.touchdown_timeout_s():.0f} s")
             return
+        self._blind_descent_vpe(now)
         if now - self._td_setpoint_t >= TOUCHDOWN_SETPOINT_S:
             self._td_setpoint_t = now
-            # a z ramp at touchdown_speed, down to 0.5 m below the ground:
+            # a z ramp at touchdown_speed, down to TOUCHDOWN_BELOW_M below the ground:
             # the position controller keeps xy on (0, 0) and the land
             # detector needs the throttle at its lower limit to see contact
             floor = self._td_z0 + self._td_h0 + TOUCHDOWN_BELOW_M
             z = min(self._td_z0 + self.cfg.touchdown_speed * (now - self._td_t0), floor)
             yaw = self.yaw_target if self.yaw_target is not None else self.v.yaw
             self.v.send_position_target(0.0, 0.0, z, yaw)
+
+    def _blind_descent_vpe(self, now):
+        """The last part of the touchdown descent, camera blind: the EKF
+        position frozen at the moment the detections stopped, sent as
+        VISION_POSITION_ESTIMATE at GROUND_VPE_S, so the EKF keeps a valid
+        position until contact. A new detection ends it."""
+        if self.last_det_t is not None and now - self.last_det_t <= TD_BLIND_S:
+            self._td_blind_xy = None
+            return
+        if self._td_blind_xy is None:
+            self._td_blind_xy = (self.v.x, self.v.y)
+        if now - self._ground_vpe_t < GROUND_VPE_S:
+            return
+        self._ground_vpe_t = now
+        x, y = self._td_blind_xy
+        if self.v.send_vision_position_estimate(
+                int(round(now * 1e6)), x, y, self.v.z, self.v.roll,
+                self.v.pitch, self.v.yaw):
+            self.n_ground_vpe += 1
 
     def _contact(self, now):
         """ON_GROUND from the FC: what the capture and the climb need,

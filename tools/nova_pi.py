@@ -705,9 +705,16 @@ def main():
 
     osd = OsdMesaje()          # ce vede pilotul in banda ferestrei
 
+    # 09.10.2026: the exposure is re-measured at each AUX request, with the
+    # vehicle over the marker in the real light (not only at boot)
+    cam_src = getattr(detector, 'source', None)   # LastDetection forwards
+
     def on_sm_event(name, info):
         rec.on_event(name, info)
         osd.note(name, info, time.monotonic())
+        if (name == 'state' and info.get('new') == 'GATE_SEARCH'
+                and hasattr(cam_src, 'request_exposure_relock')):
+            cam_src.request_exposure_relock()
         if name == 'contact' and cap is not None:
             cap.on_contact(info)
         if name == 'abort' and info.get('action') == 'LOITER':

@@ -1513,6 +1513,14 @@ class PiCameraSource(FrameSource):
         # old behaviour stays and the log says so.
         self.fresh = bool(fresh)
         self._flush_ok = None
+        #: Exposure re-lock (flight 09.10.2026): auto_lock measured the scene
+        #: once, at boot - a Pi started indoors / in shade locked a value
+        #: that saw nothing in the sun. request_exposure_relock() (main
+        #: thread, at each AUX request) lets AE converge again for
+        #: AUTOEXP_FRAMES frames in read() (camera thread), then locks it.
+        self._relock_req = False
+        self._relock_left = 0
+        self._locked_ctrl = None
         tuning = None
         if settings.exposure == 'auto_capped':
             tuning = capped_tuning(Picamera2, settings.exposure_max_us,
@@ -1557,6 +1565,7 @@ class PiCameraSource(FrameSource):
         self.picam2.start()
         if self.settings.exposure == 'auto_lock':
             ctrl = self._lock_exposure(ctrl)
+            self._locked_ctrl = dict(ctrl)
 
         # Ceasul senzorului e CLOCK_BOOTTIME (ns); time.monotonic() e
         # CLOCK_MONOTONIC. Pe un Pi care nu suspenda, coincid - dar calculam
@@ -1693,6 +1702,48 @@ class PiCameraSource(FrameSource):
                   f"nu s-a aplicat in {CONTROL_APPLY_FRAMES} cadre")
         return fixed
 
+    def request_exposure_relock(self):
+        """Ask for a new measure-then-lock of the exposure (auto_lock only).
+        Non-blocking: done by read() in the camera thread over the next
+        AUTOEXP_FRAMES frames, which keep flowing to detection meanwhile."""
+        if self.settings.exposure == 'auto_lock':
+            self._relock_req = True
+            return True
+        return False
+
+    def _relock_step(self, md):
+        """One step of the re-lock, from read(). Same rule as at boot
+        (expunere_blocata: blur cap, gain limits)."""
+        if self._relock_req:
+            self._relock_req = False
+            self._relock_left = AUTOEXP_FRAMES
+            self.picam2.set_controls({'AeEnable': True})
+            return
+        if self._relock_left <= 0:
+            return
+        self._relock_left -= 1
+        if self._relock_left > 0:
+            return
+        exp, gain = md.get('ExposureTime'), md.get('AnalogueGain')
+        fixed = dict(self._locked_ctrl or {})
+        if exp is not None and gain is not None:
+            limits = (self.picam2.camera_controls or {}).get('AnalogueGain')
+            gain_min, gain_max = (float(limits[0]), float(limits[1])) \
+                if limits else (1.0, 16.0)
+            exp_f, gain_f, avert = expunere_blocata(exp, gain, gain_min=gain_min,
+                                                    gain_max=gain_max)
+            fixed.update(ExposureTime=int(round(exp_f)), AnalogueGain=gain_f)
+            if self.verbose:
+                print(f"[camera] expunere RE-masurata (cerere AUX): {exp:.0f} us "
+                      f"gain {gain:.2f} -> BLOCATA la {exp_f:.0f} us "
+                      f"gain {gain_f:.2f}" + (f" | ATENTIE: {avert}" if avert else ''))
+        elif self.verbose:
+            print("[camera] ATENTIE: re-masurare fara metadate; pastrez "
+                  "expunerea blocata anterior")
+        fixed['AeEnable'] = False
+        self.picam2.set_controls(fixed)
+        self._locked_ctrl = fixed
+
     def _verify_controls(self, wanted):
         """§5.10 aplicat camerei: un control poate fi acceptat si apoi
         limitat tacut de driver. Citim inapoi din metadate."""
@@ -1749,6 +1800,8 @@ class PiCameraSource(FrameSource):
             self.chroma_ring.append((md.get('SensorTimestamp'), arr))
         t2 = time.perf_counter()
         self.last_metadata = md
+        if self._relock_req or self._relock_left > 0:
+            self._relock_step(md)
         ts = md.get('SensorTimestamp')
         t = (ts * 1e-9 + self._boot_offset) if ts else time.monotonic()
         if self.timer is not None:
