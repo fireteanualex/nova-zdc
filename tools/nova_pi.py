@@ -46,7 +46,7 @@ from nova.concurrency import (Heartbeat, Latest,           # noqa: E402
                               install_excepthook)
 from nova.supervisor_thread import SupervisorThread        # noqa: E402
 from nova.ekf_source import EkfSourceManager               # noqa: E402
-from nova.extnav import ExtNavEstimator                    # noqa: E402
+from nova.extnav import CameraHeight, ExtNavEstimator      # noqa: E402
 from nova.extnav_landing import (ExtNavConfig, ExtNavLanding,  # noqa: E402
                                  EKF_NO_VISION_VALID_S, SEARCH_BUDGET_S,
                                  SRC2_PHASES, yaw_search_duration_s,
@@ -279,7 +279,10 @@ def extnav_config(cfg, canal, prag, fov_deg=None):
     kw = {}
     for key, field in (('extnav_tol_min_m', 'tol_min_m'),
                        ('extnav_tol_frac', 'tol_frac'),
-                       ('descend_drift_factor', 'descend_drift_factor')):
+                       ('descend_drift_factor', 'descend_drift_factor'),
+                       ('alt_offset_m', 'alt_offset_m'),
+                       ('final_h_m', 'final_h_m'),
+                       ('extnav_tol_final_m', 'tol_final_m')):
         if cfg.get(key) is not None:
             kw[field] = float(cfg[key])
     # touchdown and the climb back: validated (ValueError on a refusal)
@@ -357,7 +360,19 @@ def cablaj_extnav(a, cfg, vehicle, override, gate_kw, canal, prag,
     sup = ExtNavSupervisor(vedere(vehicle), override=override,
                            ceiling_agl_m=plafon['ceiling_agl_m'],
                            ceiling_confirm_n=plafon['ceiling_confirm_n'])
-    est = ExtNavEstimator(vehicle, verbose=False)
+    # alt_offset_m (16.10.2026): the estimator scales the camera angles with
+    # the real height, not the baro one with its fixed error
+    _off = float(cfg.get('alt_offset_m') or 0.0)
+    if cfg.get('height_from_camera', True):
+        # 16.10.2026: height from the camera, alt_offset_m only until the
+        # first usable detection
+        est = ExtNavEstimator(vehicle, verbose=False,
+                              height=CameraHeight(fallback_bias=_off))
+    else:
+        est = ExtNavEstimator(
+            vehicle, verbose=False,
+            h_source=lambda: (None if getattr(vehicle, 'rel_alt', None) is None
+                              else vehicle.rel_alt - _off))
     ekf = EkfSourceManager(vehicle, faze=SRC2_PHASES)
     sm = ExtNavLanding(vehicle, est, ekf, gate,
                        extnav_config(cfg, canal, prag, fov_deg=fov_deg),

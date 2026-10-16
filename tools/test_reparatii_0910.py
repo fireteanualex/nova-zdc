@@ -38,6 +38,9 @@ def _source():
     s.verbose = False
     s._relock_req = False
     s._relock_left = 0
+    s._lock_lum = None
+    s._lum_wait = 0
+    s._relock_t = float('-inf')
     s._locked_ctrl = {'ExposureTime': 2000, 'AnalogueGain': 16.0,
                       'AeEnable': False, 'LensPosition': 1.63}
     return s
@@ -103,7 +106,34 @@ def test_coborarea_oarba_tine_EKF_viu():
     return f"orb dupa {el.TD_BLIND_S} s: VPE inghetat la 10 Hz; detectie noua -> oprit"
 
 
+def test_umbra_cere_re_masurarea_automat():
+    """Lighting change in flight (the drone's shadow): brightness under
+    0.6x the baseline -> re-lock asked; again only after RELOCK_MIN_S;
+    a change inside 0.6x..1.7x does nothing."""
+    s = _source()
+    s._lum_wait = dp.RELOCK_SETTLE_FRAMES
+    for i in range(dp.RELOCK_SETTLE_FRAMES):
+        s._auto_relock(50.0, 100.0 + i * 0.03)
+    assert s._lock_lum == 50.0, s._lock_lum
+    s._auto_relock(40.0, 101.0)              # 0.8x: nothing
+    assert not s._relock_req
+    s._auto_relock(22.0, 101.1)              # 0.44x: the shadow
+    assert s._relock_req, "umbra nu a cerut re-masurarea"
+    s._relock_req = False
+    s._lock_lum = 50.0                       # (relock not run in this test)
+    s._auto_relock(22.0, 102.0)              # < RELOCK_MIN_S later: nothing
+    assert not s._relock_req
+    s._auto_relock(22.0, 101.1 + dp.RELOCK_MIN_S)
+    assert s._relock_req
+    s2 = _source()
+    s2._lock_lum = 50.0
+    s2._auto_relock(90.0, 200.0)             # 1.8x: sun again
+    assert s2._relock_req
+    return "umbra 0.44x -> re-masurare; 0.8x nimic; cel mult o data la 3 s"
+
+
 TESTS = [
+    ('umbra cere re-masurarea automat', test_umbra_cere_re_masurarea_automat),
     ('expunerea se re-blocheaza la cerere', test_expunerea_se_re_blocheaza_la_cerere),
     ('coborarea oarba tine EKF-ul viu', test_coborarea_oarba_tine_EKF_viu),
 ]

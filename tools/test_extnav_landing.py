@@ -766,22 +766,27 @@ def test_toleranta_din_config_reproduce_ce_a_zburat():
     from nova import config as nova_config
     cfg = nova_config.load()
     c = nova_pi.extnav_config(cfg, AUX, 1500)
-    assert (c.tol_min_m, c.tol_frac) == (0.10, 0.0667), (c.tol_min_m, c.tol_frac)
+    assert (c.tol_min_m, c.tol_frac, c.tol_final_m) == (0.25, 0.10, 0.165), (
+        c.tol_min_m, c.tol_frac, c.tol_final_m)
+    c.alt_offset_m = 0.0      # the simulated baro has no height error
     d = ExtNavConfig()
     assert (d.tol_min_m, d.tol_frac) == (ex.TOL_MIN_M, ex.TOL_FRAC) == (0.15, 0.10)
-    for h, t in ((1.0, 0.10), (4.0, 0.2668), (8.0, 0.5336)):
+    # on the way: max(0.25, 0.10 h); final band (h <= final_h_m + 0.3): 0.165
+    for h, t in ((1.0, 0.25), (4.0, 0.40), (8.0, 0.80)):
         assert abs(ex.tol_m(h, c.tol_min_m, c.tol_frac) - t) < 1e-9, h
-        assert abs(ex.tol_m(h, c.tol_min_m, c.tol_frac)
-                   - ex.tol_m(h) / 1.5) < 0.001, h
     app = App(h=8.0, p=(2.0, -1.0), rate=0.05, cfg=c)
-    assert abs(app.sm.tol_now() - 0.5336) < 1e-6
+    assert abs(app.sm.tol_now() - 0.80) < 1e-6
+    z0 = app.v.z
+    app.v.z = -c.final_h_m                    # in the final band (EKF height)
+    assert abs(app.sm.tol_now() - 0.165) < 1e-6, app.sm.tol_now()
+    app.v.z = z0
     app.handover()
     rec, hook = contact_err(app)
     st = app.run(180.0, stop=(Phase.DONE, Phase.ABORT, Phase.GATE_FAIL), on_step=hook)
     assert st == Phase.DONE, (st, app.states, app.sm.exit_reason)
     err = rec['err']
-    assert err < 0.10, f"eroare la contact {err:.3f} m"
-    return f"0.10 / 0.0667 h = brief / 1.5; secventa completa, contact la {100 * err:.1f} cm"
+    assert err < c.tol_final_m, f"eroare la contact {err:.3f} m"
+    return f"0.25 / 0.10 h pe drum, 0.165 m la final; contact la {100 * err:.1f} cm"
 
 
 TESTS = [

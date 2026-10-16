@@ -480,10 +480,15 @@ def test_regresie_last_corners_nu_schimba_Detection():
             f"creste cu detalii de implementare ale detectorului")
     # iar ce E in contract e acolo deliberat, nu din inertie:
     # marker_yaw_deg a intrat pe 27.09.2026 (ExtNav), pentru consemnul de
-    # yaw - orientarea, nu colturile
+    # yaw - orientarea, nu colturile; plane_dist_m pe 16.10.2026, pentru
+    # inaltimea din camera (distanta pana la planul markerului)
     assert campuri == {'t', 'angle_x', 'angle_y', 'distance_m', 'marker_px',
-                       'range_m', 'fill', 'marker_yaw_deg'}, campuri
+                       'range_m', 'fill', 'marker_yaw_deg',
+                       'plane_dist_m'}, campuri
     assert det.t == 3.5
+    # the plane distance of a marker seen straight from above ~ its range
+    assert det.plane_dist_m is not None and abs(det.plane_dist_m - det.range_m) \
+        < 0.05 * det.range_m, (det.plane_dist_m, det.range_m)
     # dupa un cadru gol, last_corners revine la None
     assert d.detect(np.full((H, W), 110, np.uint8), 4.0) is None
     assert d.last_corners is None, 'last_corners a ramas din cadrul anterior'

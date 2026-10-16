@@ -41,7 +41,9 @@ compensated from LOCAL_POSITION_NED. Unknown position => not consistent:
 "nu stim" nu inseamna "sunt de acord".
 """
 
+import collections
 import math
+import statistics
 from dataclasses import dataclass
 
 #: Centering tolerance as a function of height (brief §3):
@@ -178,6 +180,62 @@ class Estimate:
         return math.hypot(self.off_n, self.off_e)
 
 
+#: Camera height (16.10.2026): the sequence's height comes from the camera
+#: (perpendicular distance to the marker plane, Detection.plane_dist_m)
+#: whenever the marker is seen; between detections from the EKF/baro height
+#: corrected by the bias learned while seeing it (EKF height - camera height).
+CAM_HEIGHT_N = 5              # median window of the bias
+CAM_HEIGHT_MIN_PX = 30.0      # smaller marker: distance too noisy
+CAM_HEIGHT_GATE_FRAC = 0.25   # a sample further than this x h from the
+CAM_HEIGHT_GATE_MIN_M = 0.5   #   current estimate (or this many m) is rejected
+CAM_HEIGHT_RESET_N = 5        # ... unless it persists: then re-anchor
+
+
+class CameraHeight:
+    """bias = EKF height - real height (camera above the marker plane minus
+    the camera's own height above the ground). `fallback_bias` (config
+    alt_offset_m) is used until the first camera sample. Median of the last
+    CAM_HEIGHT_N samples; outliers rejected; frozen when no detection."""
+
+    def __init__(self, fallback_bias=0.0, cam_height_m=None):
+        from .detection import CAM_HEIGHT_M
+        self.bias = float(fallback_bias)
+        self.cam_height_m = CAM_HEIGHT_M if cam_height_m is None else cam_height_m
+        self.learned = False
+        self.last_h_cam = None
+        self.n_samples = self.n_rejected = 0
+        self._win = collections.deque(maxlen=CAM_HEIGHT_N)
+        self._rej = 0
+
+    def update(self, det, h_ekf):
+        """One detection at EKF height h_ekf (at its capture time). Returns
+        the camera height used, or None (unusable or rejected)."""
+        d = getattr(det, 'plane_dist_m', None)
+        px = getattr(det, 'marker_px', None)
+        if d is None or h_ekf is None or px is None or px < CAM_HEIGHT_MIN_PX:
+            return None
+        h_cam = float(d) - self.cam_height_m
+        b = float(h_ekf) - h_cam
+        if self.learned:
+            gate = max(CAM_HEIGHT_GATE_MIN_M, CAM_HEIGHT_GATE_FRAC * max(h_cam, 0.0))
+            if abs(b - self.bias) > gate:
+                self._rej += 1
+                self.n_rejected += 1
+                if self._rej < CAM_HEIGHT_RESET_N:
+                    return None
+                self._win.clear()             # persistent: re-anchor on it
+        self._rej = 0
+        self._win.append(b)
+        self.bias = statistics.median(self._win)
+        self.learned = True
+        self.last_h_cam = h_cam
+        self.n_samples += 1
+        return h_cam
+
+    def height(self, h_ekf):
+        return float(h_ekf) - self.bias
+
+
 class ExtNavEstimator:
     """Detection -> Estimate -> VISION_POSITION_ESTIMATE.
 
@@ -190,8 +248,12 @@ class ExtNavEstimator:
     fixes; `h_source` exists for tests and for a future rangefinder.
     """
 
-    def __init__(self, vehicle, h_source=None, verbose=False):
+    def __init__(self, vehicle, h_source=None, verbose=False, height=None):
         self.v = vehicle
+        #: CameraHeight (16.10.2026) or None (the baro source as before)
+        self.height = height
+        if h_source is None and height is not None:
+            h_source = lambda: self.height.height(-self.v.z)   # noqa: E731
         self.h_source = h_source or (lambda: getattr(self.v, 'rel_alt', None))
         self.verbose = verbose
         self.n_estimates = 0
@@ -216,6 +278,15 @@ class ExtNavEstimator:
         h = float(h)
         if h < MIN_H_M:
             return self._refuse(f"h {h:.2f} m sub {MIN_H_M} m")
+        if self.height is not None:
+            # learn from THIS detection first, so it is scaled with it
+            p = self.v.position_at(det.t)
+            z = p[2] if p is not None and len(p) > 2 else getattr(self.v, 'z', None)
+            if z is not None:
+                self.height.update(det, -z)
+                h = self.height.height(-z)
+                if h < MIN_H_M:
+                    return self._refuse(f"h {h:.2f} m sub {MIN_H_M} m (camera)")
         roll, pitch, yaw = att
         off = marker_offset_ned(det.angle_x, det.angle_y, roll, pitch, yaw, h)
         if off is None:

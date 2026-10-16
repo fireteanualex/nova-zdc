@@ -30,15 +30,25 @@
   "guidance": "extnav",
 
   "_handover_alt": "Fereastra de altitudine in care poarta accepta handover-ul, m, pe ambele ghidari (02.10.2026). Regulile 15.1.2 / 15.2.3 cer activarea la 5-20 m; minimul de 4.0 m e o abatere DELIBERATA a echipei. handover_alt_min 0 = fara minim (AVERTISMENT la pornire); maximul <= minimul sau o valoare negativa = pornire refuzata. Inlocuieste cheia veche handover_alt_min_m (inca citita, cu avertisment, daca lipseste cea noua). Plafonul de 30 m al supervizorului (ceiling_agl_m) e independent de maxim. Pe extnav estimatorul refuza oricum sub 0.3 m.",
-  "handover_alt_min": 4.0,
+  "handover_alt_min": 3.0,
   "handover_alt_max": 20.0,
 
   "_extnav_tol": "Toleranta laterala ExtNav tol(h) = max(extnav_tol_min_m, extnav_tol_frac * h), in m (iesirea din MOVE, CENTER_CHECK, FINAL_ALIGN; si fazele noi de touchdown). Brief-ul: 0.15 / 0.10. Zborurile reusite din 27.09.2026 au avut unghiurile de 1.5x prea mari (calibrarea scalata pentru alt mod de senzor), deci toleranta lor REALA a fost 0.10 m / 0.0667 h. Dupa corectia geometriei (62808e9) valorile de aici reproduc exact ce a zburat; se revine la brief doar dupa zbor validat.",
-  "extnav_tol_min_m": 0.10,
-  "extnav_tol_frac": 0.0667,
+  "extnav_tol_min_m": 0.25,
+  "extnav_tol_frac": 0.10,
+  "_extnav_tol_final_m": "16.10.2026 (echipa): doua benzi. Pe drum, deasupra final_h_m: tol(h) = max(extnav_tol_min_m, extnav_tol_frac * h) = max(0.25, 0.10 h), adica 0.5 m la 5 m - treptele urmatoare corecteaza. La final (h <= final_h_m + 0.3 m): toleranta fixa extnav_tol_final_m = 0.165 m (0.15 + 10%), sub marja de ~19 cm a amprentei pe marker. Inainte: 0.10 / 0.0667 peste tot.",
+  "extnav_tol_final_m": 0.165,
 
   "_touchdown": "Dupa FINAL_ALIGN (27.09.2026, regulile 15.1.2/15.1.3/15.2.7): coborare GUIDED cu touchdown_speed m/s pana la contact (ON_GROUND de la FC), armat pe sol touchdown_hold_s (refuz sub 1 s: 15.1.3), apoi decolare GUIDED la h_ref + alt_riseup deasupra markerului (h_ref = altitudinea baro la contact; avertisment sub 5 m: 15.1.2), confirmare de hover hover_confirm_s cu detectie proaspata centrata, apoi SRC1 -> LOITER. Urcarea trebuie sa ajunga in riseup_timeout_s. Modul LAND nu mai e folosit in secventa.",
   "alt_riseup": 5.5,
+  "_alt_offset_m": "Eroarea FIXA a inaltimii (baro/EKF), in m, masurata de echipa pe 16.10.2026: 2.5 m afisat la 0.5 m real; redusa la 1.0 m dupa zborul urmator. Se SCADE din fiecare inaltime citita de secventa autonoma (trepte, FINAL_ALIGN, touchdown, urcare, estimatorul camerei) si se adauga inapoi la fiecare tinta trimisa. 0 = fara corectie. NU corecteaza poarta de handover (fereastra 4-20 m) si plafonul de 30 m, care raman pe inaltimea FC-ului.",
+  "alt_offset_m": 1.0,
+
+  "_height_from_camera": "16.10.2026: inaltimea secventei autonome vine din camera (distanta perpendiculara camera -> planul markerului, din marker_size_m si calibrare), minus inaltimea camerei peste sol (7.45 cm). Cat timp markerul e vazut, se invata corectia dintre inaltimea EKF/baro si camera (mediana pe 5 detectii, valorile aberante respinse); intre detectii si sub ~0.6 m (marker prea mare in cadru) se foloseste baro + ultima corectie. alt_offset_m e doar rezerva pana la prima detectie. Linia de stare arata corectia: hcorr +X.XX (fix = inca nu s-a invatat). false = ca inainte: baro - alt_offset_m. Poarta (fereastra 4-20 m) si plafonul de 30 m raman pe inaltimea FC-ului.",
+  "height_from_camera": true,
+
+  "_final_h_m": "Inaltimea reala la care drona se aliniaza ultima data (FINAL_ALIGN) si de la care incepe coborarea dreapta pana la contact, m. Era 1.0 fix in cod; echipa (16.10.2026): mai sus, pentru ca la 1 m se bloca in centrari. Scara de trepte nu coboara sub ea.",
+  "final_h_m": 1.25,
   "touchdown_speed": 0.4,
   "touchdown_hold_s": 1.5,
   "riseup_timeout_s": 15.0,

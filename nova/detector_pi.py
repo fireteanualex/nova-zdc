@@ -94,6 +94,15 @@ CAMERA_CONTROLS = {
 AUTOEXP_MAX_US = CAMERA_CONTROLS['ExposureTime']
 #: Cate cadre lasam AE-ul sa convearga inainte de blocare (~1 s la 30 fps).
 AUTOEXP_FRAMES = 30
+#: Automatic exposure re-lock in flight (16.10.2026): frame brightness vs
+#: the one right after the last lock (mean of the 1/16 subsampled Y plane,
+#: like the detector's `lum`). Outside 0.6x..1.7x -> re-measure, at most
+#: once per RELOCK_MIN_S; the baseline is taken RELOCK_SETTLE_FRAMES after
+#: a lock, once the new exposure has reached the sensor.
+RELOCK_LUM_LOW = 0.6
+RELOCK_LUM_HIGH = 1.7
+RELOCK_MIN_S = 3.0
+RELOCK_SETTLE_FRAMES = 5
 #: Cate cadre asteptam sa se APLICE un control dupa set_controls. Prima
 #: varianta astepta fix 5: pe vehicul, seara, driverul inca raporta vechiul
 #: 32680 us, verificarea dadea ESEC fals, preflight-ul pica si pornirea
@@ -1333,10 +1342,12 @@ class ArucoMarkerDetector:
         # e foarte gresit; cadem pe adancimea markerului.
         R, _ = cv2.Rodrigues(rvec)
         n = R[:, 2]
+        plane_dist = abs(float(np.dot(t, n)))      # camera -> marker plane
         if abs(n[2]) > 0.2:
             range_m = float(np.dot(t, n) / n[2])
         else:
             range_m = float(t[2])
+            plane_dist = None
         if range_m <= 0.0:
             range_m = float(t[2])
 
@@ -1354,7 +1365,8 @@ class ArucoMarkerDetector:
         return Detection(t=t_capture, angle_x=angle_x, angle_y=angle_y,
                          distance_m=distance, marker_px=marker_px,
                          range_m=range_m, fill=fill,
-                         marker_yaw_deg=marker_yaw_deg)
+                         marker_yaw_deg=marker_yaw_deg,
+                         plane_dist_m=plane_dist)
 
     def counts(self):
         """(cadre procesate, cadre cu detectie), citite ATOMIC."""
@@ -1521,6 +1533,14 @@ class PiCameraSource(FrameSource):
         self._relock_req = False
         self._relock_left = 0
         self._locked_ctrl = None
+        #: Automatic re-lock on a light change (16.10.2026: the drone's own
+        #: shadow on the marker in the sun, b123: lum 49 -> 22 with the
+        #: exposure locked, detection lost). Baseline = frame brightness a
+        #: few frames after each lock; a ratio outside RELOCK_LUM_LOW..HIGH
+        #: asks a re-lock, at most once per RELOCK_MIN_S.
+        self._lock_lum = None
+        self._lum_wait = 0
+        self._relock_t = float('-inf')
         tuning = None
         if settings.exposure == 'auto_capped':
             tuning = capped_tuning(Picamera2, settings.exposure_max_us,
@@ -1566,6 +1586,7 @@ class PiCameraSource(FrameSource):
         if self.settings.exposure == 'auto_lock':
             ctrl = self._lock_exposure(ctrl)
             self._locked_ctrl = dict(ctrl)
+            self._lum_wait = RELOCK_SETTLE_FRAMES
 
         # Ceasul senzorului e CLOCK_BOOTTIME (ns); time.monotonic() e
         # CLOCK_MONOTONIC. Pe un Pi care nu suspenda, coincid - dar calculam
@@ -1708,8 +1729,31 @@ class PiCameraSource(FrameSource):
         AUTOEXP_FRAMES frames, which keep flowing to detection meanwhile."""
         if self.settings.exposure == 'auto_lock':
             self._relock_req = True
+            self._relock_t = time.monotonic()
             return True
         return False
+
+    def _auto_relock(self, lum, now):
+        """From read(), auto_lock only: re-lock when the frame brightness
+        moved far from the one measured right after the last lock."""
+        if self._relock_req or self._relock_left > 0:
+            return
+        if self._lum_wait > 0:
+            self._lum_wait -= 1
+            if self._lum_wait == 0:
+                self._lock_lum = lum
+            return
+        if not self._lock_lum:
+            self._lock_lum = lum or None
+            return
+        r = lum / self._lock_lum
+        if (r < RELOCK_LUM_LOW or r > RELOCK_LUM_HIGH) \
+                and now - self._relock_t >= RELOCK_MIN_S:
+            if self.verbose:
+                print(f"[camera] lumina s-a schimbat (lum {self._lock_lum:.0f} -> "
+                      f"{lum:.0f}): re-masor expunerea")
+            self._relock_req = True
+            self._relock_t = now
 
     def _relock_step(self, md):
         """One step of the re-lock, from read(). Same rule as at boot
@@ -1743,6 +1787,7 @@ class PiCameraSource(FrameSource):
         fixed['AeEnable'] = False
         self.picam2.set_controls(fixed)
         self._locked_ctrl = fixed
+        self._lum_wait = RELOCK_SETTLE_FRAMES
 
     def _verify_controls(self, wanted):
         """§5.10 aplicat camerei: un control poate fi acceptat si apoi
@@ -1802,6 +1847,8 @@ class PiCameraSource(FrameSource):
         self.last_metadata = md
         if self._relock_req or self._relock_left > 0:
             self._relock_step(md)
+        if self.settings.exposure == 'auto_lock':
+            self._auto_relock(float(gray[::16, ::16].mean()), time.monotonic())
         ts = md.get('SensorTimestamp')
         t = (ts * 1e-9 + self._boot_offset) if ts else time.monotonic()
         if self.timer is not None:

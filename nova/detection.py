@@ -92,6 +92,10 @@ implicit ar spune "markerul e mic" tocmai cand e pe cale sa iasa din cadru
     range_m: float
     fill: float = None
     marker_yaw_deg: float = None
+    #: (16.10.2026) perpendicular distance camera -> marker PLANE, metres,
+    #: from the solvePnP pose (|t . n|): independent of the FC attitude.
+    #: Scales with marker_size_m. None if the detector does not report it.
+    plane_dist_m: float = None
 
 
 @dataclass(frozen=True)

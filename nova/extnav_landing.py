@@ -359,6 +359,11 @@ class ExtNavConfig:
     #: with the geometry fixed (62808e9) these values reproduce it.
     tol_min_m: float = extnav.TOL_MIN_M
     tol_frac: float = extnav.TOL_FRAC
+    #: Final band (16.10.2026, team): at and below final_h_m + FINAL_H_TOL_M
+    #: the tolerance is this fixed value instead of tol(h); tol(h) above it
+    #: is the loose "on the way" band (the next steps correct it). None =
+    #: tol(h) everywhere, as before.
+    tol_final_m: float = None
     #: touchdown and the climb back (nova.config.touchdown_settings)
     alt_riseup: float = 5.5
     touchdown_speed: float = 0.4
@@ -368,6 +373,11 @@ class ExtNavConfig:
     #: DESCEND -> MOVE when the measured offset exceeds this x tol(h)
     #: (DESCEND_DRIFT_N detections in a row). 0 = off.
     descend_drift_factor: float = 2.0
+    #: Fixed height error of the baro/EKF height, metres (team, 16.10.2026:
+    #: 2.5 m shown at 0.5 m real). Subtracted from every height the sequence
+    #: reads (h_now) and added back to every height target it sends, so the
+    #: steps, FINAL_ALIGN, the touchdown and the climb use the real height.
+    alt_offset_m: float = 0.0
     #: B3, the marker search by rotation (nova.config.yaw_search_settings):
     #: 'auto' | True | False. False HERE (the dataclass default, i.e. a
     #: caller that does not configure it): the previous behaviour. The app
@@ -601,12 +611,25 @@ class ExtNavLanding:
         self._aux_was_high = aux
         return aux, rising, falling
 
+    def _hbias(self):
+        """EKF height - real height: learned from the camera (est.height)
+        when available, else the fixed config alt_offset_m."""
+        ch = getattr(self.est, 'height', None)
+        return ch.bias if ch is not None else self.cfg.alt_offset_m
+
     def h_now(self):
-        return -self.v.z
+        return -self.v.z - self._hbias()
+
+    def _z_of(self, h):
+        """EKF z (NED) of a real height h: the bias added back."""
+        return -(h + self._hbias())
 
     def tol_now(self):
-        return extnav.tol_m(max(self.h_now(), 0.0), self.cfg.tol_min_m,
-                            self.cfg.tol_frac)
+        h = max(self.h_now(), 0.0)
+        if (self.cfg.tol_final_m is not None
+                and h <= self.cfg.final_h_m + FINAL_H_TOL_M):
+            return self.cfg.tol_final_m
+        return extnav.tol_m(h, self.cfg.tol_min_m, self.cfg.tol_frac)
 
     def _fresh_est(self, since):
         e = self.last_est
@@ -1559,7 +1582,7 @@ class ExtNavLanding:
                 return
             self._pick_yaw_target()
             self.h_target = self.h_now()
-            self._send_setpoint(now, -self.h_target, force=True)
+            self._send_setpoint(now, self._z_of(self.h_target), force=True)
             self.set_state(Phase.MOVE, f"din cautare: SRC2 + GUIDED verificate, "
                                        f"h {self.h_target:.2f} m")
             return
@@ -1601,7 +1624,7 @@ class ExtNavLanding:
             if r == 'ok':
                 self._pick_yaw_target()
                 self.h_target = self.h_now()
-                self._send_setpoint(now, -self.h_target, force=True)
+                self._send_setpoint(now, self._z_of(self.h_target), force=True)
                 self.set_state(Phase.MOVE, f"GUIDED confirmat, h {self.h_target:.2f} m")
             elif r == 'taken':
                 self.request_exit(f"mod pus de altcineva in ENGAGE ({self.v.mode_name()})",
@@ -1610,7 +1633,7 @@ class ExtNavLanding:
                 self.request_exit('FC-ul nu a confirmat GUIDED')
 
     def _run_move(self, now):
-        self._send_setpoint(now, -self.h_target)
+        self._send_setpoint(now, self._z_of(self.h_target))
         if now - self.state_since > self.cfg.move_timeout_s:
             self.request_exit(f"MOVE fara convergenta in {self.cfg.move_timeout_s:.0f} s")
             return
@@ -1622,7 +1645,7 @@ class ExtNavLanding:
             self.set_state(Phase.CENTER_CHECK, f"EKF la {off:.2f} m de (0,0)")
 
     def _run_center_check(self, now):
-        self._send_setpoint(now, -self.h_target)
+        self._send_setpoint(now, self._z_of(self.h_target))
         e = self._fresh_est(self.window_since)
         if e is not None:
             tol = self.tol_now()
@@ -1638,7 +1661,7 @@ class ExtNavLanding:
                     # residual-driven extra step at the bottom
                     base = self.h_target if self.h_target is not None else self.h_now()
                     self.h_target = max(base / 2.0, self.cfg.final_h_m)
-                    self._send_setpoint(now, -self.h_target, force=True)
+                    self._send_setpoint(now, self._z_of(self.h_target), force=True)
                     self.set_state(Phase.DESCEND,
                                    f"centrat ({e.lateral_m:.2f} m < {tol:.2f}); "
                                    f"cobor la {self.h_target:.2f} m")
@@ -1654,7 +1677,7 @@ class ExtNavLanding:
             self.request_exit('nicio detectie in fereastra de centrare')
 
     def _run_descend(self, now):
-        self._send_setpoint(now, -self.h_target)
+        self._send_setpoint(now, self._z_of(self.h_target))
         if now - self.state_since > self.cfg.descend_timeout_s:
             self.request_exit(f"DESCEND fara a atinge {self.h_target:.2f} m")
             return
@@ -1687,7 +1710,7 @@ class ExtNavLanding:
         # from here (CENTER_CHECK -> DESCEND uses h_target)
         self.h_target = max(self.h_now(), self.cfg.final_h_m)
         self._pick_yaw_target()
-        self._send_setpoint(now, -self.h_target, force=True)
+        self._send_setpoint(now, self._z_of(self.h_target), force=True)
         self._emit('descend_drift', lateral_m=e.lateral_m, limit_m=lim,
                    h=self.h_target)
         self.set_state(Phase.MOVE, f"deriva in coborare: {e.lateral_m:.2f} m > "
@@ -1696,7 +1719,7 @@ class ExtNavLanding:
 
     def _run_final_align(self, now):
         self.h_target = self.cfg.final_h_m
-        self._send_setpoint(now, -self.h_target)
+        self._send_setpoint(now, self._z_of(self.h_target))
         if now - self.state_since > self.cfg.move_timeout_s:
             self.request_exit('FINAL_ALIGN fara stabilizare')
             return
@@ -1864,7 +1887,7 @@ class ExtNavLanding:
                     return
                 self._takeoff(now)
             return
-        h_t = -self._z_riseup
+        h_t = -self._z_riseup - self._hbias()             # real height
         if (self.h_now() >= h_t - ALT_TOL_M):
             self.h_target = h_t
             self._send_setpoint(now, self._z_riseup, force=True)
@@ -1949,4 +1972,6 @@ class ExtNavLanding:
         ht = '-' if self.h_target is None else f"{self.h_target:.2f}"
         return (f"[{self.state:<12}] h {self.h_now():5.2f} m -> {ht} | {vis} | "
                 f"EKF ({self.v.x:+.2f},{self.v.y:+.2f}) | {aux} | "
-                f"VPE {self.n_vpe_sent} SP {getattr(self.v, 'n_pos_target', 0)}")
+                f"VPE {self.n_vpe_sent} SP {getattr(self.v, 'n_pos_target', 0)} | "
+                f"hcorr {self._hbias():+.2f}" + ('' if getattr(getattr(self.est, 'height', None),
+                                                       'learned', True) else ' (fix)'))
